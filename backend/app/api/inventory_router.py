@@ -360,6 +360,20 @@ async def bulk_add_items(
     )
 
 
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_inventory(
+    project_id: Optional[int] = None,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete all inventory items for the current user (optionally filtered by project)."""
+    q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
+    if project_id is not None:
+        q = q.filter(InventoryItem.project_id == project_id)
+    q.delete(synchronize_session=False)
+    db.commit()
+
+
 @router.get("", response_model=List[InventoryOut])
 async def list_inventory(
     project_id: Optional[int] = None,
