@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../store/AuthContext'
+import { get, post } from '../api/client'
 
 const NAV = [
   { to: '/manufacturing', label: 'Manufacturing'  },
@@ -11,6 +13,29 @@ const NAV = [
 
 export default function Layout() {
   const { user, logout } = useAuth()
+  const [sdeStatus, setSdeStatus]   = useState(null)   // null | {synced, type_count}
+  const [syncing, setSyncing]       = useState(false)
+  const [syncMsg, setSyncMsg]       = useState('')
+
+  useEffect(() => {
+    get('/eve/sde/status').then(setSdeStatus).catch(() => {})
+  }, [])
+
+  async function triggerSync() {
+    setSyncing(true); setSyncMsg('')
+    try {
+      const r = await post('/eve/sde/update', {})
+      setSyncMsg(r.message)
+      // poll until synced
+      const poll = setInterval(async () => {
+        try {
+          const s = await get('/eve/sde/status')
+          setSdeStatus(s)
+          if (s.synced) { clearInterval(poll); setSyncing(false) }
+        } catch {}
+      }, 30000)
+    } catch (e) { setSyncMsg(e.message); setSyncing(false) }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -37,6 +62,27 @@ export default function Layout() {
           <button className="btn btn-ghost btn-sm" onClick={logout}>Logout</button>
         </div>
       </header>
+
+      {/* SDE warning banner */}
+      {sdeStatus && !sdeStatus.synced && (
+        <div style={{
+          background: '#2a1800', borderBottom: '1px solid #5a3500',
+          padding: '8px 32px', display: 'flex', alignItems: 'center', gap: 14, fontSize: 13,
+        }}>
+          <span style={{ color: '#c8a951' }}>
+            ⚠ EVE database not synced — system / item search will not work
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={triggerSync}
+            disabled={syncing}
+            style={{ borderColor: '#c8a951', color: '#c8a951' }}
+          >
+            {syncing ? 'Syncing…' : '⚡ Sync EVE SDE'}
+          </button>
+          {syncMsg && <span style={{ color: 'var(--text)', fontSize: 12 }}>{syncMsg}</span>}
+        </div>
+      )}
 
       {/* content */}
       <main style={s.main}>

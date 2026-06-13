@@ -197,24 +197,35 @@ function ParseTab() {
 
   async function fetchPrices() {
     const withType = rows.filter(r => r.eve_type_id)
-    if (!withType.length) { setError('No items with resolved EVE type IDs to fetch prices for'); return }
+    if (!withType.length) {
+      setError('No items with resolved EVE type IDs — make sure SDE is synced (yellow banner above)')
+      return
+    }
     setFetchingPrices(true); setError('')
     try {
-      const ids = [...new Set(withType.map(r => r.eve_type_id))].join(',')
-      const res = await fetch(`https://market.fuzzwork.co.uk/aggregates/?station=60003760&types=${ids}`)
-      if (!res.ok) throw new Error(`Fuzzwork returned ${res.status}`)
-      const data = await res.json()
+      const ids = [...new Set(withType.map(r => r.eve_type_id))]
+      let priceMap = {}
 
-      const priceMap = {}
-      for (const [tid, p] of Object.entries(data)) {
-        const buy  = parseFloat(p.buy.max)
-        const sell = parseFloat(p.sell.min)
-        priceMap[Number(tid)] = { Buy: buy, Split: (buy + sell) / 2, Sell: sell }
+      if (market === 'Jita') {
+        const res = await fetch(`https://market.fuzzwork.co.uk/aggregates/?station=60003760&types=${ids.join(',')}`)
+        if (!res.ok) throw new Error(`Fuzzwork returned ${res.status}`)
+        const data = await res.json()
+        for (const [tid, p] of Object.entries(data)) {
+          const buy  = parseFloat(p.buy.max)
+          const sell = parseFloat(p.sell.min)
+          priceMap[Number(tid)] = { Buy: buy, Split: (buy + sell) / 2, Sell: sell }
+        }
+      } else if (market === 'C-J') {
+        const data = await get(`/eve/prices/cj?type_ids=${ids.join(',')}`)
+        for (const [tid, p] of Object.entries(data)) {
+          priceMap[Number(tid)] = { Buy: p.buy, Split: p.split, Sell: p.sell }
+        }
       }
 
       setRows(prev => prev.map(row => {
         if (!row.eve_type_id || !priceMap[row.eve_type_id]) return row
-        return { ...row, price: priceMap[row.eve_type_id][priceMethod].toFixed(2) }
+        const price = priceMap[row.eve_type_id][priceMethod]
+        return { ...row, price: price != null ? price.toFixed(2) : row.price }
       }))
     } catch (e) { setError('Price fetch failed: ' + e.message) }
     finally { setFetchingPrices(false) }
@@ -362,15 +373,13 @@ function ParseTab() {
                 </select>
               </div>
 
-              {market === 'Jita' && (
+              {(market === 'Jita' || market === 'C-J') && (
                 <button className="btn btn-ghost btn-sm" onClick={fetchPrices} disabled={fetchingPrices} style={{ alignSelf: 'flex-end' }}>
-                  {fetchingPrices ? '⚡ Fetching…' : '⚡ Jita prices'}
+                  {fetchingPrices
+                    ? `⚡ Fetching ${market}…`
+                    : `⚡ ${market} prices`
+                  }
                 </button>
-              )}
-              {market === 'C-J' && (
-                <span style={{ fontSize: 11, color: 'var(--text)', alignSelf: 'flex-end', paddingBottom: 6 }}>
-                  C-J: enter prices manually
-                </span>
               )}
 
               <button className="btn btn-primary" onClick={saveAll} disabled={saving} style={{ marginLeft: 'auto', alignSelf: 'flex-end' }}>
