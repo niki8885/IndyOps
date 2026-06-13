@@ -1,7 +1,7 @@
+import bcrypt as _bcrypt
 from fastapi import HTTPException, Depends, APIRouter
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
-from passlib.context import CryptContext
 
 from app.core.security import create_access_token
 from app.core.database import UserDB, get_db
@@ -19,13 +19,11 @@ class UserLogin(BaseModel):
     password: str
 
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 def _hash_password(password: str) -> str:
-    return _pwd_context.hash(password)
+    return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
 
 def _verify_password(plain: str, hashed: str) -> bool:
-    return _pwd_context.verify(plain, hashed)
+    return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 def _user_profile(user: UserDB) -> dict:
     return {

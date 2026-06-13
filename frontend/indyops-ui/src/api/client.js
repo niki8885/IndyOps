@@ -12,8 +12,17 @@ async function req(method, path, body) {
   })
 
   if (res.status === 204) return null
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.detail || 'Request failed')
+
+  const contentType = res.headers.get('content-type') || ''
+  const isJson = contentType.includes('application/json')
+  const data = isJson ? await res.json() : await res.text()
+
+  if (!res.ok) {
+    const msg = isJson
+      ? (data.detail || JSON.stringify(data))
+      : data || `HTTP ${res.status}`
+    throw new Error(msg)
+  }
   return data
 }
 
