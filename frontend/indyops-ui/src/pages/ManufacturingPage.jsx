@@ -12,6 +12,35 @@ const STATUS_COLOR = {
   Cancelled:   '#c0392b',
 }
 
+const MARKETS = ['Jita', 'C-J']
+const METHODS = ['Buy', 'Split', 'Sell']
+
+/**
+ * Fetch market prices for a set of type_ids.
+ * Jita → Fuzzwork aggregates; C-J → backend appraise.gnf.lt scraper.
+ * Returns { [type_id]: { Buy, Split, Sell } }.
+ */
+async function fetchMarketPrices(typeIds, market) {
+  const ids = [...new Set(typeIds.filter(Boolean))]
+  if (!ids.length) return {}
+  const out = {}
+  if (market === 'Jita') {
+    const res = await fetch(`https://market.fuzzwork.co.uk/aggregates/?station=60003760&types=${ids.join(',')}`)
+    if (!res.ok) throw new Error(`Fuzzwork ${res.status}`)
+    const data = await res.json()
+    for (const [tid, p] of Object.entries(data)) {
+      const buy = parseFloat(p.buy.max), sell = parseFloat(p.sell.min)
+      out[Number(tid)] = { Buy: buy, Sell: sell, Split: (buy + sell) / 2 }
+    }
+  } else { // C-J via backend
+    const data = await get(`/eve/prices/cj?type_ids=${ids.join(',')}`)
+    for (const [tid, p] of Object.entries(data)) {
+      out[Number(tid)] = { Buy: p.buy, Sell: p.sell, Split: p.split }
+    }
+  }
+  return out
+}
+
 export default function ManufacturingPage() {
   const [tab, setTab] = useState(0)
   return (
@@ -54,9 +83,18 @@ function CalculatorTab() {
   const [bpLoading, setBpLoading]     = useState(false)
   const [saveLoading, setSaveLoading] = useState(false)
   const [saveOpen, setSaveOpen]       = useState(false)
-  const [jobForm, setJobForm]         = useState({ project_id: '', status: 'Planning', target: '', paks: '', units_per_pak: '', pak_reward: '', jita_sell: '', jita_buy: '', cj_sell: '', cj_buy: '', initial_contract_price: '', return_contract_price: '', code: '', contract_code: '', place: '', note: '' })
+  const [jobForm, setJobForm]         = useState({ project_id: '', status: 'Planning', target: '', target_other: '', paks: '', units_per_pak: '', pack_tier: '', jita_sell: '', jita_buy: '', cj_sell: '', cj_buy: '', initial_contract_price: '', return_contract_price: '', code: '', contract_code: '', place: '', note: '' })
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
+
+  // market-price source controls
+  const [matMarket, setMatMarket] = useState('Jita')
+  const [matMethod, setMatMethod] = useState('Sell')
+  const [matPriceLoading, setMatPriceLoading] = useState(false)
+  const [outMarket, setOutMarket] = useState('Jita')
+  const [outMethod, setOutMethod] = useState('Sell')
+  const [outPriceLoading, setOutPriceLoading] = useState(false)
+  const [pakPriceLoading, setPakPriceLoading] = useState(false)
 
   useEffect(() => {
     get('/facilities').then(setFacilities).catch(() => {})
@@ -124,11 +162,68 @@ function CalculatorTab() {
     finally { setCalcLoading(false) }
   }
 
+  async function fillMaterialPrices() {
+    if (!bpInfo) return
+    setMatPriceLoading(true); setError('')
+    try {
+      const prices = await fetchMarketPrices(bpInfo.materials.map(m => m.type_id), matMarket)
+      setMatPrices(prev => {
+        const next = { ...prev }
+        bpInfo.materials.forEach(m => {
+          const p = prices[m.type_id]
+          if (p && p[matMethod] != null) next[m.type_id] = p[matMethod].toFixed(2)
+        })
+        return next
+      })
+    } catch (e) { setError('Material price fetch failed: ' + e.message) }
+    finally { setMatPriceLoading(false) }
+  }
+
+  async function fillOutputPrice() {
+    if (!product?.type_id) return
+    setOutPriceLoading(true); setError('')
+    try {
+      const prices = await fetchMarketPrices([product.type_id], outMarket)
+      const p = prices[product.type_id]
+      if (p && p[outMethod] != null) setParams(pp => ({ ...pp, output_price: p[outMethod].toFixed(2) }))
+    } catch (e) { setError('Output price fetch failed: ' + e.message) }
+    finally { setOutPriceLoading(false) }
+  }
+
+  // when the Save-as-PAK panel opens: auto Initial Contract + auto product prices
+  useEffect(() => {
+    if (!saveOpen || !result || !product?.type_id) return
+    const initial = Math.round((result.results.total_material_cost || 0) + (result.bpc_cost || 0))
+    setJobForm(f => ({ ...f, initial_contract_price: f.initial_contract_price || String(initial) }))
+
+    setPakPriceLoading(true)
+    Promise.all([
+      fetchMarketPrices([product.type_id], 'Jita').catch(() => ({})),
+      fetchMarketPrices([product.type_id], 'C-J').catch(() => ({})),
+    ]).then(([jita, cj]) => {
+      const jp = jita[product.type_id], cp = cj[product.type_id]
+      setJobForm(f => ({
+        ...f,
+        jita_sell: jp?.Sell != null ? jp.Sell.toFixed(2) : f.jita_sell,
+        jita_buy:  jp?.Buy  != null ? jp.Buy.toFixed(2)  : f.jita_buy,
+        cj_sell:   cp?.Sell != null ? cp.Sell.toFixed(2) : f.cj_sell,
+        cj_buy:    cp?.Buy  != null ? cp.Buy.toFixed(2)  : f.cj_buy,
+      }))
+    }).finally(() => setPakPriceLoading(false))
+  }, [saveOpen, result, product?.type_id])
+
   async function saveJob() {
     if (!result) return
     setSaveLoading(true); setSaved(false)
     try {
       const f = facilities.find(f => f.id === Number(params.facility_id))
+
+      // fold "Other" target detail into the note
+      let note = jobForm.note || null
+      if (jobForm.target === 'Other' && jobForm.target_other) {
+        note = (note ? note + ' | ' : '') + 'Target: ' + jobForm.target_other
+      }
+
       await post('/manufacturing/jobs', {
         product_type_id: product.type_id,
         product_name: result.output.name,
@@ -141,7 +236,7 @@ function CalculatorTab() {
         paks: jobForm.paks ? Number(jobForm.paks) : null,
         units_per_pak: jobForm.units_per_pak ? Number(jobForm.units_per_pak) : null,
         pack_tier: jobForm.pack_tier || null,
-        pak_reward: jobForm.pak_reward ? Number(jobForm.pak_reward) : null,
+        pak_reward: returnContract ? Math.round(pakRewardCalc) : null,
         sell_price: Number(params.output_price),
         jita_sell: jobForm.jita_sell ? Number(jobForm.jita_sell) : null,
         jita_buy: jobForm.jita_buy ? Number(jobForm.jita_buy) : null,
@@ -154,7 +249,7 @@ function CalculatorTab() {
         place: jobForm.place || f?.system_name || null,
         code: jobForm.code || null,
         contract_code: jobForm.contract_code || null,
-        note: jobForm.note || null,
+        note,
         calc_snapshot: result,
       })
       setSaved(true); setSaveOpen(false)
@@ -167,6 +262,12 @@ function CalculatorTab() {
 
   const profit = result?.results?.profit ?? 0
   const margin = result?.results?.margin_pct ?? 0
+
+  // PAK economics — Reward = Return − Initial − Job(install) cost
+  const jobInstallCost  = result?.job_cost?.net_install_cost ?? 0
+  const initialContract = Number(jobForm.initial_contract_price) || 0
+  const returnContract  = Number(jobForm.return_contract_price) || 0
+  const pakRewardCalc   = returnContract ? returnContract - initialContract - jobInstallCost : 0
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -195,7 +296,16 @@ function CalculatorTab() {
           <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
           <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
           <NumField label="Structure Bonus %" value={params.structure_bonus_pct} onChange={setP('structure_bonus_pct')} step={0.1} />
-          <NumField label="Sell Price / unit" value={params.output_price} onChange={setP('output_price')} step={100} />
+          <div>
+            <CLabel>Sell Price / unit</CLabel>
+            <input type="number" value={params.output_price} onChange={setP('output_price')} step={100} />
+            <PriceSourceRow
+              market={outMarket} setMarket={setOutMarket}
+              method={outMethod} setMethod={setOutMethod}
+              onFill={fillOutputPrice} loading={outPriceLoading}
+              disabled={!product?.type_id}
+            />
+          </div>
           <NumField label="Broker Fee %" value={params.broker_fee_pct} onChange={setP('broker_fee_pct')} step={0.1} />
           <NumField label="Est. Item Value (opt.)" value={params.estimated_item_value} onChange={setP('estimated_item_value')} step={1000000} placeholder="auto" />
         </div>
@@ -204,8 +314,15 @@ function CalculatorTab() {
       {/* ── Materials ── */}
       {bpInfo && bpInfo.materials.length > 0 && (
         <div className="card" style={{ padding: 0 }}>
-          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>
-            Input Materials — enter unit costs (ISK)
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Input Materials — unit costs (ISK)</span>
+            <div style={{ marginLeft: 'auto' }}>
+              <PriceSourceRow
+                market={matMarket} setMarket={setMatMarket}
+                method={matMethod} setMethod={setMatMethod}
+                onFill={fillMaterialPrices} loading={matPriceLoading}
+              />
+            </div>
           </div>
           <table>
             <thead>
@@ -374,13 +491,37 @@ function CalculatorTab() {
                 {['Reactions','Refueling','Sell','Internal','Other'].map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
+            {jobForm.target === 'Other' && (
+              <CInput label="Target details" value={jobForm.target_other} onChange={setJ('target_other')} placeholder="describe target" />
+            )}
             <CInput label="Place / System" value={jobForm.place} onChange={setJ('place')} placeholder="RYC-19" />
             <CInput label="PAKs" type="number" value={jobForm.paks} onChange={setJ('paks')} />
             <CInput label="Units per PAK" type="number" value={jobForm.units_per_pak} onChange={setJ('units_per_pak')} />
             <CInput label="Pack Tier" value={jobForm.pack_tier} onChange={setJ('pack_tier')} placeholder="F" />
-            <CInput label="PAK Reward (ISK)" type="number" value={jobForm.pak_reward} onChange={setJ('pak_reward')} />
-            <CInput label="Initial Contract (ISK)" type="number" value={jobForm.initial_contract_price} onChange={setJ('initial_contract_price')} />
-            <CInput label="Return Contract (ISK)" type="number" value={jobForm.return_contract_price} onChange={setJ('return_contract_price')} />
+
+            <div>
+              <CLabel>Initial Contract (ISK) <Hint>materials + BPC, auto</Hint></CLabel>
+              <input type="number" value={jobForm.initial_contract_price} onChange={setJ('initial_contract_price')} placeholder="0" />
+            </div>
+            <div>
+              <CLabel>Return Contract (ISK) <Hint>you set this</Hint></CLabel>
+              <input type="number" value={jobForm.return_contract_price} onChange={setJ('return_contract_price')} placeholder="0" />
+            </div>
+            <div>
+              <CLabel>PAK Reward <Hint>Return − Initial − Job</Hint></CLabel>
+              <div style={{
+                padding: '7px 10px', borderRadius: 4, fontWeight: 600,
+                background: 'var(--surface3)', border: '1px solid var(--border2)',
+                color: pakRewardCalc > 0 ? '#4caf7d' : pakRewardCalc < 0 ? '#e05252' : 'var(--text)',
+              }}>
+                {returnContract ? fmtIsk(pakRewardCalc) : '— set Return Contract'}
+              </div>
+            </div>
+
+            <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: 'var(--accent)' }}>Market prices</span>
+              {pakPriceLoading ? <span>fetching Jita + C-J…</span> : <span>auto-filled (editable)</span>}
+            </div>
             <CInput label="Jita SELL" type="number" value={jobForm.jita_sell} onChange={setJ('jita_sell')} />
             <CInput label="Jita BUY" type="number" value={jobForm.jita_buy} onChange={setJ('jita_buy')} />
             <CInput label="C-J SELL" type="number" value={jobForm.cj_sell} onChange={setJ('cj_sell')} />
@@ -753,6 +894,30 @@ function NumField({ label, value, onChange, min, max, step = 1, placeholder }) {
 
 function CLabel({ children }) {
   return <label style={{ display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 5 }}>{children}</label>
+}
+
+function Hint({ children }) {
+  return <span style={{ fontWeight: 400, color: 'var(--border2)', marginLeft: 4 }}>{children}</span>
+}
+
+function PriceSourceRow({ market, setMarket, method, setMethod, onFill, loading, disabled }) {
+  return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 5, flexWrap: 'wrap' }}>
+      <select value={market} onChange={e => setMarket(e.target.value)} style={{ width: 60, padding: '2px 4px', fontSize: 11 }}>
+        {MARKETS.map(m => <option key={m} value={m}>{m}</option>)}
+      </select>
+      {METHODS.map(m => (
+        <button
+          key={m} type="button" onClick={() => setMethod(m)}
+          className={`btn btn-sm ${method === m ? 'btn-primary' : 'btn-ghost'}`}
+          style={{ padding: '2px 8px', fontSize: 11 }}
+        >{m}</button>
+      ))}
+      <button type="button" className="btn btn-ghost btn-sm" onClick={onFill} disabled={loading || disabled} style={{ padding: '2px 8px', fontSize: 11 }}>
+        {loading ? '⚡…' : '⚡ Fill'}
+      </button>
+    </div>
+  )
 }
 
 function CInput({ label, value, onChange, type = 'text', placeholder }) {
