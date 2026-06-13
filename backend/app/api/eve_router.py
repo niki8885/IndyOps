@@ -63,7 +63,7 @@ async def search_types(
     """Autocomplete search for EVE item types."""
     results = (
         eve_db.query(EveType)
-        .filter(EveType.type_name.ilike(f"{q}%"), EveType.published == True)
+        .filter(EveType.type_name.ilike(f"%{q}%"))
         .order_by(EveType.type_name)
         .limit(limit)
         .all()
