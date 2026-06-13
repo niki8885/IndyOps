@@ -2,7 +2,7 @@ import datetime
 from app.core.config import SQLALCHEMY_DATABASE_URL
 from sqlalchemy import (
     create_engine, Column, Integer, Enum,
-    ForeignKey, String, DateTime, Boolean,
+    ForeignKey, String, DateTime, Boolean, Float, Text, BigInteger,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -92,6 +92,28 @@ class Projects(Base):
     organisation = relationship("Organisation", back_populates="projects")
     creator      = relationship("Employee", foreign_keys=[created_by],   back_populates="created_projects")
     supervisor   = relationship("Employee", foreign_keys=[supervised_by], back_populates="supervised_projects")
+
+
+class InventoryItem(Base):
+    __tablename__ = "inventory"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    project_id  = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+
+    eve_type_id = Column(Integer, nullable=True, index=True)   # resolved from eve_types
+    name        = Column(String(200), nullable=False)
+    volume      = Column(Float, nullable=True)                  # m³ per unit, from SDE
+    quantity    = Column(BigInteger, nullable=False, default=1)
+    price       = Column(Float, nullable=True)                  # ISK per unit
+    place       = Column(String(200), nullable=True)            # solar system / station name
+    note        = Column(Text, nullable=True)
+
+    created_at  = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at  = Column(DateTime, nullable=True)
+
+    owner       = relationship("UserDB", backref="inventory")
+    project     = relationship("Projects", backref="inventory")
 
 
 def get_db():

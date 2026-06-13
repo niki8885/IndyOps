@@ -1,0 +1,328 @@
+import datetime
+from typing import Optional, List
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, field_validator
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db, InventoryItem, Projects, UserDB
+from app.core.database_eve import EveSessionLocal, EveType
+from app.core.security import get_current_user
+
+router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+class InventoryCreate(BaseModel):
+    eve_type_id: Optional[int] = None
+    name: str
+    quantity: int
+    volume: Optional[float] = None
+    price: Optional[float] = None
+    place: Optional[str] = None
+    note: Optional[str] = None
+    project_id: Optional[int] = None
+
+    @field_validator("quantity")
+    @classmethod
+    def qty_positive(cls, v):
+        if v <= 0:
+            raise ValueError("quantity must be > 0")
+        return v
+
+
+class InventoryUpdate(BaseModel):
+    quantity: Optional[int] = None
+    price: Optional[float] = None
+    place: Optional[str] = None
+    note: Optional[str] = None
+    project_id: Optional[int] = None
+
+    @field_validator("quantity")
+    @classmethod
+    def qty_positive(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("quantity must be > 0")
+        return v
+
+
+class InventoryOut(BaseModel):
+    id: int
+    user_id: int
+    project_id: Optional[int]
+    eve_type_id: Optional[int]
+    name: str
+    volume: Optional[float]
+    quantity: int
+    price: Optional[float]
+    place: Optional[str]
+    note: Optional[str]
+    created_at: datetime.datetime
+    updated_at: Optional[datetime.datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class BulkParseRequest(BaseModel):
+    """
+    Raw tab-separated text: one item per line.
+    Format:  <name>\\t<quantity>
+    Example:
+        Water\\t3040
+        Synthetic Synapses\\t6
+    """
+    text: str
+    place: Optional[str] = None
+    price: Optional[float] = None
+    note: Optional[str] = None
+    project_id: Optional[int] = None
+
+
+class BulkParseResult(BaseModel):
+    created: int
+    skipped: int
+    warnings: List[str]
+    items: List[InventoryOut]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_eve_db():
+    db = EveSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def _resolve_eve_type(eve_db: Session, name: str) -> EveType | None:
+    """Case-insensitive exact match first, then ilike fallback."""
+    result = eve_db.query(EveType).filter(
+        EveType.type_name.ilike(name.strip())
+    ).first()
+    return result
+
+
+def _parse_bulk_text(text: str) -> list[tuple[str, int, list[str]]]:
+    """
+    Parse tab-separated lines into (name, quantity, warnings).
+    Skips empty lines and lines that can't be parsed.
+    """
+    rows = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            rows.append(("", 0, [f"Line {lineno}: expected <name>\\t<quantity>, got: {repr(line)}"]))
+            continue
+        name = parts[0].strip()
+        qty_raw = parts[1].strip().replace(",", "").replace(" ", "")
+        try:
+            qty = int(float(qty_raw))
+        except ValueError:
+            rows.append(("", 0, [f"Line {lineno}: invalid quantity {repr(parts[1])}"]))
+            continue
+        if qty <= 0:
+            rows.append(("", 0, [f"Line {lineno}: quantity must be positive"]))
+            continue
+        rows.append((name, qty, []))
+    return rows
+
+
+def _check_project(db: Session, project_id: int, user: UserDB) -> Projects:
+    project = db.query(Projects).filter(Projects.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    return project
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("", response_model=InventoryOut, status_code=status.HTTP_201_CREATED)
+async def add_item(
+    body: InventoryCreate,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add a single item to personal inventory."""
+    if body.project_id:
+        _check_project(db, body.project_id, current_user)
+
+    eve_type_id = body.eve_type_id
+    volume = body.volume
+
+    if eve_type_id is None:
+        eve_db = EveSessionLocal()
+        try:
+            eve_type = _resolve_eve_type(eve_db, body.name)
+            if eve_type:
+                eve_type_id = eve_type.type_id
+                if volume is None:
+                    volume = eve_type.volume
+        finally:
+            eve_db.close()
+
+    item = InventoryItem(
+        user_id=current_user.id,
+        project_id=body.project_id,
+        eve_type_id=eve_type_id,
+        name=body.name,
+        volume=volume,
+        quantity=body.quantity,
+        price=body.price,
+        place=body.place,
+        note=body.note,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.post("/bulk", response_model=BulkParseResult, status_code=status.HTTP_201_CREATED)
+async def bulk_add_items(
+    body: BulkParseRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Parse tab-separated text and add items to inventory.
+
+    Each line: `<item name>\\t<quantity>`
+    Unknown item names are stored as-is (no eve_type_id).
+    """
+    if body.project_id:
+        _check_project(db, body.project_id, current_user)
+
+    rows = _parse_bulk_text(body.text)
+    eve_db = EveSessionLocal()
+
+    created_items: list[InventoryItem] = []
+    all_warnings: list[str] = []
+    skipped = 0
+
+    try:
+        for name, qty, row_warnings in rows:
+            all_warnings.extend(row_warnings)
+            if not name:
+                skipped += 1
+                continue
+
+            eve_type = _resolve_eve_type(eve_db, name)
+            if eve_type is None:
+                all_warnings.append(f"'{name}': not found in EVE SDE, stored without type link")
+
+            item = InventoryItem(
+                user_id=current_user.id,
+                project_id=body.project_id,
+                eve_type_id=eve_type.type_id if eve_type else None,
+                name=name,
+                volume=eve_type.volume if eve_type else None,
+                quantity=qty,
+                price=body.price,
+                place=body.place,
+                note=body.note,
+            )
+            db.add(item)
+            created_items.append(item)
+
+        db.commit()
+        for item in created_items:
+            db.refresh(item)
+
+    finally:
+        eve_db.close()
+
+    return BulkParseResult(
+        created=len(created_items),
+        skipped=skipped,
+        warnings=all_warnings,
+        items=[InventoryOut.model_validate(i) for i in created_items],
+    )
+
+
+@router.get("", response_model=List[InventoryOut])
+async def list_inventory(
+    project_id: Optional[int] = None,
+    place: Optional[str] = None,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all items in personal inventory with optional filters."""
+    q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
+    if project_id is not None:
+        q = q.filter(InventoryItem.project_id == project_id)
+    if place is not None:
+        q = q.filter(InventoryItem.place.ilike(f"%{place}%"))
+    return q.order_by(InventoryItem.created_at.desc()).all()
+
+
+@router.get("/{item_id}", response_model=InventoryOut)
+async def get_item(
+    item_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return _get_item_or_404(db, item_id, current_user.id)
+
+
+@router.patch("/{item_id}", response_model=InventoryOut)
+async def update_item(
+    item_id: int,
+    body: InventoryUpdate,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = _get_item_or_404(db, item_id, current_user.id)
+
+    if body.project_id is not None:
+        _check_project(db, body.project_id, current_user)
+        item.project_id = body.project_id
+    if body.quantity is not None:
+        item.quantity = body.quantity
+    if body.price is not None:
+        item.price = body.price
+    if body.place is not None:
+        item.place = body.place
+    if body.note is not None:
+        item.note = body.note
+
+    item.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_item(
+    item_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = _get_item_or_404(db, item_id, current_user.id)
+    db.delete(item)
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Private
+# ---------------------------------------------------------------------------
+
+def _get_item_or_404(db: Session, item_id: int, user_id: int) -> InventoryItem:
+    item = db.query(InventoryItem).filter(
+        InventoryItem.id == item_id,
+        InventoryItem.user_id == user_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    return item

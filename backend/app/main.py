@@ -3,14 +3,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core import config
 from app.core.database import engine, Base
+from app.core.database_eve import EveBase, eve_engine
 from app.api.auth_router import router as auth_router
 from app.api.projects_router import router as projects_router
 from app.api.organisations_router import router as organisations_router
+from app.api.inventory_router import router as inventory_router
 
 from app.tasks.scheduler import scheduler
 
 
 Base.metadata.create_all(bind=engine)
+EveBase.metadata.create_all(bind=eve_engine)
 
 app = FastAPI(
     title=config.API_TITLE,
@@ -39,9 +42,10 @@ def stop_tasks():
         print("[INFO] Background scheduler shut down.")
 
 
-app.include_router(auth_router,    prefix="/api/v1",         tags=["Authentication"])
-app.include_router(projects_router,     prefix="/api/v1",         tags=["Projects Management"])
-app.include_router(organisations_router,     prefix="/api/v1",         tags=["Organisations Management"])
+app.include_router(auth_router,          prefix="/api/v1",            tags=["Authentication"])
+app.include_router(projects_router,      prefix="/api/v1",            tags=["Projects Management"])
+app.include_router(organisations_router, prefix="/api/v1",            tags=["Organisations Management"])
+app.include_router(inventory_router,     prefix="/api/v1/inventory",  tags=["Inventory"])
 
 
 @app.get("/", tags=["Health"])
