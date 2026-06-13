@@ -79,15 +79,29 @@ def current_build_id(db) -> int | None:
 # ---------------------------------------------------------------------------
 
 def _download_csv(table_name: str) -> list[dict]:
-    """Download a bz2-compressed CSV from fuzzwork and return rows as dicts."""
-    url = f"{BASE_URL}{table_name}.csv.bz2"
-    logger.info("Downloading %s", url)
-    resp = requests.get(url, timeout=REQUEST_TIMEOUT, stream=True)
-    resp.raise_for_status()
+    """
+    Download a CSV table from fuzzwork and return rows as dicts.
 
-    raw = bz2.decompress(resp.content)
-    reader = csv.DictReader(io.StringIO(raw.decode("utf-8")))
-    return list(reader)
+    Fuzzwork now serves uncompressed `.csv`; we try that first and fall back
+    to the legacy `.csv.bz2` for resilience.  `utf-8-sig` strips any BOM and
+    csv.DictReader handles quoted fields containing embedded newlines.
+    """
+    last_exc: Exception | None = None
+    for suffix, compressed in ((".csv", False), (".csv.bz2", True)):
+        url = f"{BASE_URL}{table_name}{suffix}"
+        try:
+            resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            logger.info("Downloaded %s (%d bytes)", url, len(resp.content))
+            data = bz2.decompress(resp.content) if compressed else resp.content
+            reader = csv.DictReader(io.StringIO(data.decode("utf-8-sig")))
+            return list(reader)
+        except requests.HTTPError as exc:
+            last_exc = exc
+            if resp.status_code == 404:
+                continue  # try the next format
+            raise
+    raise last_exc  # both formats 404'd
 
 
 def _coerce(row: dict, key: str, cast, default=None):
