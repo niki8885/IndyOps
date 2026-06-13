@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db, ProductionJob, Facility, UserDB
+from app.core.database import get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement
 from app.core.database_eve import EveSessionLocal, EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint
 from app.core.schemas import ProductionStatus, ProductionTarget
 from app.core.security import get_current_user
@@ -545,6 +545,178 @@ async def inventory_analysis(
         })
 
     return {"method": method.upper(), "items": result}
+
+
+# ─── Warehouse availability + material write-off ────────────────────────────
+
+class MatNeed(BaseModel):
+    type_id: Optional[int] = None
+    name: str
+    required_qty: int
+
+
+class AvailabilityRequest(BaseModel):
+    project_id: Optional[int] = None
+    materials: List[MatNeed]
+
+
+def _stock_query(db: Session, user_id: int, project_id: Optional[int]):
+    """
+    Scope rule: if a project is chosen, only that project's stock counts;
+    if no project, only stock that is itself unassigned (project_id IS NULL).
+    """
+    q = db.query(InventoryItem).filter(InventoryItem.user_id == user_id)
+    if project_id:
+        q = q.filter(InventoryItem.project_id == project_id)
+    else:
+        q = q.filter(InventoryItem.project_id.is_(None))
+    return q
+
+
+def _match_lots(db, user_id, project_id, type_id, name):
+    """Inventory lots for one material, FIFO order (oldest first)."""
+    q = _stock_query(db, user_id, project_id).filter(InventoryItem.quantity > 0)
+    if type_id:
+        q = q.filter(InventoryItem.eve_type_id == type_id)
+    else:
+        q = q.filter(InventoryItem.name.ilike(name.strip()))
+    return q.order_by(InventoryItem.created_at.asc()).all()
+
+
+@router.post("/material-availability")
+async def material_availability(
+    body: AvailabilityRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """How much of each material is on the warehouse (scoped), plus shortfall + avg price."""
+    out = []
+    for m in body.materials:
+        lots = _match_lots(db, current_user.id, body.project_id, m.type_id, m.name)
+        available = sum(l.quantity for l in lots)
+        priced_qty = sum(l.quantity for l in lots if l.price)
+        total_val  = sum(l.quantity * l.price for l in lots if l.price)
+        wavg = round(total_val / priced_qty, 2) if priced_qty else None
+        out.append({
+            "type_id":   m.type_id,
+            "name":      m.name,
+            "required":  m.required_qty,
+            "available": available,
+            "shortfall": max(0, m.required_qty - available),
+            "warehouse_unit_price": wavg,
+        })
+    return {"project_id": body.project_id, "materials": out}
+
+
+@router.post("/jobs/{job_id}/issue")
+async def issue_job_materials(
+    job_id: int,
+    force: bool = False,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Consume the job's materials from the warehouse (FIFO) and record a stock
+    movement per material. Scope follows the job's project. Sets status to
+    'In Progress'. Refuses to run twice unless force=True.
+    """
+    job = _job_or_404(db, job_id, current_user.id)
+
+    snap = job.calc_snapshot or {}
+    materials = snap.get("materials") or []
+    if not materials:
+        raise HTTPException(400, "Job has no material snapshot to consume")
+
+    already = (
+        db.query(StockMovement)
+        .filter(StockMovement.production_job_id == job.id, StockMovement.direction == "out")
+        .first()
+    )
+    if already and not force:
+        raise HTTPException(400, "Materials already issued for this job (use force=true to repeat)")
+
+    results = []
+    grand_total = 0.0
+    for m in materials:
+        need = int(m.get("adj_qty") or 0)
+        if need <= 0:
+            continue
+        lots = _match_lots(db, current_user.id, job.project_id, m.get("type_id"), m.get("name", ""))
+
+        remaining = need
+        consumed = 0
+        cost = 0.0
+        for lot in lots:
+            if remaining <= 0:
+                break
+            take = min(lot.quantity, remaining)
+            cost += take * (lot.price or 0)
+            consumed += take
+            remaining -= take
+            lot.quantity -= take
+            if lot.quantity == 0:
+                db.delete(lot)
+
+        if consumed > 0:
+            mv = StockMovement(
+                user_id=current_user.id,
+                project_id=job.project_id,
+                production_job_id=job.id,
+                eve_type_id=m.get("type_id"),
+                name=m.get("name", ""),
+                quantity=consumed,
+                direction="out",
+                unit_cost=round(cost / consumed, 2) if consumed else None,
+                total_cost=round(cost, 2),
+                reason=f"PAK #{job.id} issue — {job.product_name}",
+            )
+            db.add(mv)
+            grand_total += cost
+
+        results.append({
+            "name": m.get("name", ""),
+            "required": need,
+            "consumed": consumed,
+            "shortfall": max(0, need - consumed),
+            "cost": round(cost, 2),
+        })
+
+    if job.status in (ProductionStatus.PLANNING, ProductionStatus.PREPARING):
+        job.status = ProductionStatus.IN_PROGRESS
+    job.updated_at = datetime.datetime.utcnow()
+    db.commit()
+
+    return {
+        "job_id": job.id,
+        "total_cost": round(grand_total, 2),
+        "materials": results,
+        "shortfalls": [r for r in results if r["shortfall"] > 0],
+    }
+
+
+@router.get("/jobs/{job_id}/movements")
+async def job_movements(
+    job_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stock movements recorded against a job (audit trail)."""
+    _job_or_404(db, job_id, current_user.id)
+    rows = (
+        db.query(StockMovement)
+        .filter(StockMovement.production_job_id == job_id)
+        .order_by(StockMovement.created_at.asc())
+        .all()
+    )
+    return [
+        {
+            "id": r.id, "name": r.name, "quantity": r.quantity,
+            "direction": r.direction, "unit_cost": r.unit_cost,
+            "total_cost": r.total_cost, "reason": r.reason,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
 
 
 def _job_or_404(db: Session, job_id: int, user_id: int) -> ProductionJob:

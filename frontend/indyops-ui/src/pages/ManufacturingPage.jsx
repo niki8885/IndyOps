@@ -96,6 +96,11 @@ function CalculatorTab() {
   const [outPriceLoading, setOutPriceLoading] = useState(false)
   const [pakPriceLoading, setPakPriceLoading] = useState(false)
 
+  // warehouse availability for a project
+  const [calcProjectId, setCalcProjectId] = useState('')
+  const [availability, setAvailability]   = useState(null)   // { type_id: {required, available, shortfall, warehouse_unit_price} }
+  const [availLoading, setAvailLoading]   = useState(false)
+
   useEffect(() => {
     get('/facilities').then(setFacilities).catch(() => {})
     get('/organisations').then(async orgs => {
@@ -109,7 +114,7 @@ function CalculatorTab() {
 
   // load blueprint when product selected
   useEffect(() => {
-    if (!product?.type_id) { setBpInfo(null); setMatPrices({}); setResult(null); return }
+    if (!product?.type_id) { setBpInfo(null); setMatPrices({}); setResult(null); setAvailability(null); return }
     setBpLoading(true)
     get(`/manufacturing/blueprint?product_type_id=${product.type_id}`)
       .then(info => {
@@ -118,6 +123,7 @@ function CalculatorTab() {
         info.materials.forEach(m => { prices[m.type_id] = '' })
         setMatPrices(prices)
         setResult(null)
+        setAvailability(null)
       })
       .catch(e => setError(e.message))
       .finally(() => setBpLoading(false))
@@ -190,11 +196,49 @@ function CalculatorTab() {
     finally { setOutPriceLoading(false) }
   }
 
+  function adjQtyOf(m) {
+    return Math.max(Number(params.runs), Math.ceil(m.base_qty * params.runs * (1 - params.me / 100)))
+  }
+
+  async function checkWarehouse() {
+    if (!bpInfo) return
+    setAvailLoading(true); setError('')
+    try {
+      const res = await post('/manufacturing/material-availability', {
+        project_id: calcProjectId ? Number(calcProjectId) : null,
+        materials: bpInfo.materials.map(m => ({ type_id: m.type_id, name: m.name, required_qty: adjQtyOf(m) })),
+      })
+      const map = {}
+      res.materials.forEach(m => { map[m.type_id] = m })
+      setAvailability(map)
+    } catch (e) { setError('Warehouse check failed: ' + e.message) }
+    finally { setAvailLoading(false) }
+  }
+
+  function useWarehousePrices() {
+    if (!availability) return
+    setMatPrices(prev => {
+      const next = { ...prev }
+      Object.values(availability).forEach(m => {
+        if (m.warehouse_unit_price != null) next[m.type_id] = String(m.warehouse_unit_price)
+      })
+      return next
+    })
+  }
+
+  const shoppingList = availability
+    ? Object.values(availability).filter(m => m.shortfall > 0).map(m => `${m.name}\t${m.shortfall}`).join('\n')
+    : ''
+
   // when the Save-as-PAK panel opens: auto Initial Contract + auto product prices
   useEffect(() => {
     if (!saveOpen || !result || !product?.type_id) return
     const initial = Math.round((result.results.total_material_cost || 0) + (result.bpc_cost || 0))
-    setJobForm(f => ({ ...f, initial_contract_price: f.initial_contract_price || String(initial) }))
+    setJobForm(f => ({
+      ...f,
+      initial_contract_price: f.initial_contract_price || String(initial),
+      project_id: f.project_id || calcProjectId || '',
+    }))
 
     setPakPriceLoading(true)
     Promise.all([
@@ -324,6 +368,22 @@ function CalculatorTab() {
               />
             </div>
           </div>
+          {/* warehouse controls */}
+          <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'var(--surface2)' }}>
+            <span style={{ fontSize: 11, color: 'var(--text)' }}>Warehouse / project:</span>
+            <select value={calcProjectId} onChange={e => { setCalcProjectId(e.target.value); setAvailability(null) }} style={{ width: 180, fontSize: 12 }}>
+              <option value="">Unassigned stock</option>
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <button className="btn btn-ghost btn-sm" onClick={checkWarehouse} disabled={availLoading}>
+              {availLoading ? '📦…' : '📦 Check warehouse'}
+            </button>
+            {availability && (
+              <button className="btn btn-ghost btn-sm" onClick={useWarehousePrices}>
+                Use warehouse prices
+              </button>
+            )}
+          </div>
           <table>
             <thead>
               <tr>
@@ -331,22 +391,35 @@ function CalculatorTab() {
                 <th>Base Qty (×{params.runs} runs)</th>
                 <th>After ME{params.me}</th>
                 <th>Saved</th>
+                {availability && <th>Have</th>}
+                {availability && <th>Short</th>}
                 <th>Unit Cost (ISK)</th>
                 <th>Gross Cost</th>
               </tr>
             </thead>
             <tbody>
               {bpInfo.materials.map(m => {
-                const adjQty = Math.max(Number(params.runs), Math.ceil(m.base_qty * params.runs * (1 - params.me / 100)))
+                const adjQty = adjQtyOf(m)
                 const baseQty = m.base_qty * Number(params.runs)
                 const price = Number(matPrices[m.type_id] || 0)
                 const grossCost = adjQty * price
+                const av = availability?.[m.type_id]
                 return (
                   <tr key={m.type_id}>
                     <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{m.name}</td>
                     <td style={{ color: 'var(--text)' }}>{baseQty.toLocaleString()}</td>
                     <td style={{ color: 'var(--accent)', fontWeight: 500 }}>{adjQty.toLocaleString()}</td>
                     <td style={{ color: '#4caf7d', fontSize: 12 }}>{(baseQty - adjQty).toLocaleString()}</td>
+                    {availability && (
+                      <td style={{ color: av && av.available >= adjQty ? '#4caf7d' : 'var(--text)' }}>
+                        {av ? av.available.toLocaleString() : '0'}
+                      </td>
+                    )}
+                    {availability && (
+                      <td style={{ color: av && av.shortfall > 0 ? '#e05252' : 'var(--text)' }}>
+                        {av && av.shortfall > 0 ? av.shortfall.toLocaleString() : '✓'}
+                      </td>
+                    )}
                     <td style={{ minWidth: 140 }}>
                       <input
                         type="number" min="0" step="0.01"
@@ -363,6 +436,16 @@ function CalculatorTab() {
               })}
             </tbody>
           </table>
+          {shoppingList && (
+            <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <span style={{ fontSize: 12, color: '#e05252', fontWeight: 600 }}>🛒 Shopping list (shortfall) — paste into EVE multibuy</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard.writeText(shoppingList)}>Copy</button>
+              </div>
+              <textarea readOnly value={shoppingList} rows={Math.min(shoppingList.split('\n').length, 10)}
+                style={{ fontFamily: 'monospace', fontSize: 12 }} />
+            </div>
+          )}
         </div>
       )}
 
@@ -651,7 +734,7 @@ function PakJobsTab() {
                     expand === j.id && j.calc_snapshot && (
                       <tr key={`exp-${j.id}`}>
                         <td colSpan={12} style={{ background: 'var(--surface2)', padding: 0 }}>
-                          <PakCard job={j} />
+                          <PakCard job={j} onChange={load} />
                         </td>
                       </tr>
                     )
@@ -666,9 +749,47 @@ function PakJobsTab() {
   )
 }
 
-function PakCard({ job }) {
+function PakCard({ job, onChange }) {
   const s = job.calc_snapshot
-  if (!s) return null
+  const [movements, setMovements] = useState([])
+  const [issuing, setIssuing]     = useState(false)
+  const [issueMsg, setIssueMsg]   = useState('')
+
+  async function loadMovements() {
+    try { setMovements(await get(`/manufacturing/jobs/${job.id}/movements`)) } catch {}
+  }
+
+  useEffect(() => { loadMovements() }, [job.id])
+
+  async function issue(force = false) {
+    const already = movements.length > 0
+    if (already && !force) {
+      if (!confirm('Materials already issued for this job. Issue again (deduct more stock)?')) return
+      force = true
+    } else if (!confirm('Deduct this job\'s materials from the warehouse and log the write-off?')) {
+      return
+    }
+    setIssuing(true); setIssueMsg('')
+    try {
+      const res = await post(`/manufacturing/jobs/${job.id}/issue${force ? '?force=true' : ''}`, {})
+      const shorts = res.shortfalls || []
+      setIssueMsg(
+        `✓ Consumed ${res.materials.filter(m => m.consumed > 0).length} materials · ${fmtIsk(res.total_cost)}` +
+        (shorts.length ? ` · ⚠ ${shorts.length} short: ${shorts.map(x => x.name + ' (-' + x.shortfall + ')').join(', ')}` : '')
+      )
+      await loadMovements()
+      onChange?.()
+    } catch (e) { setIssueMsg('⚠ ' + e.message) }
+    finally { setIssuing(false) }
+  }
+
+  if (!s) {
+    return (
+      <div style={{ padding: 20 }}>
+        <span style={{ color: 'var(--text)', fontSize: 12 }}>No calculation snapshot for this job.</span>
+      </div>
+    )
+  }
   const r = s.results
   const j = s.job_cost
   const roi = job.pak_reward && r.total_costs
@@ -718,6 +839,40 @@ function PakCard({ job }) {
           <Row label="CONTRACT CODE" value={job.contract_code} mono />
         </CardSection>
       )}
+
+      {/* Material write-off / issue */}
+      <CardSection title="Warehouse write-off" style={{ gridColumn: '1 / -1' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: movements.length ? 10 : 0 }}>
+          <button className="btn btn-primary btn-sm" onClick={() => issue(false)} disabled={issuing}>
+            {issuing ? 'Issuing…' : movements.length ? '📦 Issue again' : '📦 Issue materials'}
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--text)' }}>
+            Deducts the job's materials from {job.project_id ? 'the project' : 'unassigned'} stock (FIFO) and logs it.
+          </span>
+          {issueMsg && (
+            <span style={{ fontSize: 12, color: issueMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{issueMsg}</span>
+          )}
+        </div>
+        {movements.length > 0 && (
+          <table style={{ marginTop: 6 }}>
+            <thead>
+              <tr><th>Date</th><th>Material</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Reason</th></tr>
+            </thead>
+            <tbody>
+              {movements.map(mv => (
+                <tr key={mv.id}>
+                  <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.created_at ? new Date(mv.created_at).toLocaleString() : '—'}</td>
+                  <td style={{ color: 'var(--text-white)' }}>{mv.name}</td>
+                  <td style={{ color: '#e05252' }}>-{mv.quantity.toLocaleString()}</td>
+                  <td style={{ color: 'var(--text)' }}>{fmtIsk(mv.unit_cost)}</td>
+                  <td style={{ color: 'var(--text-bright)' }}>{fmtIsk(mv.total_cost)}</td>
+                  <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </CardSection>
     </div>
   )
 }

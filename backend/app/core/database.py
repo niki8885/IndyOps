@@ -209,6 +209,31 @@ class InventoryItem(Base):
     project     = relationship("Projects", backref="inventory")
 
 
+class StockMovement(Base):
+    """Audit log of warehouse stock changes (e.g. materials consumed by a PAK job)."""
+    __tablename__ = "stock_movements"
+
+    id                = Column(Integer, primary_key=True, index=True)
+    user_id           = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    project_id        = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    production_job_id  = Column(Integer, ForeignKey("production_jobs.id"), nullable=True, index=True)
+
+    eve_type_id = Column(Integer, nullable=True, index=True)
+    name        = Column(String(200), nullable=False)
+    quantity    = Column(BigInteger, nullable=False)            # absolute amount moved
+    direction   = Column(String(8), nullable=False, default="out")  # 'out' = consumed, 'in' = added
+    unit_cost   = Column(Float, nullable=True)
+    total_cost  = Column(Float, nullable=True)
+    reason      = Column(String(200), nullable=True)            # e.g. "PAK #12 issue"
+    note        = Column(Text, nullable=True)
+
+    created_at  = Column(DateTime, default=datetime.datetime.utcnow)
+
+    owner   = relationship("UserDB", backref="stock_movements")
+    project = relationship("Projects", backref="stock_movements")
+    job     = relationship("ProductionJob", backref="stock_movements")
+
+
 def get_db():
     db = SessionLocal()
     try:
