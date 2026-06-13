@@ -12,21 +12,24 @@ const STATUS_BADGE = {
 }
 
 export default function ProjectsPage() {
-  const [orgs, setOrgs]       = useState([])
-  const [projects, setProjects] = useState([])
-  const [orgId, setOrgId]     = useState('')
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm]       = useState({ name: '', project_type: 'INTERNAL', note: '', created_by: '' })
-  const [error, setError]     = useState('')
-  const [loading, setLoading] = useState(false)
+  const [orgs, setOrgs]         = useState([])
+  const [employees, setEmployees] = useState([])
+  const [projects, setProjects]  = useState([])
+  const [orgId, setOrgId]        = useState('')
+  const [showForm, setShowForm]  = useState(false)
+  const [form, setForm]          = useState({ name: '', project_type: 'INTERNAL', note: '', created_by: '' })
+  const [error, setError]        = useState('')
+  const [loading, setLoading]    = useState(false)
 
   useEffect(() => {
     get('/organisations').then(setOrgs).catch(() => {})
   }, [])
 
   useEffect(() => {
-    if (!orgId) return
+    if (!orgId) { setProjects([]); setEmployees([]); return }
     get(`/projects?org_id=${orgId}`).then(setProjects).catch(() => {})
+    get(`/organisations/${orgId}/employees`).then(setEmployees).catch(() => {})
+    setForm(f => ({ ...f, created_by: '' }))
   }, [orgId])
 
   async function create(e) {
@@ -79,13 +82,12 @@ export default function ProjectsPage() {
             <select value={form.project_type} onChange={set('project_type')}>
               {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
-            <input
-              type="number"
-              value={form.created_by}
-              onChange={set('created_by')}
-              placeholder="Creator employee ID"
-              required
-            />
+            <select value={form.created_by} onChange={set('created_by')} required>
+              <option value="">— Select creator —</option>
+              {employees.map(e => (
+                <option key={e.id} value={e.id}>{e.name} ({e.status})</option>
+              ))}
+            </select>
             <textarea
               value={form.note}
               onChange={set('note')}
