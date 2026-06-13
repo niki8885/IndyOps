@@ -2,11 +2,14 @@ import datetime
 from app.core.config import SQLALCHEMY_DATABASE_URL
 from sqlalchemy import (
     create_engine, Column, Integer, Enum,
-    ForeignKey, String, DateTime, Boolean, Float, Text, BigInteger,
+    ForeignKey, String, DateTime, Boolean, Float, Text, BigInteger, JSON,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-from app.core.schemas import EmployeeType, ProjectsType, ProjectsStatus, FacilityType
+from app.core.schemas import (
+    EmployeeType, ProjectsType, ProjectsStatus,
+    FacilityType, ProductionStatus, ProductionTarget,
+)
 
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
@@ -122,6 +125,66 @@ class Facility(Base):
     updated_at        = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="facilities")
+
+
+class ProductionJob(Base):
+    """PAK — a manufacturing production job/contract."""
+    __tablename__ = "production_jobs"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    project_id  = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
+
+    # Blueprint / product
+    blueprint_type_id = Column(Integer, nullable=True)
+    blueprint_name    = Column(String(200), nullable=True)
+    product_type_id   = Column(Integer, nullable=False)
+    product_name      = Column(String(200), nullable=False)
+
+    # Production parameters
+    runs    = Column(Integer, nullable=False, default=1)
+    me      = Column(Integer, nullable=False, default=0)   # 0-10
+    te      = Column(Integer, nullable=False, default=0)   # 0-20
+    bpc_cost = Column(Float, nullable=True, default=0)
+
+    # PAK contract metadata
+    paks          = Column(Integer, nullable=True)
+    units_per_pak = Column(Integer, nullable=True)
+    pack_tier     = Column(String(10), nullable=True)      # F, E, D …
+    pak_reward    = Column(Float, nullable=True)           # ISK paid to producer
+
+    # Pricing snapshot
+    sell_price  = Column(Float, nullable=True)
+    jita_sell   = Column(Float, nullable=True)
+    jita_buy    = Column(Float, nullable=True)
+    cj_sell     = Column(Float, nullable=True)
+    cj_buy      = Column(Float, nullable=True)
+    initial_contract_price = Column(Float, nullable=True)
+    return_contract_price  = Column(Float, nullable=True)
+
+    # Last calculation result stored as JSON
+    calc_snapshot = Column(JSON, nullable=True)
+
+    # Status / tracking
+    status  = Column(Enum(ProductionStatus), nullable=False, default=ProductionStatus.PLANNING, index=True)
+    target  = Column(Enum(ProductionTarget), nullable=True)
+    place   = Column(String(200), nullable=True)
+
+    date_planned  = Column(DateTime, default=datetime.datetime.utcnow)
+    date_released = Column(DateTime, nullable=True)
+
+    # Codes
+    code          = Column(String(100), nullable=True)
+    contract_code = Column(String(500), nullable=True)
+    note          = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+
+    owner    = relationship("UserDB", backref="production_jobs")
+    project  = relationship("Projects", backref="production_jobs")
+    facility = relationship("Facility", backref="production_jobs")
 
 
 class InventoryItem(Base):

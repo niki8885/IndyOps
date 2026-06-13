@@ -1,0 +1,783 @@
+import { useState, useEffect, useCallback } from 'react'
+import { get, post, patch, del } from '../api/client'
+import TypeSearch from '../components/TypeSearch'
+
+const TABS = ['Calculator', 'PAK Jobs', 'Inventory Analysis']
+
+const STATUS_COLOR = {
+  Planning:    '#8b93b0',
+  Preparing:   '#c8a951',
+  'In Progress': '#2980b9',
+  Completed:   '#27ae60',
+  Cancelled:   '#c0392b',
+}
+
+export default function ManufacturingPage() {
+  const [tab, setTab] = useState(0)
+  return (
+    <div>
+      <h2 style={{ marginBottom: 20 }}>Manufacturing</h2>
+      <div className="tabs">
+        {TABS.map((t, i) => (
+          <button key={i} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
+        ))}
+      </div>
+      {tab === 0 && <CalculatorTab />}
+      {tab === 1 && <PakJobsTab />}
+      {tab === 2 && <InventoryAnalysisTab />}
+    </div>
+  )
+}
+
+/* ═══════════════════════════ CALCULATOR ═══════════════════════════ */
+
+function CalculatorTab() {
+  const [product, setProduct]       = useState(null)     // {type_id, name}
+  const [bpInfo, setBpInfo]         = useState(null)     // blueprint info from API
+  const [facilities, setFacilities] = useState([])
+  const [projects, setProjects]     = useState([])
+
+  const [params, setParams] = useState({
+    runs: 1, me: 0, te: 0,
+    bpc_cost: 0,
+    output_price: 0,
+    broker_fee_pct: 3.6,
+    facility_id: '',
+    system_cost_index: 0,
+    facility_tax_pct: 0,
+    structure_bonus_pct: 0,
+    estimated_item_value: '',
+  })
+  const [matPrices, setMatPrices] = useState({})   // {type_id: price}
+  const [result, setResult]       = useState(null)
+  const [calcLoading, setCalcLoading] = useState(false)
+  const [bpLoading, setBpLoading]     = useState(false)
+  const [saveLoading, setSaveLoading] = useState(false)
+  const [saveOpen, setSaveOpen]       = useState(false)
+  const [jobForm, setJobForm]         = useState({ project_id: '', status: 'Planning', target: '', paks: '', units_per_pak: '', pak_reward: '', jita_sell: '', jita_buy: '', cj_sell: '', cj_buy: '', initial_contract_price: '', return_contract_price: '', code: '', contract_code: '', place: '', note: '' })
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    get('/facilities').then(setFacilities).catch(() => {})
+    get('/organisations').then(async orgs => {
+      const all = []
+      for (const o of orgs) {
+        try { const ps = await get(`/projects?org_id=${o.id}`); all.push(...ps) } catch {}
+      }
+      setProjects(all)
+    }).catch(() => {})
+  }, [])
+
+  // load blueprint when product selected
+  useEffect(() => {
+    if (!product?.type_id) { setBpInfo(null); setMatPrices({}); setResult(null); return }
+    setBpLoading(true)
+    get(`/manufacturing/blueprint?product_type_id=${product.type_id}`)
+      .then(info => {
+        setBpInfo(info)
+        const prices = {}
+        info.materials.forEach(m => { prices[m.type_id] = '' })
+        setMatPrices(prices)
+        setResult(null)
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setBpLoading(false))
+  }, [product?.type_id])
+
+  // auto-fill facility params when facility selected
+  useEffect(() => {
+    if (!params.facility_id) return
+    const f = facilities.find(f => f.id === Number(params.facility_id))
+    if (!f) return
+    setParams(p => ({
+      ...p,
+      system_cost_index: f.system_cost_index != null ? +(f.system_cost_index * 100).toFixed(4) : p.system_cost_index,
+      facility_tax_pct:  f.tax != null ? f.tax : p.facility_tax_pct,
+      structure_bonus_pct: f.cost_bonus != null ? f.cost_bonus : p.structure_bonus_pct,
+    }))
+  }, [params.facility_id, facilities])
+
+  async function calculate() {
+    if (!product?.type_id || !bpInfo) return
+    setCalcLoading(true); setError('')
+    try {
+      const res = await post('/manufacturing/calculate', {
+        product_type_id: product.type_id,
+        runs:   Number(params.runs),
+        me:     Number(params.me),
+        te:     Number(params.te),
+        bpc_cost: Number(params.bpc_cost),
+        output_price: Number(params.output_price),
+        broker_fee_pct: Number(params.broker_fee_pct),
+        facility_id: params.facility_id ? Number(params.facility_id) : null,
+        system_cost_index: Number(params.system_cost_index) / 100,
+        facility_tax_pct: Number(params.facility_tax_pct),
+        structure_bonus_pct: Number(params.structure_bonus_pct),
+        estimated_item_value: params.estimated_item_value !== '' ? Number(params.estimated_item_value) : null,
+        material_prices: Object.entries(matPrices)
+          .filter(([, v]) => v !== '')
+          .map(([type_id, unit_cost]) => ({ type_id: Number(type_id), unit_cost: Number(unit_cost) })),
+      })
+      setResult(res)
+    } catch (e) { setError(e.message) }
+    finally { setCalcLoading(false) }
+  }
+
+  async function saveJob() {
+    if (!result) return
+    setSaveLoading(true); setSaved(false)
+    try {
+      const f = facilities.find(f => f.id === Number(params.facility_id))
+      await post('/manufacturing/jobs', {
+        product_type_id: product.type_id,
+        product_name: result.output.name,
+        blueprint_type_id: bpInfo.blueprint_type_id,
+        blueprint_name: bpInfo.blueprint_name,
+        facility_id: params.facility_id ? Number(params.facility_id) : null,
+        project_id: jobForm.project_id ? Number(jobForm.project_id) : null,
+        runs: Number(params.runs), me: Number(params.me), te: Number(params.te),
+        bpc_cost: Number(params.bpc_cost),
+        paks: jobForm.paks ? Number(jobForm.paks) : null,
+        units_per_pak: jobForm.units_per_pak ? Number(jobForm.units_per_pak) : null,
+        pack_tier: jobForm.pack_tier || null,
+        pak_reward: jobForm.pak_reward ? Number(jobForm.pak_reward) : null,
+        sell_price: Number(params.output_price),
+        jita_sell: jobForm.jita_sell ? Number(jobForm.jita_sell) : null,
+        jita_buy: jobForm.jita_buy ? Number(jobForm.jita_buy) : null,
+        cj_sell: jobForm.cj_sell ? Number(jobForm.cj_sell) : null,
+        cj_buy: jobForm.cj_buy ? Number(jobForm.cj_buy) : null,
+        initial_contract_price: jobForm.initial_contract_price ? Number(jobForm.initial_contract_price) : null,
+        return_contract_price: jobForm.return_contract_price ? Number(jobForm.return_contract_price) : null,
+        status: jobForm.status,
+        target: jobForm.target || null,
+        place: jobForm.place || f?.system_name || null,
+        code: jobForm.code || null,
+        contract_code: jobForm.contract_code || null,
+        note: jobForm.note || null,
+        calc_snapshot: result,
+      })
+      setSaved(true); setSaveOpen(false)
+    } catch (e) { setError(e.message) }
+    finally { setSaveLoading(false) }
+  }
+
+  const setP = k => e => setParams(p => ({ ...p, [k]: e.target.value }))
+  const setJ = k => e => setJobForm(f => ({ ...f, [k]: e.target.value }))
+
+  const profit = result?.results?.profit ?? 0
+  const margin = result?.results?.margin_pct ?? 0
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {error && <div className="error-box">{error}</div>}
+
+      {/* ── Controls ── */}
+      <div className="card">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px,1fr))', gap: 14 }}>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <CLabel>Product to manufacture</CLabel>
+            <TypeSearch value={product} onChange={t => setProduct(t?.type_id ? t : null)} placeholder="Search product…" />
+            {bpLoading && <span style={{ fontSize: 11, color: 'var(--text)' }}>Loading blueprint…</span>}
+            {bpInfo && <span style={{ fontSize: 11, color: 'var(--success)' }}>✓ {bpInfo.blueprint_name} · {bpInfo.qty_per_run} units/run · {fmtTime(bpInfo.base_time_per_run)}/run</span>}
+          </div>
+          <NumField label="Runs" value={params.runs} onChange={setP('runs')} min={1} />
+          <NumField label="ME (0–10)" value={params.me} onChange={setP('me')} min={0} max={10} />
+          <NumField label="TE (0–20)" value={params.te} onChange={setP('te')} min={0} max={20} />
+          <NumField label="BPC Cost (ISK)" value={params.bpc_cost} onChange={setP('bpc_cost')} step={1000} />
+          <div>
+            <CLabel>Facility</CLabel>
+            <select value={params.facility_id} onChange={setP('facility_id')}>
+              <option value="">— none —</option>
+              {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
+          <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
+          <NumField label="Structure Bonus %" value={params.structure_bonus_pct} onChange={setP('structure_bonus_pct')} step={0.1} />
+          <NumField label="Sell Price / unit" value={params.output_price} onChange={setP('output_price')} step={100} />
+          <NumField label="Broker Fee %" value={params.broker_fee_pct} onChange={setP('broker_fee_pct')} step={0.1} />
+          <NumField label="Est. Item Value (opt.)" value={params.estimated_item_value} onChange={setP('estimated_item_value')} step={1000000} placeholder="auto" />
+        </div>
+      </div>
+
+      {/* ── Materials ── */}
+      {bpInfo && bpInfo.materials.length > 0 && (
+        <div className="card" style={{ padding: 0 }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>
+            Input Materials — enter unit costs (ISK)
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Base Qty (×{params.runs} runs)</th>
+                <th>After ME{params.me}</th>
+                <th>Saved</th>
+                <th>Unit Cost (ISK)</th>
+                <th>Gross Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bpInfo.materials.map(m => {
+                const adjQty = Math.max(Number(params.runs), Math.ceil(m.base_qty * params.runs * (1 - params.me / 100)))
+                const baseQty = m.base_qty * Number(params.runs)
+                const price = Number(matPrices[m.type_id] || 0)
+                const grossCost = adjQty * price
+                return (
+                  <tr key={m.type_id}>
+                    <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{m.name}</td>
+                    <td style={{ color: 'var(--text)' }}>{baseQty.toLocaleString()}</td>
+                    <td style={{ color: 'var(--accent)', fontWeight: 500 }}>{adjQty.toLocaleString()}</td>
+                    <td style={{ color: '#4caf7d', fontSize: 12 }}>{(baseQty - adjQty).toLocaleString()}</td>
+                    <td style={{ minWidth: 140 }}>
+                      <input
+                        type="number" min="0" step="0.01"
+                        value={matPrices[m.type_id]}
+                        onChange={e => setMatPrices(p => ({ ...p, [m.type_id]: e.target.value }))}
+                        placeholder="0"
+                      />
+                    </td>
+                    <td style={{ color: price ? 'var(--text-white)' : 'var(--text)', whiteSpace: 'nowrap' }}>
+                      {price ? fmtIsk(grossCost) : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button className="btn btn-primary" onClick={calculate} disabled={!bpInfo || calcLoading}>
+          {calcLoading ? 'Calculating…' : '⚡ Calculate'}
+        </button>
+        {result && (
+          <button className="btn btn-ghost" onClick={() => { setSaveOpen(v => !v); setSaved(false) }}>
+            💾 Save as PAK Job
+          </button>
+        )}
+      </div>
+
+      {/* ── Results ── */}
+      {result && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+          {/* Output */}
+          <Section title="Manufacturing Output">
+            <table>
+              <thead><tr><th>Item</th><th>Quantity</th><th>Unit Price</th><th>Gross Sell</th><th>Net Sell</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td style={{ color: 'var(--accent)' }}>{result.output.name}</td>
+                  <td>{result.output.quantity.toLocaleString()}</td>
+                  <td>{fmtIsk(result.output.unit_price)}</td>
+                  <td>{fmtIsk(result.output.gross_sell)}</td>
+                  <td style={{ color: '#4caf7d' }}>{fmtIsk(result.output.net_sell)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </Section>
+
+          {/* Materials */}
+          <Section title="Input Materials">
+            <table>
+              <thead>
+                <tr><th>Item</th><th>Quantity</th><th>Waste (ME)</th><th>Unit Cost</th><th>Gross Cost</th><th>Net Cost</th></tr>
+              </thead>
+              <tbody>
+                {result.materials.map(m => (
+                  <tr key={m.type_id}>
+                    <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{m.name}</td>
+                    <td>{m.adj_qty.toLocaleString()}</td>
+                    <td style={{ color: m.saved > 0 ? '#4caf7d' : 'var(--text)' }}>
+                      {m.saved > 0 ? `-${m.saved.toLocaleString()}` : '0'}
+                    </td>
+                    <td>{fmtIsk(m.unit_cost)}</td>
+                    <td>{fmtIsk(m.gross_cost)}</td>
+                    <td style={{ color: 'var(--text-bright)' }}>{fmtIsk(m.net_cost)}</td>
+                  </tr>
+                ))}
+                <tr style={{ background: 'var(--surface2)' }}>
+                  <td colSpan={4} style={{ textAlign: 'right', color: 'var(--text)', fontWeight: 500 }}>Total Materials Cost</td>
+                  <td colSpan={2} style={{ color: 'var(--accent)', fontWeight: 600 }}>{fmtIsk(result.materials_total_gross)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </Section>
+
+          {/* Job Installation Cost */}
+          <Section title="Job Installation Cost">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, padding: 4 }}>
+              <IskStat label="Est. Item Value" value={result.job_cost.estimated_item_value} />
+              <PctStat label="System Cost Index" value={result.job_cost.system_cost_index_pct} />
+              <IskStat label="System Cost" value={result.job_cost.system_cost} />
+              <IskStat label="Structure Bonus" value={-result.job_cost.structure_bonus} color="#4caf7d" />
+              <IskStat label="Gross Install Cost" value={result.job_cost.gross_install_cost} />
+              <IskStat label="Facility Tax" value={result.job_cost.facility_tax} color="#e05252" />
+              <IskStat label="SCC Surcharge (4%)" value={result.job_cost.scc_surcharge} color="#e05252" />
+              <IskStat label="Net Install Cost" value={result.job_cost.net_install_cost} color="var(--accent)" bold />
+              <IskStat label="BPC Cost" value={result.bpc_cost} />
+              <div>
+                <div style={statLabel}>Job Time</div>
+                <div style={{ color: 'var(--text-white)', fontWeight: 500 }}>{result.job_time.hours.toFixed(2)} h</div>
+              </div>
+            </div>
+          </Section>
+
+          {/* Results */}
+          <Section title="Results">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, padding: 4 }}>
+              <IskStat label="Total Costs" value={result.results.total_costs} color="var(--text-white)" bold />
+              <IskStat label="Total Sell" value={result.results.total_sell} color="#4caf7d" bold />
+              <IskStat label="Profit" value={profit} color={profit >= 0 ? '#4caf7d' : '#e05252'} bold />
+              <div>
+                <div style={statLabel}>Margin</div>
+                <div style={{
+                  fontWeight: 700, fontSize: 20,
+                  color: margin >= 0 ? '#4caf7d' : '#e05252',
+                  background: margin >= 0 ? '#0e2a1a' : '#2a0e0e',
+                  padding: '4px 10px', borderRadius: 4, display: 'inline-block',
+                }}>
+                  {margin.toFixed(2)}%
+                </div>
+              </div>
+            </div>
+          </Section>
+        </div>
+      )}
+
+      {/* ── Save Job Form ── */}
+      {saveOpen && result && (
+        <div className="card">
+          <h3 style={{ marginBottom: 16, fontSize: 14 }}>Save as PAK Job</h3>
+          {saved && <div style={{ color: '#4caf7d', marginBottom: 10 }}>✓ Job saved!</div>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+            <div>
+              <CLabel>Project</CLabel>
+              <select value={jobForm.project_id} onChange={setJ('project_id')}>
+                <option value="">No project</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <CLabel>Status</CLabel>
+              <select value={jobForm.status} onChange={setJ('status')}>
+                {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <CLabel>Target</CLabel>
+              <select value={jobForm.target} onChange={setJ('target')}>
+                <option value="">—</option>
+                {['Reactions','Refueling','Sell','Internal','Other'].map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <CInput label="Place / System" value={jobForm.place} onChange={setJ('place')} placeholder="RYC-19" />
+            <CInput label="PAKs" type="number" value={jobForm.paks} onChange={setJ('paks')} />
+            <CInput label="Units per PAK" type="number" value={jobForm.units_per_pak} onChange={setJ('units_per_pak')} />
+            <CInput label="Pack Tier" value={jobForm.pack_tier} onChange={setJ('pack_tier')} placeholder="F" />
+            <CInput label="PAK Reward (ISK)" type="number" value={jobForm.pak_reward} onChange={setJ('pak_reward')} />
+            <CInput label="Initial Contract (ISK)" type="number" value={jobForm.initial_contract_price} onChange={setJ('initial_contract_price')} />
+            <CInput label="Return Contract (ISK)" type="number" value={jobForm.return_contract_price} onChange={setJ('return_contract_price')} />
+            <CInput label="Jita SELL" type="number" value={jobForm.jita_sell} onChange={setJ('jita_sell')} />
+            <CInput label="Jita BUY" type="number" value={jobForm.jita_buy} onChange={setJ('jita_buy')} />
+            <CInput label="C-J SELL" type="number" value={jobForm.cj_sell} onChange={setJ('cj_sell')} />
+            <CInput label="C-J BUY" type="number" value={jobForm.cj_buy} onChange={setJ('cj_buy')} />
+            <CInput label="Code" value={jobForm.code} onChange={setJ('code')} placeholder="gud63" />
+            <div style={{ gridColumn: '1 / -1' }}>
+              <CLabel>Contract Code</CLabel>
+              <input value={jobForm.contract_code} onChange={setJ('contract_code')} placeholder="gud63 ASCEE Tier F: 180.000.000 @RYC-19" />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <CLabel>Note</CLabel>
+              <textarea value={jobForm.note} onChange={setJ('note')} rows={2} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost" onClick={() => setSaveOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveJob} disabled={saveLoading}>
+              {saveLoading ? 'Saving…' : '💾 Save Job'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ═══════════════════════════ PAK JOBS TABLE ═══════════════════════════ */
+
+function PakJobsTab() {
+  const [jobs, setJobs]         = useState([])
+  const [projects, setProjects] = useState([])
+  const [filter, setFilter]     = useState({ project_id: '', status: '' })
+  const [expand, setExpand]     = useState(null)
+
+  async function load() {
+    const params = new URLSearchParams()
+    if (filter.project_id) params.set('project_id', filter.project_id)
+    if (filter.status)     params.set('job_status', filter.status)
+    try { setJobs(await get(`/manufacturing/jobs?${params}`)) } catch {}
+  }
+
+  useEffect(() => {
+    get('/organisations').then(async orgs => {
+      const all = []
+      for (const o of orgs) {
+        try { const ps = await get(`/projects?org_id=${o.id}`); all.push(...ps) } catch {}
+      }
+      setProjects(all)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => { load() }, [filter])
+
+  async function updateStatus(id, status) {
+    try { await patch(`/manufacturing/jobs/${id}`, { status }); load() } catch {}
+  }
+
+  async function remove(id) {
+    if (!confirm('Delete PAK job?')) return
+    try { await del(`/manufacturing/jobs/${id}`); load() } catch {}
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 200 }}>
+          <option value="">All projects</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))} style={{ width: 160 }}>
+          <option value="">All statuses</option>
+          {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <button className="btn btn-ghost btn-sm" onClick={load}>Refresh</button>
+      </div>
+
+      {jobs.length === 0
+        ? <div className="empty-state">No production jobs yet — use Calculator tab to create one</div>
+        : (
+          <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Date</th>
+                  <th>Place</th>
+                  <th>Product</th>
+                  <th>PAKs</th>
+                  <th>Amount</th>
+                  <th>Unit Price</th>
+                  <th>Target</th>
+                  <th>Status</th>
+                  <th>Released</th>
+                  <th>Note</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map(j => {
+                  const units = j.paks && j.units_per_pak ? j.paks * j.units_per_pak : (j.calc_snapshot?.output?.quantity ?? '—')
+                  return [
+                    <tr key={j.id} style={{ cursor: 'pointer' }} onClick={() => setExpand(expand === j.id ? null : j.id)}>
+                      <td style={{ color: 'var(--text)' }}>{j.id}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.date_planned ? new Date(j.date_planned).toLocaleDateString() : '—'}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.place || '—'}</td>
+                      <td style={{ color: 'var(--accent)', whiteSpace: 'nowrap' }}>{j.product_name}</td>
+                      <td style={{ color: 'var(--text-white)' }}>{j.paks ?? '—'}</td>
+                      <td>{typeof units === 'number' ? units.toLocaleString() : units}</td>
+                      <td style={{ color: 'var(--text)' }}>{j.sell_price ? fmtIsk(j.sell_price) : '—'}</td>
+                      <td style={{ fontSize: 12 }}>{j.target || '—'}</td>
+                      <td>
+                        <select
+                          value={j.status}
+                          onClick={e => e.stopPropagation()}
+                          onChange={e => updateStatus(j.id, e.target.value)}
+                          style={{ width: 110, color: STATUS_COLOR[j.status] || 'var(--text)', background: 'var(--surface)', border: '1px solid var(--border)', padding: '3px 6px', fontSize: 12 }}
+                        >
+                          {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s =>
+                            <option key={s} value={s}>{s}</option>
+                          )}
+                        </select>
+                      </td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.date_released ? new Date(j.date_released).toLocaleDateString() : '—'}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.note || '—'}</td>
+                      <td><button className="btn btn-danger btn-sm" onClick={e => { e.stopPropagation(); remove(j.id) }}>✕</button></td>
+                    </tr>,
+                    expand === j.id && j.calc_snapshot && (
+                      <tr key={`exp-${j.id}`}>
+                        <td colSpan={12} style={{ background: 'var(--surface2)', padding: 0 }}>
+                          <PakCard job={j} />
+                        </td>
+                      </tr>
+                    )
+                  ]
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      }
+    </div>
+  )
+}
+
+function PakCard({ job }) {
+  const s = job.calc_snapshot
+  if (!s) return null
+  const r = s.results
+  const j = s.job_cost
+  const roi = job.pak_reward && r.total_costs
+    ? ((job.pak_reward / (r.total_costs)) * 100).toFixed(2)
+    : null
+
+  return (
+    <div style={{ padding: 20, display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 20 }}>
+      <CardSection title="Info">
+        <Row label="Module"  value={job.product_name} />
+        <Row label="Station" value={job.place} />
+        <Row label="Pack Tier" value={job.pack_tier} />
+        <Row label="PAKs" value={job.paks} />
+        <Row label="Units/PAK" value={job.units_per_pak} />
+      </CardSection>
+      <CardSection title="Inputs">
+        <Row label="Job time" value={s.job_time ? s.job_time.hours.toFixed(2) + ' h' : '—'} />
+        <Row label="Material cost" value={fmtIsk(r.total_material_cost)} />
+        <Row label="BPC cost" value={fmtIsk(s.bpc_cost)} />
+        <Row label="Install cost" value={fmtIsk(r.total_install_cost)} />
+        <Row label="TOTAL INPUT" value={fmtIsk(r.total_costs)} accent />
+      </CardSection>
+      <CardSection title="Reward">
+        <Row label="Job cost (install)" value={fmtIsk(j.net_install_cost)} />
+        <Row label="PAK reward" value={job.pak_reward ? fmtIsk(job.pak_reward) : '—'} />
+        <Row label="Reward/hour" value={job.pak_reward && s.job_time?.hours ? fmtIsk(job.pak_reward / s.job_time.hours) : '—'} />
+      </CardSection>
+      {roi && (
+        <CardSection title="Indicators">
+          <Row label="ROI" value={roi + '%'} />
+        </CardSection>
+      )}
+      <CardSection title="PAK Prices">
+        <Row label="Initial contract" value={job.initial_contract_price ? fmtIsk(job.initial_contract_price) : '—'} />
+        <Row label="Return contract" value={job.return_contract_price ? fmtIsk(job.return_contract_price) : '—'} />
+        <Row label="Unit cost" value={s.output ? fmtIsk(r.total_costs / s.output.quantity) : '—'} />
+      </CardSection>
+      <CardSection title="Prices">
+        <Row label="Jita SELL" value={job.jita_sell ? fmtIsk(job.jita_sell) : '—'} />
+        <Row label="Jita BUY"  value={job.jita_buy  ? fmtIsk(job.jita_buy)  : '—'} />
+        <Row label="C-J SELL"  value={job.cj_sell   ? fmtIsk(job.cj_sell)   : '—'} />
+        <Row label="C-J BUY"   value={job.cj_buy    ? fmtIsk(job.cj_buy)    : '—'} />
+      </CardSection>
+      {(job.code || job.contract_code) && (
+        <CardSection title="Codes" style={{ gridColumn: '1 / -1' }}>
+          <Row label="CODE" value={job.code} />
+          <Row label="CONTRACT CODE" value={job.contract_code} mono />
+        </CardSection>
+      )}
+    </div>
+  )
+}
+
+/* ═══════════════════════════ INVENTORY ANALYSIS ═══════════════════════════ */
+
+function InventoryAnalysisTab() {
+  const [method, setMethod]     = useState('FIFO')
+  const [projectId, setProjectId] = useState('')
+  const [projects, setProjects] = useState([])
+  const [data, setData]         = useState(null)
+  const [loading, setLoading]   = useState(false)
+
+  useEffect(() => {
+    get('/organisations').then(async orgs => {
+      const all = []
+      for (const o of orgs) {
+        try { const ps = await get(`/projects?org_id=${o.id}`); all.push(...ps) } catch {}
+      }
+      setProjects(all)
+    }).catch(() => {})
+  }, [])
+
+  async function analyze() {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ method })
+      if (projectId) params.set('project_id', projectId)
+      const res = await get(`/manufacturing/inventory-analysis?${params}`)
+      setData(res)
+    } catch {}
+    finally { setLoading(false) }
+  }
+
+  const totalValue = data?.items?.reduce((s, i) => s + i.total_value_isk, 0) ?? 0
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {['FIFO','LIFO'].map(m => (
+            <button
+              key={m} className={`btn ${method === m ? 'btn-primary' : 'btn-ghost'} btn-sm`}
+              onClick={() => setMethod(m)}
+            >{m}</button>
+          ))}
+        </div>
+        <select value={projectId} onChange={e => setProjectId(e.target.value)} style={{ width: 200 }}>
+          <option value="">All inventory</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <button className="btn btn-primary btn-sm" onClick={analyze} disabled={loading}>
+          {loading ? 'Analyzing…' : '📊 Analyze'}
+        </button>
+      </div>
+
+      {data && (
+        <>
+          <div style={{ display: 'flex', gap: 20, marginBottom: 14 }}>
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 16px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text)' }}>Method</div>
+              <div style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 16 }}>{data.method}</div>
+            </div>
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 16px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text)' }}>Total inventory value</div>
+              <div style={{ color: 'var(--text-white)', fontWeight: 500 }}>{fmtIsk(totalValue)}</div>
+            </div>
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 16px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text)' }}>Unique items</div>
+              <div style={{ color: 'var(--text-white)', fontWeight: 500 }}>{data.items.length}</div>
+            </div>
+          </div>
+
+          <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Total Qty</th>
+                  <th>Lots</th>
+                  <th>{data.method} Avg Cost / unit</th>
+                  <th>Total Value</th>
+                  <th>% of total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...data.items]
+                  .sort((a, b) => b.total_value_isk - a.total_value_isk)
+                  .map(item => (
+                    <tr key={item.key}>
+                      <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{item.name}</td>
+                      <td>{item.total_qty.toLocaleString()}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{item.lots}</td>
+                      <td style={{ color: 'var(--accent)' }}>
+                        {item.priced_lots > 0 ? fmtIsk(item.avg_cost_isk) : <span style={{ color: 'var(--text)' }}>no price</span>}
+                      </td>
+                      <td style={{ color: item.total_value_isk > 0 ? 'var(--text-white)' : 'var(--text)' }}>
+                        {item.total_value_isk > 0 ? fmtIsk(item.total_value_isk) : '—'}
+                      </td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>
+                        {totalValue > 0 ? (item.total_value_isk / totalValue * 100).toFixed(1) + '%' : '—'}
+                      </td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      {!data && <div className="empty-state">Select method and click Analyze</div>}
+    </div>
+  )
+}
+
+/* ═══════════════════════════ UI HELPERS ═══════════════════════════ */
+
+function Section({ title, children }) {
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+      <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600, color: 'var(--accent)', letterSpacing: 1 }}>
+        {title.toUpperCase()}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function CardSection({ title, children, style }) {
+  return (
+    <div style={style}>
+      <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, letterSpacing: 1, marginBottom: 8, borderBottom: '1px solid var(--border)', paddingBottom: 4 }}>{title}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{children}</div>
+    </div>
+  )
+}
+
+function Row({ label, value, accent, mono }) {
+  if (value == null || value === '') return null
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+      <span style={{ color: 'var(--text)' }}>{label}</span>
+      <span style={{ color: accent ? 'var(--accent)' : 'var(--text-white)', fontFamily: mono ? 'monospace' : undefined, textAlign: 'right', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</span>
+    </div>
+  )
+}
+
+function IskStat({ label, value, color, bold }) {
+  return (
+    <div>
+      <div style={statLabel}>{label}</div>
+      <div style={{ color: color || 'var(--text-white)', fontWeight: bold ? 600 : 400 }}>{fmtIsk(value)}</div>
+    </div>
+  )
+}
+
+function PctStat({ label, value }) {
+  return (
+    <div>
+      <div style={statLabel}>{label}</div>
+      <div style={{ color: 'var(--text-white)' }}>{value.toFixed(2)}%</div>
+    </div>
+  )
+}
+
+function NumField({ label, value, onChange, min, max, step = 1, placeholder }) {
+  return (
+    <div>
+      <CLabel>{label}</CLabel>
+      <input type="number" value={value} onChange={onChange} min={min} max={max} step={step} placeholder={placeholder} />
+    </div>
+  )
+}
+
+function CLabel({ children }) {
+  return <label style={{ display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 5 }}>{children}</label>
+}
+
+function CInput({ label, value, onChange, type = 'text', placeholder }) {
+  return (
+    <div>
+      <CLabel>{label}</CLabel>
+      <input type={type} value={value} onChange={onChange} placeholder={placeholder} />
+    </div>
+  )
+}
+
+const statLabel = { fontSize: 11, color: 'var(--text)', marginBottom: 3 }
+
+function fmtIsk(v) {
+  if (v == null || v === '') return '—'
+  const n = Number(v)
+  if (isNaN(n)) return '—'
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + ' B ISK'
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + ' M ISK'
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' ISK'
+}
+
+function fmtTime(seconds) {
+  if (!seconds) return '—'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  return h ? `${h}h ${m}m` : `${m}m`
+}

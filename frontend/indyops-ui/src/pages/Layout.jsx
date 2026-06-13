@@ -2,10 +2,11 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../store/AuthContext'
 
 const NAV = [
-  { to: '/inventory',  label: 'Inventory'      },
-  { to: '/facilities', label: 'Facilities'     },
-  { to: '/projects',   label: 'Projects'       },
-  { to: '/orgs',       label: 'Organisations'  },
+  { to: '/manufacturing', label: 'Manufacturing'  },
+  { to: '/inventory',     label: 'Inventory'      },
+  { to: '/facilities',    label: 'Facilities'     },
+  { to: '/projects',      label: 'Projects'       },
+  { to: '/orgs',          label: 'Organisations'  },
 ]
 
 export default function Layout() {

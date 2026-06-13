@@ -27,3 +27,17 @@ class FacilityType(str, enum.Enum):
     AZBEL   = "Azbel"
     SOTIYO  = "Sotiyo"
     OTHER   = "Other"
+
+class ProductionStatus(str, enum.Enum):
+    PLANNING    = "Planning"
+    PREPARING   = "Preparing"
+    IN_PROGRESS = "In Progress"
+    COMPLETED   = "Completed"
+    CANCELLED   = "Cancelled"
+
+class ProductionTarget(str, enum.Enum):
+    REACTIONS = "Reactions"
+    REFUELING = "Refueling"
+    SELL      = "Sell"
+    INTERNAL  = "Internal"
+    OTHER     = "Other"

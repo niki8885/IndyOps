@@ -8,6 +8,7 @@ import InventoryPage from './pages/InventoryPage'
 import FacilitiesPage from './pages/FacilitiesPage'
 import ProjectsPage from './pages/ProjectsPage'
 import OrgsPage from './pages/OrgsPage'
+import ManufacturingPage from './pages/ManufacturingPage'
 
 export default function App() {
   return (
@@ -18,14 +19,15 @@ export default function App() {
           <Route path="/register" element={<RegisterPage />} />
           <Route element={<PrivateRoute />}>
             <Route element={<Layout />}>
-              <Route index element={<Navigate to="/inventory" replace />} />
-              <Route path="/inventory"  element={<InventoryPage />} />
-              <Route path="/facilities" element={<FacilitiesPage />} />
-              <Route path="/projects"  element={<ProjectsPage />} />
-              <Route path="/orgs"      element={<OrgsPage />} />
+              <Route index element={<Navigate to="/manufacturing" replace />} />
+              <Route path="/manufacturing" element={<ManufacturingPage />} />
+              <Route path="/inventory"     element={<InventoryPage />} />
+              <Route path="/facilities"    element={<FacilitiesPage />} />
+              <Route path="/projects"      element={<ProjectsPage />} />
+              <Route path="/orgs"          element={<OrgsPage />} />
             </Route>
           </Route>
-          <Route path="*" element={<Navigate to="/inventory" replace />} />
+          <Route path="*" element={<Navigate to="/manufacturing" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>
