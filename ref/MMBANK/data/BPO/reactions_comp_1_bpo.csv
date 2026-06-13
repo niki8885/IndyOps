@@ -1,0 +1,25 @@
+name,item_id,volume_m3,BPO_name,BPO_id,materials,base_time,quantity
+Caesarium Cadmide,16663,0.2,,46166,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16643, ""quantity"": 100}, {""type_id"": 16647, ""quantity"": 100}]",10800,200
+Carbon Fiber,57453,0.2,,57490,"[{""type_id"": 4246, ""quantity"": 5}, {""type_id"": 16633, ""quantity"": 100}, {""type_id"": 16635, ""quantity"": 100}]",10800,200
+Carbon Polymers,16659,0.2,,46167,"[{""type_id"": 4247, ""quantity"": 5}, {""type_id"": 16633, ""quantity"": 100}, {""type_id"": 16636, ""quantity"": 100}]",10800,200
+Ceramic Powder,16660,0.2,,46168,"[{""type_id"": 4246, ""quantity"": 5}, {""type_id"": 16635, ""quantity"": 100}, {""type_id"": 16636, ""quantity"": 100}]",10800,200
+Crystallite Alloy,16655,0.2,,46169,"[{""type_id"": 4247, ""quantity"": 5}, {""type_id"": 16640, ""quantity"": 100}, {""type_id"": 16643, ""quantity"": 100}]",10800,200
+Dysporite,16668,0.2,,46170,"[{""type_id"": 4247, ""quantity"": 5}, {""type_id"": 16646, ""quantity"": 100}, {""type_id"": 16650, ""quantity"": 100}]",10800,200
+Fernite Alloy,16656,0.2,,46171,"[{""type_id"": 4246, ""quantity"": 5}, {""type_id"": 16639, ""quantity"": 100}, {""type_id"": 16642, ""quantity"": 100}]",10800,200
+Ferrofluid,16669,0.2,,46172,"[{""type_id"": 4246, ""quantity"": 5}, {""type_id"": 16648, ""quantity"": 100}, {""type_id"": 16650, ""quantity"": 100}]",10800,200
+Fluxed Condensates,17769,0.2,,46173,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16651, ""quantity"": 100}, {""type_id"": 16653, ""quantity"": 100}]",10800,200
+Hexite,16665,0.2,,46174,"[{""type_id"": 4051, ""quantity"": 5}, {""type_id"": 16641, ""quantity"": 100}, {""type_id"": 16644, ""quantity"": 100}]",10800,200
+Hyperflurite,16666,0.2,,46175,"[{""type_id"": 4051, ""quantity"": 5}, {""type_id"": 16642, ""quantity"": 100}, {""type_id"": 16652, ""quantity"": 100}]",10800,200
+Neo Mercurite,16667,0.2,,46176,"[{""type_id"": 4247, ""quantity"": 5}, {""type_id"": 16646, ""quantity"": 100}, {""type_id"": 16651, ""quantity"": 100}]",10800,200
+Oxy-Organic Solvents,57454,0.1,,57491,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16633, ""quantity"": 2000}, {""type_id"": 16634, ""quantity"": 2000}]",10800,10
+Platinum Technite,16662,0.2,,46177,"[{""type_id"": 4051, ""quantity"": 5}, {""type_id"": 16644, ""quantity"": 100}, {""type_id"": 16649, ""quantity"": 100}]",10800,200
+Promethium Mercurite,33337,0.2,,46186,"[{""type_id"": 4247, ""quantity"": 5}, {""type_id"": 16646, ""quantity"": 100}, {""type_id"": 16652, ""quantity"": 100}]",10800,200
+Prometium,17960,0.2,,46184,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16643, ""quantity"": 100}, {""type_id"": 16652, ""quantity"": 100}]",10800,200
+Rolled Tungsten Alloy,16657,0.2,,46178,"[{""type_id"": 4051, ""quantity"": 5}, {""type_id"": 16637, ""quantity"": 100}, {""type_id"": 16644, ""quantity"": 100}]",10800,200
+Silicon Diborite,16658,0.2,,46179,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16635, ""quantity"": 100}, {""type_id"": 16636, ""quantity"": 100}]",10800,200
+Solerium,16664,0.2,,46180,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16641, ""quantity"": 100}, {""type_id"": 16647, ""quantity"": 100}]",10800,200
+Sulfuric Acid,16661,0.2,,46181,"[{""type_id"": 4051, ""quantity"": 5}, {""type_id"": 16634, ""quantity"": 100}, {""type_id"": 16635, ""quantity"": 100}]",10800,200
+Thermosetting Polymer,57455,0.2,,57494,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16634, ""quantity"": 100}, {""type_id"": 16636, ""quantity"": 100}]",10800,200
+Thulium Hafnite,33336,0.2,,46185,"[{""type_id"": 4246, ""quantity"": 5}, {""type_id"": 16648, ""quantity"": 100}, {""type_id"": 16653, ""quantity"": 100}]",10800,200
+Titanium Chromide,16654,0.2,,46182,"[{""type_id"": 4312, ""quantity"": 5}, {""type_id"": 16638, ""quantity"": 100}, {""type_id"": 16641, ""quantity"": 100}]",10800,200
+Vanadium Hafnite,17959,0.2,,46183,"[{""type_id"": 4246, ""quantity"": 5}, {""type_id"": 16642, ""quantity"": 100}, {""type_id"": 16648, ""quantity"": 100}]",10800,200

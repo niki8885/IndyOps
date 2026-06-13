@@ -21,3 +21,9 @@ class ProjectsStatus(str, enum.Enum):
     INACTIVE = "INACTIVE"
     PAUSE = "PAUSE"
     DELETED = "DELETED"
+
+class FacilityType(str, enum.Enum):
+    RAITARU = "Raitaru"
+    AZBEL   = "Azbel"
+    SOTIYO  = "Sotiyo"
+    OTHER   = "Other"

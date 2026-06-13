@@ -1,0 +1,2 @@
+name,item_id,volume_m3,BPO_name,BPO_id,materials,base_time,quantity
+Oxygen Fuel Block,4312,5.0,,4313,"[{""type_id"": 9848, ""quantity"": 1}, {""type_id"": 44, ""quantity"": 4}, {""type_id"": 3689, ""quantity"": 4}, {""type_id"": 9832, ""quantity"": 9}, {""type_id"": 16275, ""quantity"": 20}, {""type_id"": 3683, ""quantity"": 22}, {""type_id"": 16272, ""quantity"": 170}, {""type_id"": 16273, ""quantity"": 350}, {""type_id"": 17887, ""quantity"": 450}]",900,40

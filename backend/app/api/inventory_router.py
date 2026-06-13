@@ -89,6 +89,35 @@ class BulkParseResult(BaseModel):
     items: List[InventoryOut]
 
 
+class PreviewItem(BaseModel):
+    name: str
+    quantity: int
+    eve_type_id: Optional[int]
+    volume: Optional[float]
+    volume_total: Optional[float]
+    warning: Optional[str]
+
+
+class PreviewResult(BaseModel):
+    items: List[PreviewItem]
+    warnings: List[str]
+
+
+class BatchItemCreate(BaseModel):
+    eve_type_id: Optional[int] = None
+    name: str
+    quantity: int
+    volume: Optional[float] = None
+    price: Optional[float] = None
+    place: Optional[str] = None
+    note: Optional[str] = None
+    project_id: Optional[int] = None
+
+
+class BatchCreate(BaseModel):
+    items: List[BatchItemCreate]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -147,6 +176,68 @@ def _check_project(db: Session, project_id: int, user: UserDB) -> Projects:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.post("/preview", response_model=PreviewResult)
+async def preview_bulk(
+    body: BulkParseRequest,
+    current_user: UserDB = Depends(get_current_user),
+):
+    """Parse tab-separated text and resolve EVE types — does NOT save anything."""
+    rows = _parse_bulk_text(body.text)
+    eve_db = EveSessionLocal()
+    items: list[PreviewItem] = []
+    warnings: list[str] = []
+
+    try:
+        for name, qty, row_warnings in rows:
+            warnings.extend(row_warnings)
+            if not name:
+                continue
+            eve_type = _resolve_eve_type(eve_db, name)
+            vol = eve_type.volume if eve_type else None
+            items.append(PreviewItem(
+                name=name,
+                quantity=qty,
+                eve_type_id=eve_type.type_id if eve_type else None,
+                volume=vol,
+                volume_total=round(vol * qty, 4) if vol else None,
+                warning=f"'{name}' not found in SDE" if not eve_type else None,
+            ))
+    finally:
+        eve_db.close()
+
+    return PreviewResult(items=items, warnings=warnings)
+
+
+@router.post("/batch", response_model=List[InventoryOut], status_code=status.HTTP_201_CREATED)
+async def batch_add(
+    body: BatchCreate,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Save multiple inventory items at once (used after preview + user edits)."""
+    created = []
+    for it in body.items:
+        if it.project_id:
+            _check_project(db, it.project_id, current_user)
+        item = InventoryItem(
+            user_id=current_user.id,
+            project_id=it.project_id,
+            eve_type_id=it.eve_type_id,
+            name=it.name,
+            volume=it.volume,
+            quantity=it.quantity,
+            price=it.price,
+            place=it.place,
+            note=it.note,
+        )
+        db.add(item)
+        created.append(item)
+    db.commit()
+    for item in created:
+        db.refresh(item)
+    return created
+
 
 @router.post("", response_model=InventoryOut, status_code=status.HTTP_201_CREATED)
 async def add_item(

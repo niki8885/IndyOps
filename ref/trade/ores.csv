@@ -1,0 +1,29 @@
+Ore Type,m3,Compressed m3,Trit,Pye,Mex,Iso,Nocx,Zyd,Mega,Morph,Relevant Skill,Location,type_id,Type ID
+Veldspar,0.1,0.001,400.0,,,,,,,,Simple,High (All Empire Space)/SovHub,,1230
+Scordite,0.15,0.002,150.0,110.0,,,,,,,Simple,High (All Empire Space),,1228
+Pyroxeres,0.3,0.003,,90.0,30.0,,,,,,Simple,All (Ama/Cal)/Null (Min)/Null Anoms/WH,,1224
+Plagioclase,0.35,0.004,175.0,,70.0,,,,,,Simple,High (Cal/Gal/Min),,18
+Omber,0.6,0.006,,90.0,,75.0,,,,,Coherent,Low (Gal/Min)/Null Anoms/WH,,1227
+Kernite,1.2,0.012,,,60.0,120.0,,,,,Coherent,Low+Null (Ama/Cal/Min)/Null Anoms/WH,,20
+Jaspet,2.0,0.02,,,,150.0,,50.0,,,Coherent,Low (Ama/Gal)/Low Anoms,,1226
+Hemorphite,3.0,0.03,,,,,240.0,90.0,,,Coherent,Low (Ama/Gal)/Low Anoms,,1231
+Hedbergite,3.0,0.03,,,450.0,,,120.0,,,Coherent,Low (Cal/Min)/Low Anoms,,21
+Dark Ochre,8.0,0.08,,,,1360.0,1200.0,320.0,,,Variegated,0.5 Space/Low&Null Anoms,,1232
+Gneiss,5.0,0.05,,,,2000.0,1500.0,800.0,,,Variegated,Low&Null Anoms/WH,,1229
+Crokite,16.0,0.16,,,800.0,2000.0,,800.0,,,Variegated,0.5 Space/Low&Null Anoms,,1225
+Bistot,16.0,0.16,,,3200.0,1200.0,,,160.0,,Complex,Null (All NullSec Space)/Null Anoms/WH,,1223
+Arkonor,16.0,0.16,,,3200.0,1200.0,,,,120.0,Complex,NullSec (Arm/Gal/Min)/Null Anoms/WH,,22
+Mercoxit,40.0,0.4,,,,,,,,140.0,Mercoxit,All NullSec Space/Null Anoms,,11396
+Spodumain,16.0,0.16,48000.0,,,1000.0,160.0,80.0,40.0,,Complex,Pochven,,19
+Bezdnacine,16.0,,40000.0,,,4800.0,,,128.0,,Abyssal,Pochven,,52316
+Rakovene,16.0,,40000.0,,,3200.0,,200.0,,,Abyssal,Pochven,,52315
+Talassonite,16.0,,40000.0,,,,960.0,,32.0,,Abyssal,Pochven,,52306
+Eifyrium,16.0,0.16,,,,,,,266.0,,Complex,A0 Stars/0.5 Space,,74529
+Ytirium,0.6,0.006,,,,,,240.0,,,Coherent,A0 Stars/0.5 Space,,74525
+Ducinium,16.0,0.16,,,,,,,170.0,,Complex,A0 Stars/0.5 Space,,74533
+Mordunium,0.1,0.001,,,97.0,,,,,,Simple,Sov-Hub/A0,,74521
+Kylixium,1.2,0.012,300.0,200.0,550.0,,,,,,Variegated,Sov-Hub,,81900
+Griemeer,0.8,0.008,250.0,,80.0,,,,,,Coherent,Sov-Hub,,81975
+Nocxite,4.0,0.04,900.0,150.0,,105.0,,,,,Coherent,Sov-Hub,,82016
+Hezorime,5.0,0.05,2000.0,,,120.0,,60.0,,,Complex,Sov-Hub,,82163
+Ueganite,5.0,0.05,800.0,,,,,,40.0,,Complex,Sov-Hub,,82205

@@ -1,0 +1,37 @@
+name,item_id,volume_m3,BPO_name,BPO_id,materials,base_time,quantity
+Antimatter Reactor Unit,11549,1.0,,17338,"[{""type_id"": 16672, ""quantity"": 9}, {""type_id"": 17317, ""quantity"": 2}]",300,1
+EM Pulse Generator,11694,1.0,,17335,"[{""type_id"": 16672, ""quantity"": 22}, {""type_id"": 16680, ""quantity"": 7}, {""type_id"": 16681, ""quantity"": 2}]",150,1
+Fusion Thruster,11532,1.0,,17349,"[{""type_id"": 16672, ""quantity"": 13}, {""type_id"": 16680, ""quantity"": 3}, {""type_id"": 16683, ""quantity"": 1}]",150,1
+Laser Focusing Crystals,11689,1.0,,17348,"[{""type_id"": 16672, ""quantity"": 31}, {""type_id"": 16682, ""quantity"": 1}, {""type_id"": 16679, ""quantity"": 11}]",150,1
+Linear Shield Emitter,11557,1.0,,17359,"[{""type_id"": 16672, ""quantity"": 22}, {""type_id"": 16683, ""quantity"": 1}, {""type_id"": 16678, ""quantity"": 9}]",150,1
+Nanoelectrical Microprocessor,11539,1.0,,17330,"[{""type_id"": 16672, ""quantity"": 17}, {""type_id"": 16680, ""quantity"": 6}, {""type_id"": 33360, ""quantity"": 2}, {""type_id"": 16681, ""quantity"": 2}]",75,1
+Radar Sensor Cluster,11537,1.0,,17336,"[{""type_id"": 16672, ""quantity"": 22}, {""type_id"": 16681, ""quantity"": 1}, {""type_id"": 16682, ""quantity"": 2}]",150,1
+Tesseract Capacitor Unit,11554,1.0,,17334,"[{""type_id"": 16672, ""quantity"": 27}, {""type_id"": 16681, ""quantity"": 1}, {""type_id"": 33360, ""quantity"": 2}, {""type_id"": 16679, ""quantity"": 11}]",150,1
+Tungsten Carbide Armor Plate,11543,1.0,,17350,"[{""type_id"": 16672, ""quantity"": 44}, {""type_id"": 16678, ""quantity"": 11}]",25,1
+Gravimetric Sensor Cluster,11534,1.0,,17340,"[{""type_id"": 16681, ""quantity"": 1}, {""type_id"": 16682, ""quantity"": 2}, {""type_id"": 16671, ""quantity"": 22}]",150,1
+Graviton Pulse Generator,11693,1.0,,17332,"[{""type_id"": 16680, ""quantity"": 7}, {""type_id"": 16681, ""quantity"": 2}, {""type_id"": 16671, ""quantity"": 22}]",150,1
+Graviton Reactor Unit,11550,1.0,,17353,"[{""type_id"": 17317, ""quantity"": 2}, {""type_id"": 16671, ""quantity"": 9}]",300,1
+Magpulse Thruster,11533,1.0,,17356,"[{""type_id"": 16680, ""quantity"": 3}, {""type_id"": 16683, ""quantity"": 1}, {""type_id"": 16671, ""quantity"": 13}]",150,1
+Quantum Microprocessor,11540,1.0,,17351,"[{""type_id"": 16680, ""quantity"": 6}, {""type_id"": 16681, ""quantity"": 2}, {""type_id"": 33362, ""quantity"": 2}, {""type_id"": 16671, ""quantity"": 17}]",75,1
+Scalar Capacitor Unit,11552,1.0,,17327,"[{""type_id"": 16681, ""quantity"": 1}, {""type_id"": 33362, ""quantity"": 2}, {""type_id"": 16679, ""quantity"": 11}, {""type_id"": 16671, ""quantity"": 27}]",150,1
+Superconductor Rails,11690,1.0,,17354,"[{""type_id"": 16682, ""quantity"": 1}, {""type_id"": 16679, ""quantity"": 11}, {""type_id"": 16671, ""quantity"": 31}]",150,1
+Sustained Shield Emitter,11558,1.0,,17352,"[{""type_id"": 16683, ""quantity"": 1}, {""type_id"": 16678, ""quantity"": 9}, {""type_id"": 16671, ""quantity"": 22}]",150,1
+Titanium Diborite Armor Plate,11544,1.0,,17328,"[{""type_id"": 16678, ""quantity"": 11}, {""type_id"": 16671, ""quantity"": 44}]",25,1
+Crystalline Carbonide Armor Plate,11545,1.0,,17323,"[{""type_id"": 16678, ""quantity"": 11}, {""type_id"": 16670, ""quantity"": 44}]",25,1
+Fusion Reactor Unit,11547,1.0,,17331,"[{""type_id"": 17317, ""quantity"": 2}, {""type_id"": 16670, ""quantity"": 9}]",300,1
+Ion Thruster,11531,1.0,,17329,"[{""type_id"": 16680, ""quantity"": 3}, {""type_id"": 16683, ""quantity"": 1}, {""type_id"": 16670, ""quantity"": 13}]",150,1
+Magnetometric Sensor Cluster,11535,1.0,,17345,"[{""type_id"": 16681, ""quantity"": 1}, {""type_id"": 16682, ""quantity"": 2}, {""type_id"": 16670, ""quantity"": 22}]",150,1
+Oscillator Capacitor Unit,11553,1.0,,17337,"[{""type_id"": 16681, ""quantity"": 1}, {""type_id"": 33359, ""quantity"": 2}, {""type_id"": 16670, ""quantity"": 27}, {""type_id"": 16679, ""quantity"": 11}]",150,1
+Particle Accelerator Unit,11688,1.0,,17344,"[{""type_id"": 16682, ""quantity"": 1}, {""type_id"": 16670, ""quantity"": 31}, {""type_id"": 16679, ""quantity"": 11}]",150,1
+Photon Microprocessor,11541,1.0,,17357,"[{""type_id"": 16680, ""quantity"": 6}, {""type_id"": 16681, ""quantity"": 2}, {""type_id"": 16670, ""quantity"": 17}, {""type_id"": 33359, ""quantity"": 2}]",75,1
+Plasma Pulse Generator,11695,1.0,,17339,"[{""type_id"": 16680, ""quantity"": 7}, {""type_id"": 16681, ""quantity"": 2}, {""type_id"": 16670, ""quantity"": 22}]",150,1
+Pulse Shield Emitter,11556,1.0,,17341,"[{""type_id"": 16683, ""quantity"": 1}, {""type_id"": 16678, ""quantity"": 9}, {""type_id"": 16670, ""quantity"": 22}]",150,1
+Deflection Shield Emitter,11555,1.0,,17346,"[{""type_id"": 16673, ""quantity"": 22}, {""type_id"": 16683, ""quantity"": 1}, {""type_id"": 16678, ""quantity"": 9}]",150,1
+Electrolytic Capacitor Unit,11551,1.0,,17347,"[{""type_id"": 16673, ""quantity"": 27}, {""type_id"": 16681, ""quantity"": 1}, {""type_id"": 33361, ""quantity"": 2}, {""type_id"": 16679, ""quantity"": 11}]",150,1
+Fernite Carbide Composite Armor Plate,11542,1.0,,17355,"[{""type_id"": 16673, ""quantity"": 44}, {""type_id"": 16678, ""quantity"": 11}]",25,1
+Ladar Sensor Cluster,11536,1.0,,17333,"[{""type_id"": 16673, ""quantity"": 22}, {""type_id"": 16682, ""quantity"": 2}, {""type_id"": 16681, ""quantity"": 1}]",150,1
+Nanomechanical Microprocessor,11538,1.0,,17325,"[{""type_id"": 16680, ""quantity"": 6}, {""type_id"": 16673, ""quantity"": 17}, {""type_id"": 33361, ""quantity"": 2}, {""type_id"": 16681, ""quantity"": 2}]",75,1
+Nuclear Pulse Generator,11692,1.0,,17326,"[{""type_id"": 16680, ""quantity"": 7}, {""type_id"": 16673, ""quantity"": 22}, {""type_id"": 16681, ""quantity"": 2}]",150,1
+Nuclear Reactor Unit,11548,1.0,,17342,"[{""type_id"": 16673, ""quantity"": 9}, {""type_id"": 17317, ""quantity"": 2}]",300,1
+Plasma Thruster,11530,1.0,,17324,"[{""type_id"": 16680, ""quantity"": 3}, {""type_id"": 16673, ""quantity"": 13}, {""type_id"": 16683, ""quantity"": 1}]",150,1
+Thermonuclear Trigger Unit,11691,1.0,,17322,"[{""type_id"": 16673, ""quantity"": 31}, {""type_id"": 16682, ""quantity"": 1}, {""type_id"": 16679, ""quantity"": 11}]",150,1

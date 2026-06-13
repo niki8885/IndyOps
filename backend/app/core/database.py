@@ -6,7 +6,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-from app.core.schemas import EmployeeType, ProjectsType, ProjectsStatus
+from app.core.schemas import EmployeeType, ProjectsType, ProjectsStatus, FacilityType
 
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
@@ -92,6 +92,36 @@ class Projects(Base):
     organisation = relationship("Organisation", back_populates="projects")
     creator      = relationship("Employee", foreign_keys=[created_by],   back_populates="created_projects")
     supervisor   = relationship("Employee", foreign_keys=[supervised_by], back_populates="supervised_projects")
+
+
+class Facility(Base):
+    """Player-owned manufacturing facilities (Raitaru, Azbel, Sotiyo, etc.)."""
+    __tablename__ = "facilities"
+
+    id                = Column(Integer, primary_key=True, index=True)
+    user_id           = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    name              = Column(String(200), nullable=False)
+    facility_type     = Column(Enum(FacilityType), nullable=False, index=True)
+
+    tax               = Column(Float, nullable=True)   # broker/facility tax %
+    cost_bonus        = Column(Float, nullable=True)   # material/time cost reduction %
+
+    system_name       = Column(String(200), nullable=True, index=True)
+    system_cost_index = Column(Float, nullable=True)   # ESI manufacturing cost index
+
+    # Rigs — stored as (eve_type_id, display name) pairs
+    rig1_type_id      = Column(Integer, nullable=True)
+    rig1_name         = Column(String(200), nullable=True)
+    rig2_type_id      = Column(Integer, nullable=True)
+    rig2_name         = Column(String(200), nullable=True)
+    rig3_type_id      = Column(Integer, nullable=True)
+    rig3_name         = Column(String(200), nullable=True)
+
+    created_at        = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at        = Column(DateTime, nullable=True)
+
+    owner = relationship("UserDB", backref="facilities")
 
 
 class InventoryItem(Base):
