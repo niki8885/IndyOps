@@ -32,7 +32,7 @@ export default function SystemSearch({ value, onChange, placeholder = 'Search sy
 
   function pick(sys) {
     setQuery(sys.solar_system_name)
-    onChange(sys.solar_system_name)
+    onChange(sys.solar_system_name, sys)
     setOpen(false)
     setResults([])
   }

@@ -28,6 +28,8 @@ export default function FacilitiesPage() {
   const [error, setError]           = useState('')
   const [loading, setLoading]       = useState(false)
   const [filter, setFilter]         = useState('')
+  const [sciLoading, setSciLoading] = useState(false)
+  const [sciInfo, setSciInfo]       = useState('')
 
   async function load() {
     try {
@@ -43,6 +45,7 @@ export default function FacilitiesPage() {
     setEditId(null)
     setForm(EMPTY_FORM)
     setError('')
+    setSciInfo('')
     setShowForm(true)
   }
 
@@ -60,6 +63,7 @@ export default function FacilitiesPage() {
       rig3: { type_id: f.rig3.type_id, name: f.rig3.name },
     })
     setError('')
+    setSciInfo('')
     setShowForm(true)
   }
 
@@ -104,6 +108,31 @@ export default function FacilitiesPage() {
   const set = k => v => setForm(f => ({ ...f, [k]: v }))
   const setInput = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
 
+  async function fetchSci(systemName) {
+    if (!systemName) return
+    setSciLoading(true); setSciInfo('')
+    try {
+      const r = await get(`/eve/industry/cost-index?system_name=${encodeURIComponent(systemName)}`)
+      if (r.manufacturing != null) {
+        setForm(f => ({ ...f, system_cost_index: r.manufacturing }))
+        setSciInfo(`✓ ${(r.manufacturing * 100).toFixed(2)}% manufacturing${r.reaction != null ? ` · ${(r.reaction * 100).toFixed(2)}% reaction` : ''}`)
+      } else {
+        setSciInfo('No manufacturing index for this system')
+      }
+    } catch (e) {
+      setSciInfo('⚠ ' + e.message)
+    } finally {
+      setSciLoading(false)
+    }
+  }
+
+  // when a system is chosen, store name and auto-fetch its cost index
+  function onSystemChange(name) {
+    setForm(f => ({ ...f, system_name: name }))
+    setSciInfo('')
+    if (name) fetchSci(name)
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
@@ -144,18 +173,26 @@ export default function FacilitiesPage() {
                 <Label>System</Label>
                 <SystemSearch
                   value={form.system_name}
-                  onChange={set('system_name')}
+                  onChange={onSystemChange}
                   placeholder="Jita, Amarr…"
                 />
               </div>
               <div>
-                <Label>System Cost Index <Hint>e.g. 0.042</Hint></Label>
+                <Label>
+                  System Cost Index
+                  {sciLoading ? <Hint>fetching…</Hint> : <Hint>auto from ESI</Hint>}
+                </Label>
                 <input
                   type="number" step="0.0001" min="0" max="1"
                   value={form.system_cost_index}
                   onChange={setInput('system_cost_index')}
                   placeholder="0.042"
                 />
+                {sciInfo && (
+                  <div style={{ fontSize: 11, marginTop: 4, color: sciInfo.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>
+                    {sciInfo}
+                  </div>
+                )}
               </div>
             </div>
 

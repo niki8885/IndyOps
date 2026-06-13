@@ -1,4 +1,5 @@
 import asyncio
+import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
@@ -96,6 +97,74 @@ async def search_types(
         .limit(limit)
         .all()
     )
+
+
+# ── Industry System Cost Index via ESI ───────────────────────────────
+
+_ESI_SYSTEMS_URL = "https://esi.evetech.net/latest/industry/systems/?datasource=tranquility"
+_ESI_COST_CACHE: dict = {"data": None, "ts": 0.0}
+_ESI_COST_TTL = 3600  # cache the whole table for 1h (it updates ~daily)
+
+
+def _fetch_esi_cost_indices() -> dict:
+    """Fetch + cache the full ESI industry cost-index table, keyed by solar_system_id."""
+    now = _time.time()
+    if _ESI_COST_CACHE["data"] is not None and now - _ESI_COST_CACHE["ts"] < _ESI_COST_TTL:
+        return _ESI_COST_CACHE["data"]
+
+    resp = _requests.get(_ESI_SYSTEMS_URL, timeout=30, headers={"User-Agent": "IndyOps/1.0"})
+    resp.raise_for_status()
+
+    table = {}
+    for entry in resp.json():
+        table[entry["solar_system_id"]] = {
+            ci["activity"]: ci["cost_index"] for ci in entry.get("cost_indices", [])
+        }
+    _ESI_COST_CACHE["data"] = table
+    _ESI_COST_CACHE["ts"] = now
+    return table
+
+
+@router.get("/industry/cost-index")
+async def get_cost_index(
+    system_name: Optional[str] = None,
+    solar_system_id: Optional[int] = None,
+    eve_db: Session = Depends(_get_eve_db),
+):
+    """
+    Live industry cost indices for a solar system, straight from ESI.
+    Returns fractions (e.g. manufacturing 0.0421 = 4.21%). `manufacturing`
+    is what the facility System Cost Index field wants.
+    """
+    if solar_system_id is None:
+        if not system_name:
+            raise HTTPException(400, "Provide system_name or solar_system_id")
+        sys = (
+            eve_db.query(EveSolarSystem)
+            .filter(EveSolarSystem.solar_system_name.ilike(system_name.strip()))
+            .first()
+        )
+        if not sys:
+            raise HTTPException(404, f"System '{system_name}' not found in SDE")
+        solar_system_id = sys.solar_system_id
+
+    try:
+        indices = _fetch_esi_cost_indices().get(solar_system_id)
+    except Exception as exc:
+        raise HTTPException(502, f"ESI request failed: {exc}")
+
+    if not indices:
+        raise HTTPException(404, "No cost-index data for this system (no industry activity there)")
+
+    return {
+        "solar_system_id": solar_system_id,
+        "manufacturing":                   indices.get("manufacturing"),
+        "reaction":                        indices.get("reaction"),
+        "copying":                         indices.get("copying"),
+        "invention":                       indices.get("invention"),
+        "researching_time_efficiency":     indices.get("researching_time_efficiency"),
+        "researching_material_efficiency": indices.get("researching_material_efficiency"),
+    }
 
 
 # ── C-J prices via appraise.gnf.lt ───────────────────────────────────
