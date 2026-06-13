@@ -120,6 +120,20 @@ def _bool(val: str | None) -> bool | None:
     return val.strip().lower() in ("1", "true", "t", "yes")
 
 
+def _dedup(rows: list[dict], *keys: str) -> list[dict]:
+    """
+    Drop rows with duplicate values across `keys`, keeping the last occurrence.
+
+    Postgres ``INSERT ... ON CONFLICT DO UPDATE`` raises a CardinalityViolation
+    if the same constrained key appears twice in one statement, and some
+    fuzzwork tables (e.g. industryActivitySkills) contain exact duplicates.
+    """
+    seen: dict[tuple, dict] = {}
+    for r in rows:
+        seen[tuple(r.get(k) for k in keys)] = r
+    return list(seen.values())
+
+
 # ---------------------------------------------------------------------------
 # Table updaters  (each returns row count upserted)
 # ---------------------------------------------------------------------------
@@ -266,7 +280,7 @@ def update_blueprints(db) -> int:
 
 
 def update_activity_times(db) -> int:
-    raw = _download_csv("industryActivity")
+    raw = _dedup(_download_csv("industryActivity"), "typeID", "activityID")
 
     def build(batch):
         values = [
@@ -287,7 +301,7 @@ def update_activity_times(db) -> int:
 
 
 def update_activity_materials(db) -> int:
-    raw = _download_csv("industryActivityMaterials")
+    raw = _dedup(_download_csv("industryActivityMaterials"), "typeID", "activityID", "materialTypeID")
 
     def build(batch):
         values = [
@@ -309,7 +323,7 @@ def update_activity_materials(db) -> int:
 
 
 def update_activity_products(db) -> int:
-    raw = _download_csv("industryActivityProducts")
+    raw = _dedup(_download_csv("industryActivityProducts"), "typeID", "activityID", "productTypeID")
 
     def build(batch):
         values = [
@@ -332,7 +346,7 @@ def update_activity_products(db) -> int:
 
 
 def update_activity_skills(db) -> int:
-    raw = _download_csv("industryActivitySkills")
+    raw = _dedup(_download_csv("industryActivitySkills"), "typeID", "activityID", "skillID")
 
     def build(batch):
         values = [
