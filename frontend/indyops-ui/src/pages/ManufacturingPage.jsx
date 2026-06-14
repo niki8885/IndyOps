@@ -101,6 +101,9 @@ function CalculatorTab() {
   const [availability, setAvailability]   = useState(null)   // { type_id: {required, available, shortfall, warehouse_unit_price} }
   const [availLoading, setAvailLoading]   = useState(false)
 
+  // facility rig bonuses (dogma)
+  const [rigBonus, setRigBonus] = useState(null)   // { total_me_pct, total_te_pct, total_cost_pct, band, rigs }
+
   useEffect(() => {
     get('/facilities').then(setFacilities).catch(() => {})
     get('/organisations').then(async orgs => {
@@ -142,6 +145,17 @@ function CalculatorTab() {
     }))
   }, [params.facility_id, facilities])
 
+  // fetch dogma rig bonuses when facility + product chosen
+  useEffect(() => {
+    if (!params.facility_id || !product?.type_id) { setRigBonus(null); return }
+    get(`/manufacturing/facility-bonuses?facility_id=${params.facility_id}&product_type_id=${product.type_id}`)
+      .then(b => {
+        setRigBonus(b)
+        if (b.total_cost_pct > 0) setParams(p => ({ ...p, structure_bonus_pct: b.total_cost_pct }))
+      })
+      .catch(() => setRigBonus(null))
+  }, [params.facility_id, product?.type_id])
+
   async function calculate() {
     if (!product?.type_id || !bpInfo) return
     setCalcLoading(true); setError('')
@@ -158,6 +172,8 @@ function CalculatorTab() {
         system_cost_index: Number(params.system_cost_index) / 100,
         facility_tax_pct: Number(params.facility_tax_pct),
         structure_bonus_pct: Number(params.structure_bonus_pct),
+        material_bonus_pct: rigBonus?.total_me_pct || 0,
+        time_bonus_pct: rigBonus?.total_te_pct || 0,
         estimated_item_value: params.estimated_item_value !== '' ? Number(params.estimated_item_value) : null,
         material_prices: Object.entries(matPrices)
           .filter(([, v]) => v !== '')
@@ -197,7 +213,8 @@ function CalculatorTab() {
   }
 
   function adjQtyOf(m) {
-    return Math.max(Number(params.runs), Math.ceil(m.base_qty * params.runs * (1 - params.me / 100)))
+    const rigMe = rigBonus?.total_me_pct || 0
+    return Math.max(Number(params.runs), Math.ceil(m.base_qty * params.runs * (1 - params.me / 100) * (1 - rigMe / 100)))
   }
 
   async function checkWarehouse() {
@@ -354,6 +371,41 @@ function CalculatorTab() {
           <NumField label="Est. Item Value (opt.)" value={params.estimated_item_value} onChange={setP('estimated_item_value')} step={1000000} placeholder="auto" />
         </div>
       </div>
+
+      {/* ── Rig bonuses (dogma) ── */}
+      {rigBonus && rigBonus.rigs.length > 0 && (
+        <div className="card" style={{ padding: '12px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: rigBonus.rigs.length ? 10 : 0 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Facility rig bonuses</span>
+            <span style={{ fontSize: 11, color: 'var(--text)' }}>
+              security band <b style={{ color: 'var(--accent)' }}>{rigBonus.band}</b>
+              {rigBonus.product_group ? ` · product: ${rigBonus.product_group}` : ''}
+            </span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
+              <BonusStat label="ME" pct={rigBonus.total_me_pct} />
+              <BonusStat label="TE" pct={rigBonus.total_te_pct} />
+              <BonusStat label="Cost" pct={rigBonus.total_cost_pct} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {rigBonus.rigs.map((r, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                <span style={{ color: r.applies ? '#4caf7d' : 'var(--border2)' }}>{r.applies ? '✓' : '✕'}</span>
+                <span style={{ color: r.applies ? 'var(--text-white)' : 'var(--text)' }}>{r.name}</span>
+                {r.applies
+                  ? <span style={{ color: 'var(--text)', fontSize: 11 }}>−{r.me_pct}% ME · −{r.te_pct}% TE{r.cost_pct ? ` · −${r.cost_pct}% cost` : ''}</span>
+                  : <span style={{ color: 'var(--border2)', fontSize: 11 }}>{r.reason || 'not applicable to this product'}</span>
+                }
+              </div>
+            ))}
+          </div>
+          {rigBonus.total_me_pct === 0 && rigBonus.total_te_pct === 0 && (
+            <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 8 }}>
+              No rig applies to this product category — ME/TE come from the blueprint only.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Materials ── */}
       {bpInfo && bpInfo.materials.length > 0 && (
@@ -1053,6 +1105,17 @@ function CLabel({ children }) {
 
 function Hint({ children }) {
   return <span style={{ fontWeight: 400, color: 'var(--border2)', marginLeft: 4 }}>{children}</span>
+}
+
+function BonusStat({ label, pct }) {
+  return (
+    <div style={{ textAlign: 'right' }}>
+      <span style={{ fontSize: 11, color: 'var(--text)', marginRight: 6 }}>{label}</span>
+      <span style={{ fontWeight: 600, color: pct > 0 ? '#4caf7d' : 'var(--text)' }}>
+        {pct > 0 ? `−${pct}%` : '—'}
+      </span>
+    </div>
+  )
 }
 
 function PriceSourceRow({ market, setMarket, method, setMethod, onFill, loading, disabled }) {

@@ -12,7 +12,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement
-from app.core.database_eve import EveSessionLocal, EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint
+from app.core.database_eve import (
+    EveSessionLocal, EveType, EveActivityMaterial, EveActivityProduct,
+    EveActivityTime, EveBlueprint, EveRigBonus, EveGroup, EveSolarSystem,
+)
 from app.core.schemas import ProductionStatus, ProductionTarget
 from app.core.security import get_current_user
 
@@ -25,13 +28,13 @@ SCC_SURCHARGE = 0.04   # fixed 4% CCP surcharge on system cost
 # Calculation helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _adj_qty(base_qty: int, runs: int, me: int) -> int:
-    """Material quantity after ME reduction.  Always ≥ runs (1 unit per run min)."""
-    return max(runs, math.ceil(base_qty * runs * (1 - me / 100)))
+def _adj_qty(base_qty: int, runs: int, me: int, extra_pct: float = 0.0) -> int:
+    """Material qty after blueprint ME and structure/rig material bonus. Always ≥ runs."""
+    return max(runs, math.ceil(base_qty * runs * (1 - me / 100) * (1 - extra_pct / 100)))
 
 
-def _adj_time(base_time: int, runs: int, te: int) -> int:
-    return math.ceil(base_time * runs * (1 - te / 100))
+def _adj_time(base_time: int, runs: int, te: int, extra_pct: float = 0.0) -> int:
+    return math.ceil(base_time * runs * (1 - te / 100) * (1 - extra_pct / 100))
 
 
 def _run_calculation(
@@ -49,6 +52,8 @@ def _run_calculation(
     facility_tax_pct: float,
     structure_bonus_pct: float = 0.0,
     estimated_item_value: float = None,
+    material_bonus_pct: float = 0.0,   # rig/structure ME (security-scaled)
+    time_bonus_pct: float = 0.0,       # rig/structure TE
 ) -> dict:
 
     total_output = product_qty_per_run * runs
@@ -58,7 +63,7 @@ def _run_calculation(
     mat_rows = []
     total_mat_cost = 0.0
     for m in materials:
-        adj  = _adj_qty(m["base_qty"], runs, me)
+        adj  = _adj_qty(m["base_qty"], runs, me, material_bonus_pct)
         base = m["base_qty"] * runs
         gross_cost = adj * m["unit_cost"]
         total_mat_cost += gross_cost
@@ -83,7 +88,7 @@ def _run_calculation(
     scc_surcharge     = round(eiv * SCC_SURCHARGE, 2)
     net_install       = round(gross_install + facility_tax_isk + scc_surcharge, 2)
 
-    job_time_s = _adj_time(base_time_per_run, runs, te)
+    job_time_s = _adj_time(base_time_per_run, runs, te, time_bonus_pct)
 
     total_costs = round(total_mat_cost + bpc_cost + net_install, 2)
     profit      = round(net_sell - total_costs, 2)
@@ -208,6 +213,8 @@ class CalcRequest(BaseModel):
     system_cost_index:    float = 0.0    # fraction
     facility_tax_pct:     float = 0.0
     structure_bonus_pct:  float = 0.0
+    material_bonus_pct:   float = 0.0    # rig/structure ME (security-scaled)
+    time_bonus_pct:       float = 0.0    # rig/structure TE
     estimated_item_value: Optional[float] = None
     material_prices:      List[MaterialPrice] = []
 
@@ -415,7 +422,111 @@ async def calculate(
         facility_tax_pct=tax,
         structure_bonus_pct=s_bonus,
         estimated_item_value=body.estimated_item_value,
+        material_bonus_pct=body.material_bonus_pct,
+        time_bonus_pct=body.time_bonus_pct,
     )
+
+
+# ─── Facility rig bonuses (dogma-based) ──────────────────────────────────────
+
+_SHIP_CAT, _MODULE_CAT, _CHARGE_CAT, _DRONE_CAT, _FIGHTER_CAT, _STRUCT_CAT = 6, 7, 8, 18, 87, 65
+
+
+def _ship_size(group_name: str) -> Optional[str]:
+    g = (group_name or "").lower()
+    if any(k in g for k in ("frigate", "destroyer", "shuttle", "corvette", "capsule")):
+        return "small"
+    if any(k in g for k in ("cruiser", "battlecruiser")):
+        return "medium"
+    if any(k in g for k in ("battleship", "freighter", "dreadnought", "carrier",
+                            "capital", "titan", "supercarrier", "industrial ship")):
+        return "large"
+    return None
+
+
+def _rig_applies(rig_name: str, cat_id: Optional[int], group_name: str) -> bool:
+    """Best-effort: match an engineering rig to a product by its name + product category."""
+    n = (rig_name or "").lower()
+    gn = (group_name or "").lower()
+    if "equipment" in n:        return cat_id == _MODULE_CAT
+    if "ammunition" in n:       return cat_id == _CHARGE_CAT
+    if "drone" in n or "fighter" in n:  return cat_id in (_DRONE_CAT, _FIGHTER_CAT)
+    if "capital component" in n:  return "component" in gn
+    if "component" in n:        return "component" in gn
+    if "structure" in n:        return cat_id == _STRUCT_CAT
+    if "ship" in n:
+        if cat_id != _SHIP_CAT:
+            return False
+        size = _ship_size(group_name)
+        if "small" in n:  return size == "small"
+        if "medium" in n: return size == "medium"
+        if "large" in n:  return size == "large"
+        return True
+    return False
+
+
+@router.get("/facility-bonuses")
+async def facility_bonuses(
+    facility_id: int,
+    product_type_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Effective ME/TE/cost bonus from a facility's rigs for a given product,
+    scaled by the structure system's security band. Auto-skips rigs that
+    don't apply to the product's category.
+    """
+    f = db.query(Facility).filter(Facility.id == facility_id, Facility.user_id == current_user.id).first()
+    if not f:
+        raise HTTPException(404, "Facility not found")
+
+    rig_ids = [r for r in (f.rig1_type_id, f.rig2_type_id, f.rig3_type_id) if r]
+
+    eve_db = EveSessionLocal()
+    try:
+        sec = None
+        if f.system_name:
+            sysrow = eve_db.query(EveSolarSystem).filter(
+                EveSolarSystem.solar_system_name.ilike(f.system_name.strip())
+            ).first()
+            sec = sysrow.security if sysrow else None
+        band = "hi" if (sec is not None and sec >= 0.45) else "low" if (sec is not None and sec > 0.0) else "null"
+
+        prod = eve_db.query(EveType).filter(EveType.type_id == product_type_id).first()
+        grp = eve_db.query(EveGroup).filter(EveGroup.group_id == prod.group_id).first() if prod else None
+        cat_id = grp.category_id if grp else None
+        group_name = grp.group_name if grp else None
+
+        rigs_out, tot_me, tot_te, tot_cost = [], 0.0, 0.0, 0.0
+        for rid in rig_ids:
+            t = eve_db.query(EveType).filter(EveType.type_id == rid).first()
+            rb = eve_db.query(EveRigBonus).filter(EveRigBonus.type_id == rid).first()
+            name = t.type_name if t else str(rid)
+            if not rb:
+                rigs_out.append({"type_id": rid, "name": name, "applies": False, "reason": "no industry bonus"})
+                continue
+            mod = {"hi": rb.hisec_mod, "low": rb.lowsec_mod, "null": rb.nullsec_mod}[band] or 1.0
+            applies = _rig_applies(name, cat_id, group_name)
+            eff_me, eff_te, eff_cost = abs(rb.me_bonus or 0) * mod, abs(rb.te_bonus or 0) * mod, abs(rb.cost_bonus or 0) * mod
+            if applies:
+                tot_me += eff_me; tot_te += eff_te; tot_cost += eff_cost
+            rigs_out.append({
+                "type_id": rid, "name": name, "applies": applies,
+                "me_pct": round(eff_me, 2), "te_pct": round(eff_te, 2), "cost_pct": round(eff_cost, 2),
+            })
+
+        return {
+            "facility_id": facility_id,
+            "security": sec, "band": band,
+            "product_category_id": cat_id, "product_group": group_name,
+            "total_me_pct": round(tot_me, 2),
+            "total_te_pct": round(tot_te, 2),
+            "total_cost_pct": round(tot_cost, 2),
+            "rigs": rigs_out,
+        }
+    finally:
+        eve_db.close()
 
 
 # ─── Production Job CRUD ────────────────────────────────────────────────────

@@ -42,6 +42,7 @@ from app.core.database_eve import (
     EveConstellation,
     EveSolarSystem,
     EveStation,
+    EveRigBonus,
 )
 
 logger = logging.getLogger(__name__)
@@ -367,6 +368,67 @@ def update_activity_skills(db) -> int:
     return _upsert_chunks(db, build, raw)
 
 
+# Engineering-rig industry bonus attributes (see EveRigBonus docstring)
+_RIG_ATTR_ME, _RIG_ATTR_TE, _RIG_ATTR_COST = 2594, 2593, 2595
+_RIG_ATTR_HI, _RIG_ATTR_LOW, _RIG_ATTR_NULL = 2355, 2356, 2357
+_RIG_ATTRS = {_RIG_ATTR_ME, _RIG_ATTR_TE, _RIG_ATTR_COST, _RIG_ATTR_HI, _RIG_ATTR_LOW, _RIG_ATTR_NULL}
+
+
+def update_rig_bonuses(db) -> int:
+    """Pivot engineering-rig bonuses out of dgmTypeAttributes into eve_rig_bonuses."""
+    raw = _download_csv("dgmTypeAttributes")
+
+    pivot: dict[int, dict[int, float]] = {}
+    for r in raw:
+        aid = _coerce(r, "attributeID", int)
+        if aid not in _RIG_ATTRS:
+            continue
+        tid = _coerce(r, "typeID", int)
+        if tid is None:
+            continue
+        val = _coerce(r, "valueFloat", float)
+        if val is None:
+            val = _coerce(r, "valueInt", float)
+        pivot.setdefault(tid, {})[aid] = val
+
+    # keep only types that actually carry a rig bonus (ME/TE/cost present)
+    rig_ids = [t for t, a in pivot.items()
+               if any(k in a for k in (_RIG_ATTR_ME, _RIG_ATTR_TE, _RIG_ATTR_COST))]
+
+    groups = {}
+    if rig_ids:
+        for tid, gid in db.query(EveType.type_id, EveType.group_id).filter(EveType.type_id.in_(rig_ids)).all():
+            groups[tid] = gid
+
+    rows = []
+    for tid in rig_ids:
+        a = pivot[tid]
+        rows.append({
+            "type_id":     tid,
+            "group_id":    groups.get(tid),
+            "me_bonus":    a.get(_RIG_ATTR_ME),
+            "te_bonus":    a.get(_RIG_ATTR_TE),
+            "cost_bonus":  a.get(_RIG_ATTR_COST),
+            "hisec_mod":   a.get(_RIG_ATTR_HI),
+            "lowsec_mod":  a.get(_RIG_ATTR_LOW),
+            "nullsec_mod": a.get(_RIG_ATTR_NULL),
+        })
+
+    if not rows:
+        return 0
+
+    def build(batch):
+        stmt = pg_insert(EveRigBonus).values(batch)
+        return stmt.on_conflict_do_update(
+            index_elements=["type_id"],
+            set_={c: stmt.excluded[c] for c in
+                  ("group_id", "me_bonus", "te_bonus", "cost_bonus",
+                   "hisec_mod", "lowsec_mod", "nullsec_mod")},
+        )
+
+    return _upsert_chunks(db, build, rows)
+
+
 def update_regions(db) -> int:
     raw = _download_csv("mapRegions")
 
@@ -497,6 +559,7 @@ STEPS: list[tuple[str, Any]] = [
     ("activity_materials", update_activity_materials),
     ("activity_products",  update_activity_products),
     ("activity_skills",    update_activity_skills),
+    ("rig_bonuses",        update_rig_bonuses),
     ("regions",            update_regions),
     ("constellations",     update_constellations),
     ("solar_systems",      update_solar_systems),

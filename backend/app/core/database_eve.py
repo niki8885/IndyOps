@@ -147,6 +147,27 @@ class EveActivitySkill(EveBase):
     level       = Column(SmallInteger, nullable=True)
 
 
+class EveRigBonus(EveBase):
+    """
+    Engineering-rig industry bonuses, pivoted from dgmTypeAttributes.
+
+    Bonuses are negative percentages (e.g. me_bonus -2.0 = 2% material saving).
+    The effective bonus = base × security modifier for the structure's system
+    (hi 1.0 / low 1.9 / null & WH 2.1).  attributeIDs:
+      2594 ME, 2593 TE, 2595 cost, 2355 hi-sec, 2356 low-sec, 2357 null-sec.
+    """
+    __tablename__ = "eve_rig_bonuses"
+
+    type_id     = Column(Integer, primary_key=True)
+    group_id    = Column(Integer, nullable=True, index=True)
+    me_bonus    = Column(Float, nullable=True)
+    te_bonus    = Column(Float, nullable=True)
+    cost_bonus  = Column(Float, nullable=True)
+    hisec_mod   = Column(Float, nullable=True)
+    lowsec_mod  = Column(Float, nullable=True)
+    nullsec_mod = Column(Float, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Map
 # ---------------------------------------------------------------------------
