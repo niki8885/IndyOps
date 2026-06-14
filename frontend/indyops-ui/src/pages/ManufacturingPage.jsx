@@ -294,6 +294,19 @@ function CalculatorTab() {
     }).finally(() => setPakPriceLoading(false))
   }, [saveOpen, result, product?.type_id])
 
+  // prefill PAK code + contract code from the selected project's code
+  useEffect(() => {
+    if (!jobForm.project_id) return
+    const proj = projects.find(p => String(p.id) === String(jobForm.project_id))
+    if (proj?.org_project_code) {
+      setJobForm(f => ({
+        ...f,
+        code: f.code || proj.org_project_code,
+        contract_code: f.contract_code || `${proj.org_project_code} ${product?.name || ''}`.trim(),
+      }))
+    }
+  }, [jobForm.project_id, projects, product?.name])
+
   async function saveJob() {
     if (!result) return
     setSaveLoading(true); setSaved(false)

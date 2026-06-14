@@ -42,7 +42,9 @@ class EmployeeCreate(BaseModel):
     status:          EmployeeType  = EmployeeType.OTHER
 
 class EmployeeUpdate(BaseModel):
-    organisation_id: Optional[int]     = None
+    name:            Optional[str]          = None
+    character_id:    Optional[int]          = None
+    organisation_id: Optional[int]          = None
     status:          Optional[EmployeeType] = None
 
 class EmployeeOut(BaseModel):
@@ -192,6 +194,13 @@ async def update_employee(
     if emp.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="This character does not belong to you")
 
+    if body.name is not None:
+        clash = db.query(Employee).filter(Employee.name == body.name, Employee.id != emp_id).first()
+        if clash:
+            raise HTTPException(status_code=400, detail="Character name already exists")
+        emp.name = body.name
+    if body.character_id is not None:
+        emp.character_id = body.character_id
     if body.organisation_id is not None:
         target_org = db.query(Organisation).filter(Organisation.id == body.organisation_id).first()
         if not target_org or target_org.owner_id != current_user.id:

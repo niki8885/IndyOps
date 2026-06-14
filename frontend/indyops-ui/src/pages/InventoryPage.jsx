@@ -27,6 +27,9 @@ function WarehouseTab() {
   const [filter, setFilter]     = useState({ project_id: '', place: '' })
   const [error, setError]       = useState('')
   const [clearing, setClearing] = useState(false)
+  const [view, setView]         = useState('stacked')   // 'stacked' | 'lots'
+  const [method, setMethod]     = useState('AVG')        // AVG | FIFO | LIFO
+  const [expand, setExpand]     = useState(null)
 
   async function load() {
     const p = new URLSearchParams()
@@ -51,22 +54,42 @@ function WarehouseTab() {
     if (!confirm('Delete item?')) return
     try { await del(`/inventory/${id}`); load() } catch {}
   }
-
   async function clearProject() {
     const proj = projects.find(p => String(p.id) === filter.project_id)
     if (!confirm(`Clear ALL items in project "${proj?.name}"?\nCannot be undone.`)) return
     setClearing(true); setError('')
     try { await del(`/inventory?project_id=${filter.project_id}`); load() }
-    catch (e) { setError(e.message) }
-    finally { setClearing(false) }
+    catch (e) { setError(e.message) } finally { setClearing(false) }
   }
-
   async function clearAll() {
     if (!confirm(`Delete ALL ${items.length} items from warehouse?\nCannot be undone.`)) return
     setClearing(true); setError('')
     try { await del('/inventory'); load() }
-    catch (e) { setError(e.message) }
-    finally { setClearing(false) }
+    catch (e) { setError(e.message) } finally { setClearing(false) }
+  }
+
+  const projName = id => projects.find(p => p.id === id)?.name || '—'
+
+  // group lots into stacks by eve_type_id (fallback to name)
+  const groups = (() => {
+    const m = new Map()
+    for (const it of items) {
+      const key = it.eve_type_id ?? `n:${it.name}`
+      let g = m.get(key)
+      if (!g) { g = { key, name: it.name, volume: it.volume, qty: 0, value: 0, pricedQty: 0, lots: [], places: new Set() }; m.set(key, g) }
+      g.qty += it.quantity
+      if (it.price) { g.value += it.price * it.quantity; g.pricedQty += it.quantity }
+      g.lots.push(it)
+      if (it.place) g.places.add(it.place)
+    }
+    return [...m.values()]
+  })()
+
+  function unitCost(g) {
+    if (g.pricedQty === 0) return null
+    if (method === 'AVG') return g.value / g.pricedQty
+    const priced = g.lots.filter(l => l.price).sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    return method === 'FIFO' ? priced[0].price : priced[priced.length - 1].price
   }
 
   const totalValue = items.reduce((s, i) => s + (i.price ?? 0) * i.quantity, 0)
@@ -76,11 +99,25 @@ function WarehouseTab() {
     <div>
       {error && <div className="error-box">{error}</div>}
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 200 }}>
+        <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 180 }}>
           <option value="">All projects</option>
           {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <input value={filter.place} onChange={e => setFilter(f => ({ ...f, place: e.target.value }))} placeholder="Filter by system…" style={{ width: 180 }} />
+        <input value={filter.place} onChange={e => setFilter(f => ({ ...f, place: e.target.value }))} placeholder="Filter by system…" style={{ width: 160 }} />
+        <div style={{ display: 'flex', gap: 4 }}>
+          {['stacked', 'lots'].map(v => (
+            <button key={v} className={`btn btn-sm ${view === v ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setView(v)}>
+              {v === 'stacked' ? 'Stacked' : 'Lots'}
+            </button>
+          ))}
+        </div>
+        {view === 'stacked' && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            {['AVG', 'FIFO', 'LIFO'].map(m => (
+              <button key={m} className={`btn btn-sm ${method === m ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setMethod(m)}>{m}</button>
+            ))}
+          </div>
+        )}
         <button className="btn btn-ghost btn-sm" onClick={load}>Refresh</button>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           {filter.project_id && (
@@ -99,35 +136,85 @@ function WarehouseTab() {
         : (
           <>
             <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap' }}>
-              <Stat label="Items" value={items.length} />
+              <Stat label={view === 'stacked' ? 'Unique items' : 'Lots'} value={view === 'stacked' ? groups.length : items.length} />
               <Stat label="Total volume" value={totalVol > 0 ? fmtVol(totalVol) : '—'} />
               <Stat label="Total value" value={totalValue > 0 ? fmtIsk(totalValue) : '—'} />
             </div>
-            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th><th>Qty</th><th>Vol/unit</th><th>Price/unit</th>
-                    <th>Total value</th><th>Location</th><th>Project</th><th>Note</th><th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map(item => (
-                    <tr key={item.id}>
-                      <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{item.name}</td>
-                      <td>{item.quantity.toLocaleString()}</td>
-                      <td style={{ color: 'var(--text)' }}>{item.volume != null ? item.volume + ' m³' : '—'}</td>
-                      <td>{item.price ? fmtIsk(item.price) : '—'}</td>
-                      <td style={{ color: 'var(--accent)' }}>{item.price ? fmtIsk(item.price * item.quantity) : '—'}</td>
-                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{item.place || '—'}</td>
-                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{projects.find(p => p.id === item.project_id)?.name || '—'}</td>
-                      <td style={{ color: 'var(--text)', fontSize: 12, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.note || '—'}</td>
-                      <td><button className="btn btn-danger btn-sm" onClick={() => remove(item.id)}>✕</button></td>
+
+            {view === 'stacked' ? (
+              <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th><th>Total Qty</th><th>Lots</th>
+                      <th>{method} cost/unit</th><th>Total value</th><th>Locations</th><th></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {[...groups].sort((a, b) => b.value - a.value).map(g => {
+                      const uc = unitCost(g)
+                      return [
+                        <tr key={g.key} style={{ cursor: 'pointer' }} onClick={() => setExpand(expand === g.key ? null : g.key)}>
+                          <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{g.name}</td>
+                          <td style={{ color: 'var(--text-white)' }}>{g.qty.toLocaleString()}</td>
+                          <td style={{ color: 'var(--text)', fontSize: 12 }}>{g.lots.length}</td>
+                          <td style={{ color: 'var(--accent)' }}>{uc != null ? fmtIsk(uc) : <span style={{ color: 'var(--text)' }}>—</span>}</td>
+                          <td style={{ color: 'var(--text-white)' }}>{g.value > 0 ? fmtIsk(g.value) : '—'}</td>
+                          <td style={{ color: 'var(--text)', fontSize: 12 }}>{[...g.places].join(', ') || '—'}</td>
+                          <td style={{ color: 'var(--text)', fontSize: 12 }}>{g.lots.length > 1 ? (expand === g.key ? '▲' : '▼') : ''}</td>
+                        </tr>,
+                        expand === g.key && g.lots.length > 1 && (
+                          <tr key={`x-${g.key}`}>
+                            <td colSpan={7} style={{ background: 'var(--surface2)', padding: 0 }}>
+                              <table>
+                                <tbody>
+                                  {g.lots.map(l => (
+                                    <tr key={l.id}>
+                                      <td style={{ color: 'var(--text)', paddingLeft: 28 }}>{l.quantity.toLocaleString()}</td>
+                                      <td style={{ color: 'var(--text)' }}>{l.price ? fmtIsk(l.price) : '—'}</td>
+                                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{l.place || '—'}</td>
+                                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{projName(l.project_id)}</td>
+                                      <td style={{ color: 'var(--text)', fontSize: 11 }}>{l.created_at ? new Date(l.created_at).toLocaleDateString() : ''}</td>
+                                      <td><button className="btn btn-danger btn-sm" onClick={() => remove(l.id)}>✕</button></td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        ),
+                      ]
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th><th>Qty</th><th>Vol/unit</th><th>Price/unit</th>
+                      <th>Total value</th><th>Location</th><th>Project</th><th>Note</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map(item => (
+                      <tr key={item.id}>
+                        <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{item.name}</td>
+                        <td>{item.quantity.toLocaleString()}</td>
+                        <td style={{ color: 'var(--text)' }}>{item.volume != null ? item.volume + ' m³' : '—'}</td>
+                        <td>{item.price ? fmtIsk(item.price) : '—'}</td>
+                        <td style={{ color: 'var(--accent)' }}>{item.price ? fmtIsk(item.price * item.quantity) : '—'}</td>
+                        <td style={{ color: 'var(--text)', fontSize: 12 }}>{item.place || '—'}</td>
+                        <td style={{ color: 'var(--text)', fontSize: 12 }}>{projName(item.project_id)}</td>
+                        <td style={{ color: 'var(--text)', fontSize: 12, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.note || '—'}</td>
+                        <td><button className="btn btn-danger btn-sm" onClick={() => remove(item.id)}>✕</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )
       }

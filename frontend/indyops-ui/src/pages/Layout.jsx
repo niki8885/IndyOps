@@ -6,9 +6,9 @@ import { get, post } from '../api/client'
 const NAV = [
   { to: '/manufacturing', label: 'Manufacturing'  },
   { to: '/inventory',     label: 'Inventory'      },
-  { to: '/facilities',    label: 'Facilities'     },
-  { to: '/projects',      label: 'Projects'       },
-  { to: '/orgs',          label: 'Organisations'  },
+  { to: '/market',        label: 'Market'         },
+  { to: '/analysis',      label: 'Analysis'       },
+  { to: '/organisations', label: 'Organisations'  },
 ]
 
 export default function Layout() {

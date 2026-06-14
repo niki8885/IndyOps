@@ -5,10 +5,10 @@ import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import Layout from './pages/Layout'
 import InventoryPage from './pages/InventoryPage'
-import FacilitiesPage from './pages/FacilitiesPage'
-import ProjectsPage from './pages/ProjectsPage'
-import OrgsPage from './pages/OrgsPage'
 import ManufacturingPage from './pages/ManufacturingPage'
+import MarketPage from './pages/MarketPage'
+import AnalysisPage from './pages/AnalysisPage'
+import OrganisationsHub from './pages/OrganisationsHub'
 
 export default function App() {
   return (
@@ -22,9 +22,13 @@ export default function App() {
               <Route index element={<Navigate to="/manufacturing" replace />} />
               <Route path="/manufacturing" element={<ManufacturingPage />} />
               <Route path="/inventory"     element={<InventoryPage />} />
-              <Route path="/facilities"    element={<FacilitiesPage />} />
-              <Route path="/projects"      element={<ProjectsPage />} />
-              <Route path="/orgs"          element={<OrgsPage />} />
+              <Route path="/market"        element={<MarketPage />} />
+              <Route path="/analysis"      element={<AnalysisPage />} />
+              <Route path="/organisations" element={<OrganisationsHub />} />
+              {/* legacy redirects */}
+              <Route path="/facilities" element={<Navigate to="/organisations" replace />} />
+              <Route path="/projects"   element={<Navigate to="/organisations" replace />} />
+              <Route path="/orgs"       element={<Navigate to="/organisations" replace />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/manufacturing" replace />} />

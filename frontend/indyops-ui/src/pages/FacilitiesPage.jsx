@@ -3,17 +3,19 @@ import { get, post, patch, del } from '../api/client'
 import SystemSearch from '../components/SystemSearch'
 import TypeSearch from '../components/TypeSearch'
 
-const TYPES = ['Raitaru', 'Azbel', 'Sotiyo', 'Other']
+const TYPES = ['Raitaru', 'Azbel', 'Sotiyo', 'Athanor', 'Tatara', 'Other']
 
 const TYPE_COLOR = {
   Raitaru: '#4caf7d',
   Azbel:   '#c8a951',
   Sotiyo:  '#e05252',
+  Athanor: '#3a9bd6',
+  Tatara:  '#9b6dd6',
   Other:   '#8b93b0',
 }
 
 const EMPTY_FORM = {
-  name: '', facility_type: 'Raitaru',
+  name: '', facility_type: 'Raitaru', organisation_id: '',
   tax: '', cost_bonus: '', system_name: '', system_cost_index: '',
   rig1: { type_id: null, name: null },
   rig2: { type_id: null, name: null },
@@ -30,6 +32,7 @@ export default function FacilitiesPage() {
   const [filter, setFilter]         = useState('')
   const [sciLoading, setSciLoading] = useState(false)
   const [sciInfo, setSciInfo]       = useState('')
+  const [orgs, setOrgs]             = useState([])
 
   async function load() {
     try {
@@ -40,6 +43,9 @@ export default function FacilitiesPage() {
   }
 
   useEffect(() => { load() }, [filter])
+  useEffect(() => { get('/organisations').then(setOrgs).catch(() => {}) }, [])
+
+  const orgName = id => orgs.find(o => o.id === id)?.name || '—'
 
   function openCreate() {
     setEditId(null)
@@ -54,6 +60,7 @@ export default function FacilitiesPage() {
     setForm({
       name: f.name,
       facility_type: f.facility_type,
+      organisation_id: f.organisation_id ?? '',
       tax: f.tax ?? '',
       cost_bonus: f.cost_bonus ?? '',
       system_name: f.system_name ?? '',
@@ -75,6 +82,7 @@ export default function FacilitiesPage() {
     const body = {
       name:              form.name,
       facility_type:     form.facility_type,
+      organisation_id:   form.organisation_id ? Number(form.organisation_id) : null,
       tax:               form.tax !== '' ? Number(form.tax) : null,
       cost_bonus:        form.cost_bonus !== '' ? Number(form.cost_bonus) : null,
       system_name:       form.system_name || null,
@@ -167,6 +175,15 @@ export default function FacilitiesPage() {
               </div>
             </div>
 
+            {/* Row 1b: organisation */}
+            <div>
+              <Label>Organisation <Hint>optional</Hint></Label>
+              <select value={form.organisation_id} onChange={setInput('organisation_id')}>
+                <option value="">— personal / none —</option>
+                {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </div>
+
             {/* Row 2: system + SCI */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 12 }}>
               <div>
@@ -251,6 +268,7 @@ export default function FacilitiesPage() {
                 <tr>
                   <th>Name</th>
                   <th>Type</th>
+                  <th>Org</th>
                   <th>System</th>
                   <th>SCI</th>
                   <th>Tax %</th>
@@ -274,6 +292,7 @@ export default function FacilitiesPage() {
                         {f.facility_type}
                       </span>
                     </td>
+                    <td style={{ color: 'var(--text)', fontSize: 12 }}>{orgName(f.organisation_id)}</td>
                     <td style={{ color: 'var(--text)' }}>{f.system_name || '—'}</td>
                     <td style={{ color: 'var(--accent)', fontFamily: 'monospace' }}>
                       {f.system_cost_index != null ? (f.system_cost_index * 100).toFixed(2) + '%' : '—'}
