@@ -91,6 +91,8 @@ class Projects(Base):
     project_type     = Column(Enum(ProjectsType), nullable=False, index=True)
     status           = Column(Enum(ProjectsStatus), nullable=False, index=True, default=ProjectsStatus.ACTIVE)
     repeatable       = Column(Boolean, nullable=False, default=False)
+    closed           = Column(Boolean, nullable=False, default=False)
+    priority         = Column(String(10), nullable=False, default="medium")
 
     created_at  = Column(DateTime, default=datetime.datetime.utcnow)
     modified_at = Column(DateTime, nullable=True)
@@ -254,6 +256,8 @@ _MIGRATIONS = [
     "ALTER TABLE organisations ADD COLUMN IF NOT EXISTS corporation_id INTEGER",
     "ALTER TABLE organisations ADD COLUMN IF NOT EXISTS corporation_name VARCHAR(200)",
     "ALTER TABLE facilities ADD COLUMN IF NOT EXISTS organisation_id INTEGER",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS closed BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS priority VARCHAR(10) DEFAULT 'medium'",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Athanor'",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Tatara'",
 ]

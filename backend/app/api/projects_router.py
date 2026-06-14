@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.core.database import get_db, Projects, Organisation, Employee, UserDB
-from app.core.schemas import ProjectsType, ProjectsStatus
+from app.core.schemas import ProjectsType, ProjectsStatus, ProjectPriority
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -17,6 +17,8 @@ class ProjectCreate(BaseModel):
     org_project_code: Optional[str] = None
     note: Optional[str] = None
     repeatable: bool = False
+    closed: bool = False
+    priority: ProjectPriority = ProjectPriority.MEDIUM
     deadline_at: Optional[datetime.datetime] = None
 
 class ProjectUpdate(BaseModel):
@@ -27,6 +29,8 @@ class ProjectUpdate(BaseModel):
     org_project_code: Optional[str] = None
     note: Optional[str] = None
     repeatable: Optional[bool] = None
+    closed: Optional[bool] = None
+    priority: Optional[ProjectPriority] = None
     deadline_at: Optional[datetime.datetime] = None
 
 class ProjectOut(BaseModel):
@@ -40,6 +44,8 @@ class ProjectOut(BaseModel):
     org_project_code: Optional[str]
     note: Optional[str]
     repeatable: bool
+    closed: Optional[bool] = False
+    priority: Optional[str] = "medium"
     created_at: datetime.datetime
     modified_at: Optional[datetime.datetime]
     deadline_at: Optional[datetime.datetime]
@@ -79,6 +85,8 @@ async def create_project(
         org_project_code=body.org_project_code,
         note=body.note,
         repeatable=body.repeatable,
+        closed=body.closed,
+        priority=body.priority.value,
         deadline_at=body.deadline_at,
     )
     db.add(project)
@@ -144,6 +152,8 @@ async def update_project(
     if body.org_project_code is not None: project.org_project_code = body.org_project_code
     if body.note is not None: project.note = body.note
     if body.repeatable is not None: project.repeatable = body.repeatable
+    if body.closed is not None: project.closed = body.closed
+    if body.priority is not None: project.priority = body.priority.value
     if body.deadline_at is not None: project.deadline_at = body.deadline_at
 
     if body.supervised_by is not None:

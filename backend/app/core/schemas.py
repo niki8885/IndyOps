@@ -22,6 +22,11 @@ class ProjectsStatus(str, enum.Enum):
     PAUSE = "PAUSE"
     DELETED = "DELETED"
 
+class ProjectPriority(str, enum.Enum):
+    LOW    = "low"
+    MEDIUM = "medium"
+    HIGH   = "high"
+
 class FacilityType(str, enum.Enum):
     RAITARU = "Raitaru"
     AZBEL   = "Azbel"

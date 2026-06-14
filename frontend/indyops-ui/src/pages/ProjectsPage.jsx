@@ -8,7 +8,13 @@ const STATUS_BADGE = {
   ACTIVE: 'badge-ok', INACTIVE: 'badge-warn', PAUSE: 'badge-warn', DELETED: 'badge-bad',
 }
 
-const EMPTY = { name: '', project_type: 'INTERNAL', note: '', created_by: '', supervised_by: '', org_project_code: '' }
+const PRIORITIES = ['low', 'medium', 'high']
+const PRIORITY_COLOR = { low: '#8b93b0', medium: '#c8a951', high: '#e05252' }
+
+const EMPTY = {
+  name: '', project_type: 'INTERNAL', note: '', created_by: '', supervised_by: '',
+  org_project_code: '', repeatable: false, closed: false, priority: 'medium',
+}
 
 export default function ProjectsPage() {
   const [orgs, setOrgs]           = useState([])
@@ -47,6 +53,9 @@ export default function ProjectsPage() {
         note: form.note || null,
         supervised_by: form.supervised_by ? Number(form.supervised_by) : null,
         org_project_code: form.org_project_code || null,
+        repeatable: !!form.repeatable,
+        closed: !!form.closed,
+        priority: form.priority,
       }
       if (editId) {
         await patch(`/projects/${editId}?org_id=${orgId}`, body)
@@ -68,6 +77,7 @@ export default function ProjectsPage() {
       name: p.name, project_type: p.project_type, note: p.note ?? '',
       created_by: p.created_by, supervised_by: p.supervised_by ?? '',
       org_project_code: p.org_project_code ?? '',
+      repeatable: !!p.repeatable, closed: !!p.closed, priority: p.priority || 'medium',
     })
     setError(''); setShowForm(true)
   }
@@ -122,6 +132,21 @@ export default function ProjectsPage() {
                 {employees.map(e => <option key={e.id} value={e.id}>{e.name} ({e.status})</option>)}
               </select>
             </div>
+            <div><L>Priority</L>
+              <select value={form.priority} onChange={set('priority')}>
+                {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 18, alignItems: 'center', paddingTop: 18 }}>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, color: 'var(--text-bright)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={form.repeatable} onChange={e => setForm(f => ({ ...f, repeatable: e.target.checked }))} />
+                Repeatable
+              </label>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, color: 'var(--text-bright)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={form.closed} onChange={e => setForm(f => ({ ...f, closed: e.target.checked }))} />
+                Closed
+              </label>
+            </div>
             <div style={{ gridColumn: '1 / -1' }}><L>Note</L>
               <textarea value={form.note} onChange={set('note')} rows={2} />
             </div>
@@ -144,16 +169,24 @@ export default function ProjectsPage() {
               <table>
                 <thead>
                   <tr>
-                    <th>#</th><th>Name</th><th>Type</th><th>Status</th>
-                    <th>Code</th><th>Creator</th><th>Supervisor</th><th>Created</th><th></th>
+                    <th>#</th><th>Name</th><th>Type</th><th>Priority</th><th>Status</th>
+                    <th>Code</th><th>Supervisor</th><th>Flags</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {projects.map(p => [
                     <tr key={p.id} style={{ cursor: 'pointer' }} onClick={() => setExpand(expand === p.id ? null : p.id)}>
                       <td style={{ color: 'var(--text)', width: 40 }}>{p.id}</td>
-                      <td style={{ color: 'var(--text-white)' }}>{p.name}</td>
+                      <td style={{ color: 'var(--text-white)' }}>
+                        {p.name}
+                        {p.closed && <span style={{ marginLeft: 6, fontSize: 10, color: '#e05252' }}>● CLOSED</span>}
+                      </td>
                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{p.project_type}</td>
+                      <td>
+                        <span className="badge" style={{ background: (PRIORITY_COLOR[p.priority] || '#8b93b0') + '22', color: PRIORITY_COLOR[p.priority] || '#8b93b0' }}>
+                          {p.priority || 'medium'}
+                        </span>
+                      </td>
                       <td>
                         <select value={p.status} onClick={e => e.stopPropagation()} onChange={e => setStatus(p, e.target.value)}
                           style={{ width: 105, fontSize: 12, padding: '3px 6px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -161,9 +194,12 @@ export default function ProjectsPage() {
                         </select>
                       </td>
                       <td style={{ color: 'var(--accent)', fontSize: 12 }}>{p.org_project_code || '—'}</td>
-                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{empName(p.created_by)}</td>
                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{empName(p.supervised_by)}</td>
-                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{new Date(p.created_at).toLocaleDateString()}</td>
+                      <td style={{ fontSize: 11 }}>
+                        {p.repeatable && <span className="badge badge-ok" style={{ marginRight: 4 }}>repeat</span>}
+                        {p.closed && <span className="badge badge-bad">closed</span>}
+                        {!p.repeatable && !p.closed && <span style={{ color: 'var(--text)' }}>—</span>}
+                      </td>
                       <td style={{ whiteSpace: 'nowrap' }}>
                         <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); openEdit(p) }} style={{ marginRight: 4 }}>Edit</button>
                         <button className="btn btn-danger btn-sm" onClick={e => { e.stopPropagation(); remove(p) }}>✕</button>
