@@ -191,7 +191,7 @@ def _get_materials(eve_db, blueprint_type_id: int):
         )
         .all()
     )
-    # enrich with names
+    # enrich with names + per-unit volume (for delivery cost)
     result = []
     for r in rows:
         t = eve_db.query(EveType).filter(EveType.type_id == r.material_type_id).first()
@@ -199,6 +199,7 @@ def _get_materials(eve_db, blueprint_type_id: int):
             "type_id":  r.material_type_id,
             "name":     t.type_name if t else str(r.material_type_id),
             "base_qty": r.quantity,
+            "volume":   t.volume if t else None,
         })
     return result
 

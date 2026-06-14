@@ -105,6 +105,12 @@ function CalculatorTab() {
   const [rigBonus, setRigBonus] = useState(null)   // { total_me_pct, total_te_pct, total_cost_pct, band, rigs }
   const [enabledRigs, setEnabledRigs] = useState({})  // { type_id: bool } — user override of applicability
 
+  // market analysis (4-source comparison)
+  const [market, setMarket]           = useState(null)   // { rows:[...], totals:{...} }
+  const [marketLoading, setMarketLoading] = useState(false)
+  const [deliveryOn, setDeliveryOn]   = useState(false)
+  const [deliveryCoef, setDeliveryCoef] = useState(1200)  // ISK per m³ (Jita → C-J haul)
+
   useEffect(() => {
     get('/facilities').then(setFacilities).catch(() => {})
     get('/organisations').then(async orgs => {
@@ -267,6 +273,32 @@ function CalculatorTab() {
   const shoppingList = availability
     ? Object.values(availability).filter(m => m.shortfall > 0).map(m => `${m.name}\t${m.shortfall}`).join('\n')
     : ''
+
+  async function analyzeMarket() {
+    if (!bpInfo) return
+    setMarketLoading(true); setError('')
+    try {
+      const ids = bpInfo.materials.map(m => m.type_id)
+      const [jita, cj] = await Promise.all([
+        fetchMarketPrices(ids, 'Jita').catch(() => ({})),
+        fetchMarketPrices(ids, 'C-J').catch(() => ({})),
+      ])
+      const rows = bpInfo.materials.map(m => {
+        const qty = adjQtyOf(m)
+        const j = jita[m.type_id] || {}, c = cj[m.type_id] || {}
+        return {
+          type_id: m.type_id, name: m.name, qty, volume: m.volume || 0,
+          jita_buy: j.Buy ?? null, jita_sell: j.Sell ?? null,
+          cj_buy: c.Buy ?? null, cj_sell: c.Sell ?? null,
+        }
+      })
+      setMarket({ rows })
+    } catch (e) { setError('Market analysis failed: ' + e.message) }
+    finally { setMarketLoading(false) }
+  }
+
+  const marketView = buildMarketView(market?.rows, deliveryOn, deliveryCoef)
+  const bestBuyList = bestBuyListOf(marketView)
 
   // when the Save-as-PAK panel opens: auto Initial Contract + auto product prices
   useEffect(() => {
@@ -571,9 +603,12 @@ function CalculatorTab() {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn btn-primary" onClick={calculate} disabled={!bpInfo || calcLoading}>
           {calcLoading ? 'Calculating…' : '⚡ Calculate'}
+        </button>
+        <button className="btn btn-ghost" onClick={analyzeMarket} disabled={!bpInfo || marketLoading}>
+          {marketLoading ? 'Analyzing…' : '🔍 Analyze market'}
         </button>
         {result && (
           <button className="btn btn-ghost" onClick={() => { setSaveOpen(v => !v); setSaved(false) }}>
@@ -581,6 +616,15 @@ function CalculatorTab() {
           </button>
         )}
       </div>
+
+      {/* ── Market analysis ── */}
+      {marketView && (
+        <MarketPanel
+          view={marketView} bestBuyList={bestBuyList}
+          deliveryOn={deliveryOn} setDeliveryOn={setDeliveryOn}
+          deliveryCoef={deliveryCoef} setDeliveryCoef={setDeliveryCoef}
+        />
+      )}
 
       {/* ── Results ── */}
       {result && (
@@ -667,6 +711,16 @@ function CalculatorTab() {
               </div>
             </div>
           </Section>
+
+          {/* Cost composition + production metrics */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <Section title="Cost Composition">
+              <CostPie result={result} />
+            </Section>
+            <Section title="Production Metrics">
+              <ProductionMetrics result={result} />
+            </Section>
+          </div>
         </div>
       )}
 
@@ -760,6 +814,11 @@ function PakJobsTab() {
   const [projects, setProjects] = useState([])
   const [filter, setFilter]     = useState({ project_id: '', status: '' })
   const [expand, setExpand]     = useState(null)
+  const [selected, setSelected] = useState({})   // { jobId: true }
+  const [combineOpen, setCombineOpen] = useState(false)
+
+  const selectedJobs = jobs.filter(j => selected[j.id])
+  const toggleSel = id => setSelected(s => ({ ...s, [id]: !s[id] }))
 
   async function load() {
     const params = new URLSearchParams()
@@ -801,7 +860,16 @@ function PakJobsTab() {
           {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <button className="btn btn-ghost btn-sm" onClick={load}>Refresh</button>
+        {selectedJobs.length > 0 && (
+          <button className="btn btn-primary btn-sm" onClick={() => setCombineOpen(v => !v)} style={{ marginLeft: 'auto' }}>
+            🛒 Combined buy list ({selectedJobs.length})
+          </button>
+        )}
       </div>
+
+      {combineOpen && selectedJobs.length > 0 && (
+        <CombinedBuyPanel jobs={selectedJobs} projects={projects} onClose={() => setCombineOpen(false)} />
+      )}
 
       {jobs.length === 0
         ? <div className="empty-state">No production jobs yet — use Calculator tab to create one</div>
@@ -810,6 +878,7 @@ function PakJobsTab() {
             <table>
               <thead>
                 <tr>
+                  <th></th>
                   <th>#</th>
                   <th>Date</th>
                   <th>Place</th>
@@ -829,6 +898,9 @@ function PakJobsTab() {
                   const units = j.paks && j.units_per_pak ? j.paks * j.units_per_pak : (j.calc_snapshot?.output?.quantity ?? '—')
                   return [
                     <tr key={j.id} style={{ cursor: 'pointer' }} onClick={() => setExpand(expand === j.id ? null : j.id)}>
+                      <td onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={!!selected[j.id]} onChange={() => toggleSel(j.id)} />
+                      </td>
                       <td style={{ color: 'var(--text)' }}>{j.id}</td>
                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.date_planned ? new Date(j.date_planned).toLocaleDateString() : '—'}</td>
                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.place || '—'}</td>
@@ -855,7 +927,7 @@ function PakJobsTab() {
                     </tr>,
                     expand === j.id && j.calc_snapshot && (
                       <tr key={`exp-${j.id}`}>
-                        <td colSpan={12} style={{ background: 'var(--surface2)', padding: 0 }}>
+                        <td colSpan={13} style={{ background: 'var(--surface2)', padding: 0 }}>
                           <PakCard job={j} onChange={load} />
                         </td>
                       </tr>
@@ -1236,6 +1308,313 @@ function CInput({ label, value, onChange, type = 'text', placeholder }) {
 }
 
 const statLabel = { fontSize: 11, color: 'var(--text)', marginBottom: 3 }
+
+const PIE_COLORS = ['#c8a951', '#3a9bd6', '#4caf7d', '#9b6dd6', '#e0884f', '#5fb0b0', '#d65f8a', '#8a9b3a', '#b0703a', '#6d8ad6', '#c05a5a', '#4a9b6d']
+
+/* Build the 4-source comparison view from raw rows.
+   rows: [{type_id,name,qty,volume,jita_buy,jita_sell,cj_buy,cj_sell}] */
+function buildMarketView(rows, deliveryOn, deliveryCoef) {
+  if (!rows) return null
+  const dpu = vol => (deliveryOn ? (vol || 0) * Number(deliveryCoef || 0) : 0)
+  const opts = ['jita_buy', 'jita_sell', 'cj_buy', 'cj_sell']
+  const totals = { jita_buy: 0, jita_sell: 0, cj_buy: 0, cj_sell: 0, best: 0, delivery: 0 }
+  const out = rows.map(r => {
+    const eff = {
+      jita_buy:  r.jita_buy  != null ? r.jita_buy  + dpu(r.volume) : null,
+      jita_sell: r.jita_sell != null ? r.jita_sell + dpu(r.volume) : null,
+      cj_buy:    r.cj_buy,
+      cj_sell:   r.cj_sell,
+    }
+    let best = null, bestKey = null
+    for (const k of opts) if (eff[k] != null && (best == null || eff[k] < best)) { best = eff[k]; bestKey = k }
+    for (const k of opts) if (eff[k] != null) totals[k] += eff[k] * r.qty
+    if (best != null) {
+      totals.best += best * r.qty
+      if (bestKey.startsWith('jita')) totals.delivery += dpu(r.volume) * r.qty
+    }
+    return { ...r, eff, bestKey, bestUnit: best }
+  })
+  return { rows: out, totals }
+}
+
+function bestBuyListOf(view) {
+  if (!view) return []
+  return ['jita', 'cj'].map(hub => ({ hub, items: view.rows.filter(r => r.bestKey?.startsWith(hub)) }))
+}
+
+/* ── Market analysis panel (4-source comparison + delivery) ── */
+function MarketPanel({ view, bestBuyList, deliveryOn, setDeliveryOn, deliveryCoef, setDeliveryCoef }) {
+  const t = view.totals
+  const cell = (val, best) => (
+    <td style={{ whiteSpace: 'nowrap', color: best ? '#4caf7d' : 'var(--text-bright)', fontWeight: best ? 600 : 400, background: best ? 'rgba(76,175,125,0.08)' : undefined }}>
+      {val != null ? fmtIsk(val) : '—'}
+    </td>
+  )
+  return (
+    <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>MARKET ANALYSIS</span>
+        <label style={{ fontSize: 12, color: 'var(--text-bright)', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+          <input type="checkbox" checked={deliveryOn} onChange={e => setDeliveryOn(e.target.checked)} />
+          Add Jita→hub delivery
+        </label>
+        <label style={{ fontSize: 12, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          ISK/m³
+          <input type="number" value={deliveryCoef} onChange={e => setDeliveryCoef(e.target.value)} disabled={!deliveryOn} style={{ width: 90 }} />
+        </label>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th><th>Qty</th>
+              <th>Jita Buy{deliveryOn ? ' +d' : ''}</th><th>Jita Sell{deliveryOn ? ' +d' : ''}</th>
+              <th>C-J Buy</th><th>C-J Sell</th><th>Best</th>
+            </tr>
+          </thead>
+          <tbody>
+            {view.rows.map(r => (
+              <tr key={r.type_id}>
+                <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{r.name}</td>
+                <td style={{ color: 'var(--text)' }}>{r.qty.toLocaleString()}</td>
+                {cell(r.eff.jita_buy,  r.bestKey === 'jita_buy')}
+                {cell(r.eff.jita_sell, r.bestKey === 'jita_sell')}
+                {cell(r.eff.cj_buy,    r.bestKey === 'cj_buy')}
+                {cell(r.eff.cj_sell,   r.bestKey === 'cj_sell')}
+                <td style={{ color: 'var(--accent)', fontSize: 11, whiteSpace: 'nowrap' }}>
+                  {r.bestKey ? r.bestKey.replace('_', ' ').toUpperCase() : '—'}
+                </td>
+              </tr>
+            ))}
+            <tr style={{ background: 'var(--surface2)', fontWeight: 600 }}>
+              <td colSpan={2} style={{ textAlign: 'right', color: 'var(--text)' }}>Total (all from)</td>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtIsk(t.jita_buy)}</td>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtIsk(t.jita_sell)}</td>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtIsk(t.cj_buy)}</td>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtIsk(t.cj_sell)}</td>
+              <td style={{ color: '#4caf7d', whiteSpace: 'nowrap' }}>{fmtIsk(t.best)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
+        <span style={{ color: 'var(--text)' }}>Best-mix total: <b style={{ color: '#4caf7d' }}>{fmtIsk(t.best)}</b></span>
+        {deliveryOn && <span style={{ color: 'var(--text)' }}>incl. delivery <b style={{ color: 'var(--text-white)' }}>{fmtIsk(t.delivery)}</b></span>}
+        <span style={{ color: 'var(--text)' }}>vs all-Jita-sell <b style={{ color: 'var(--text-white)' }}>{fmtIsk(t.jita_sell)}</b></span>
+        <span style={{ color: 'var(--text)' }}>vs all-C-J-sell <b style={{ color: 'var(--text-white)' }}>{fmtIsk(t.cj_sell)}</b></span>
+      </div>
+      {/* best buy lists per hub */}
+      <div style={{ padding: '0 16px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        {bestBuyList.map(({ hub, items }) => items.length > 0 && (
+          <div key={hub}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>
+                🛒 Buy at {hub === 'jita' ? 'Jita' : 'C-J'} ({items.length})
+              </span>
+              <button className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard.writeText(items.map(i => `${i.name}\t${i.qty}`).join('\n'))}>Copy</button>
+            </div>
+            <textarea readOnly rows={Math.min(items.length, 8)} value={items.map(i => `${i.name}\t${i.qty}`).join('\n')} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* ── Multi-PAK combined buy list ── */
+function CombinedBuyPanel({ jobs, projects, onClose }) {
+  const [deliveryOn, setDeliveryOn]     = useState(false)
+  const [deliveryCoef, setDeliveryCoef] = useState(1200)
+  const [needs, setNeeds]   = useState([])
+  const [rows, setRows]     = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr]       = useState('')
+
+  const projIds = [...new Set(jobs.map(j => j.project_id))]
+  const scopeProject = projIds.length === 1 ? projIds[0] : null
+  const projLabel = scopeProject
+    ? (projects.find(p => p.id === scopeProject)?.name || `#${scopeProject}`)
+    : 'unassigned / mixed'
+
+  async function build() {
+    setLoading(true); setErr('')
+    try {
+      const agg = {}
+      for (const j of jobs) {
+        for (const m of (j.calc_snapshot?.materials || [])) {
+          if (!agg[m.type_id]) agg[m.type_id] = { type_id: m.type_id, name: m.name, needed: 0 }
+          agg[m.type_id].needed += m.adj_qty || 0
+        }
+      }
+      const list = Object.values(agg)
+      if (!list.length) { setErr('Selected jobs have no material snapshots'); setRows([]); setNeeds([]); return }
+
+      const av = await post('/manufacturing/material-availability', {
+        project_id: scopeProject,
+        materials: list.map(m => ({ type_id: m.type_id, name: m.name, required_qty: m.needed })),
+      })
+      const avMap = {}; av.materials.forEach(m => { avMap[m.type_id] = m })
+      const merged = list.map(m => {
+        const available = avMap[m.type_id]?.available || 0
+        return { ...m, available, shortfall: Math.max(0, m.needed - available) }
+      }).sort((a, b) => b.shortfall - a.shortfall)
+      setNeeds(merged)
+
+      const shortIds = merged.filter(m => m.shortfall > 0).map(m => m.type_id)
+      if (shortIds.length) {
+        const [vols, jita, cj] = await Promise.all([
+          get(`/eve/volumes?type_ids=${shortIds.join(',')}`).catch(() => ({})),
+          fetchMarketPrices(shortIds, 'Jita').catch(() => ({})),
+          fetchMarketPrices(shortIds, 'C-J').catch(() => ({})),
+        ])
+        setRows(merged.filter(m => m.shortfall > 0).map(m => ({
+          type_id: m.type_id, name: m.name, qty: m.shortfall, volume: vols[m.type_id] || 0,
+          jita_buy: jita[m.type_id]?.Buy ?? null, jita_sell: jita[m.type_id]?.Sell ?? null,
+          cj_buy: cj[m.type_id]?.Buy ?? null, cj_sell: cj[m.type_id]?.Sell ?? null,
+        })))
+      } else { setRows([]) }
+    } catch (e) { setErr(e.message) }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { build() }, [jobs.map(j => j.id).join(',')])
+
+  const view = buildMarketView(rows, deliveryOn, deliveryCoef)
+  const fullList = needs.filter(m => m.shortfall > 0).map(m => `${m.name}\t${m.shortfall}`).join('\n')
+
+  return (
+    <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>
+          COMBINED BUY LIST · {jobs.length} jobs
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text)' }}>project: <b style={{ color: 'var(--text-white)' }}>{projLabel}</b> · stock netted off</span>
+        <button className="btn btn-ghost btn-sm" onClick={build} disabled={loading} style={{ marginLeft: 'auto' }}>
+          {loading ? '…' : '⟳ Rebuild'}
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+      </div>
+
+      {err && <div className="error-box" style={{ margin: 12 }}>{err}</div>}
+
+      {/* needs vs stock */}
+      {needs.length > 0 && (
+        <table>
+          <thead><tr><th>Material</th><th>Needed (all jobs)</th><th>On hand</th><th>To buy</th></tr></thead>
+          <tbody>
+            {needs.map(m => (
+              <tr key={m.type_id}>
+                <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{m.name}</td>
+                <td>{m.needed.toLocaleString()}</td>
+                <td style={{ color: m.available >= m.needed ? '#4caf7d' : 'var(--text)' }}>{m.available.toLocaleString()}</td>
+                <td style={{ color: m.shortfall > 0 ? '#e05252' : '#4caf7d', fontWeight: 500 }}>
+                  {m.shortfall > 0 ? m.shortfall.toLocaleString() : '✓'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {fullList && (
+        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, color: '#e05252', fontWeight: 600 }}>🛒 Shortfall multibuy</span>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard.writeText(fullList)}>Copy</button>
+          </div>
+          <textarea readOnly value={fullList} rows={Math.min(needs.filter(m => m.shortfall > 0).length, 10)} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+        </div>
+      )}
+
+      {view && view.rows.length > 0 && (
+        <div style={{ padding: 12 }}>
+          <MarketPanel view={view} bestBuyList={bestBuyListOf(view)}
+            deliveryOn={deliveryOn} setDeliveryOn={setDeliveryOn}
+            deliveryCoef={deliveryCoef} setDeliveryCoef={setDeliveryCoef} />
+        </div>
+      )}
+      {rows && rows.length === 0 && !loading && (
+        <div style={{ padding: 16, color: '#4caf7d', fontSize: 13 }}>✓ Everything needed is already in stock.</div>
+      )}
+    </div>
+  )
+}
+
+/* ── Cost composition donut ── */
+function Donut({ data, size = 150, thickness = 24 }) {
+  const total = data.reduce((s, d) => s + d.value, 0) || 1
+  const r = (size - thickness) / 2
+  const circ = 2 * Math.PI * r
+  let offset = 0
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
+        {data.map((d, i) => {
+          const dash = (d.value / total) * circ
+          const el = (
+            <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none"
+              stroke={d.color} strokeWidth={thickness}
+              strokeDasharray={`${dash} ${circ - dash}`} strokeDashoffset={-offset} />
+          )
+          offset += dash
+          return el
+        })}
+      </g>
+    </svg>
+  )
+}
+
+function CostPie({ result }) {
+  const data = [
+    ...result.materials.map((m, i) => ({ label: m.name, value: m.gross_cost, color: PIE_COLORS[i % PIE_COLORS.length] })),
+    { label: 'Job install', value: result.job_cost.net_install_cost, color: '#e05252' },
+    ...(result.bpc_cost ? [{ label: 'BPC', value: result.bpc_cost, color: '#777' }] : []),
+  ].filter(d => d.value > 0).sort((a, b) => b.value - a.value)
+  const total = data.reduce((s, d) => s + d.value, 0) || 1
+  return (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'center', padding: 8, flexWrap: 'wrap' }}>
+      <Donut data={data} />
+      <div style={{ flex: 1, minWidth: 160, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {data.slice(0, 10).map((d, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: d.color, flexShrink: 0 }} />
+            <span style={{ color: 'var(--text-white)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.label}</span>
+            <span style={{ color: 'var(--text)' }}>{(d.value / total * 100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ProductionMetrics({ result }) {
+  const hours = result.job_time?.hours || 0
+  const profit = result.results.profit
+  const costs = result.results.total_costs
+  const units = result.output.quantity
+  const profitPerHour = hours ? profit / hours : null
+  const roi = costs ? profit / costs * 100 : null
+  const unitsPerHour = hours ? units / hours : null
+  const profitPerUnit = units ? profit / units : null
+  const stats = [
+    { label: 'Profit / job', value: fmtIsk(profit), color: profit >= 0 ? '#4caf7d' : '#e05252' },
+    { label: 'Profit / hour', value: profitPerHour != null ? fmtIsk(profitPerHour) : '—', color: profitPerHour >= 0 ? '#4caf7d' : '#e05252' },
+    { label: 'ROI', value: roi != null ? roi.toFixed(1) + '%' : '—', color: roi >= 0 ? '#4caf7d' : '#e05252' },
+    { label: 'Profit / unit', value: profitPerUnit != null ? fmtIsk(profitPerUnit) : '—' },
+    { label: 'Units / hour', value: unitsPerHour != null ? Math.round(unitsPerHour).toLocaleString() : '—' },
+    { label: 'Job time', value: hours.toFixed(1) + ' h' },
+  ]
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(120px,1fr))', gap: 12, padding: 8 }}>
+      {stats.map((s, i) => (
+        <div key={i}>
+          <div style={statLabel}>{s.label}</div>
+          <div style={{ fontWeight: 600, color: s.color || 'var(--text-white)' }}>{s.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 function fmtIsk(v) {
   if (v == null || v === '') return '—'

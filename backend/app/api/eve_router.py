@@ -84,6 +84,19 @@ async def search_systems(
     )
 
 
+@router.get("/volumes")
+async def get_volumes(
+    type_ids: str = Query(..., description="Comma-separated type IDs"),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    """Per-unit volume (m³) for a set of type_ids — used for delivery cost."""
+    ids = [int(t) for t in type_ids.split(",") if t.strip().isdigit()]
+    if not ids:
+        return {}
+    rows = eve_db.query(EveType.type_id, EveType.volume).filter(EveType.type_id.in_(ids)).all()
+    return {tid: vol for tid, vol in rows}
+
+
 @router.get("/types/search", response_model=list[TypeOut])
 async def search_types(
     q: str = Query(..., min_length=2),
