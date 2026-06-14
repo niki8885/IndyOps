@@ -682,6 +682,7 @@ async def delete_job(
 async def inventory_analysis(
     method:     str = "FIFO",   # FIFO | LIFO
     project_id: Optional[int] = None,
+    organisation_id: Optional[int] = None,
     current_user: UserDB  = Depends(get_current_user),
     db:           Session = Depends(get_db),
 ):
@@ -690,12 +691,14 @@ async def inventory_analysis(
     Groups items by eve_type_id (or name), returns weighted average cost and
     total value using the selected inventory costing method.
     """
-    from app.core.database import InventoryItem
-    from sqlalchemy import func
+    from app.core.database import InventoryItem, Projects
 
     q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
     if project_id:
         q = q.filter(InventoryItem.project_id == project_id)
+    elif organisation_id:
+        proj_ids = [pid for (pid,) in db.query(Projects.id).filter(Projects.organisation_id == organisation_id).all()]
+        q = q.filter(InventoryItem.project_id.in_(proj_ids or [-1]))
 
     all_items = q.order_by(
         InventoryItem.eve_type_id,

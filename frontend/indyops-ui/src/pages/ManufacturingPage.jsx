@@ -1003,26 +1003,34 @@ function PakCard({ job, onChange }) {
 
 function InventoryAnalysisTab() {
   const [method, setMethod]     = useState('FIFO')
+  const [orgId, setOrgId]       = useState('')
   const [projectId, setProjectId] = useState('')
+  const [orgs, setOrgs]         = useState([])
   const [projects, setProjects] = useState([])
   const [data, setData]         = useState(null)
   const [loading, setLoading]   = useState(false)
 
   useEffect(() => {
-    get('/organisations').then(async orgs => {
+    get('/organisations').then(async os => {
+      setOrgs(os)
       const all = []
-      for (const o of orgs) {
-        try { const ps = await get(`/projects?org_id=${o.id}`); all.push(...ps) } catch {}
+      for (const o of os) {
+        try { all.push(...(await get(`/projects?org_id=${o.id}`))) } catch {}
       }
       setProjects(all)
     }).catch(() => {})
   }, [])
+
+  const visibleProjects = orgId
+    ? projects.filter(p => String(p.organisation_id) === String(orgId))
+    : projects
 
   async function analyze() {
     setLoading(true)
     try {
       const params = new URLSearchParams({ method })
       if (projectId) params.set('project_id', projectId)
+      else if (orgId) params.set('organisation_id', orgId)
       const res = await get(`/manufacturing/inventory-analysis?${params}`)
       setData(res)
     } catch {}
@@ -1042,9 +1050,13 @@ function InventoryAnalysisTab() {
             >{m}</button>
           ))}
         </div>
-        <select value={projectId} onChange={e => setProjectId(e.target.value)} style={{ width: 200 }}>
-          <option value="">All inventory</option>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        <select value={orgId} onChange={e => { setOrgId(e.target.value); setProjectId('') }} style={{ width: 180 }}>
+          <option value="">All organisations</option>
+          {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+        </select>
+        <select value={projectId} onChange={e => setProjectId(e.target.value)} style={{ width: 180 }}>
+          <option value="">All projects{orgId ? ' (in org)' : ''}</option>
+          {visibleProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <button className="btn btn-primary btn-sm" onClick={analyze} disabled={loading}>
           {loading ? 'Analyzing…' : '📊 Analyze'}

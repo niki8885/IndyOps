@@ -377,6 +377,7 @@ async def clear_inventory(
 @router.get("", response_model=List[InventoryOut])
 async def list_inventory(
     project_id: Optional[int] = None,
+    organisation_id: Optional[int] = None,
     place: Optional[str] = None,
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -385,6 +386,9 @@ async def list_inventory(
     q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
     if project_id is not None:
         q = q.filter(InventoryItem.project_id == project_id)
+    elif organisation_id is not None:
+        proj_ids = [pid for (pid,) in db.query(Projects.id).filter(Projects.organisation_id == organisation_id).all()]
+        q = q.filter(InventoryItem.project_id.in_(proj_ids or [-1]))
     if place is not None:
         q = q.filter(InventoryItem.place.ilike(f"%{place}%"))
     return q.order_by(InventoryItem.created_at.desc()).all()

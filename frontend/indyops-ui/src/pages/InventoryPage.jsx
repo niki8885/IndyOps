@@ -23,8 +23,9 @@ export default function InventoryPage() {
 
 function WarehouseTab() {
   const [items, setItems]       = useState([])
+  const [orgs, setOrgs]         = useState([])
   const [projects, setProjects] = useState([])
-  const [filter, setFilter]     = useState({ project_id: '', place: '' })
+  const [filter, setFilter]     = useState({ org_id: '', project_id: '', place: '' })
   const [error, setError]       = useState('')
   const [clearing, setClearing] = useState(false)
   const [view, setView]         = useState('stacked')   // 'stacked' | 'lots'
@@ -33,15 +34,17 @@ function WarehouseTab() {
 
   async function load() {
     const p = new URLSearchParams()
-    if (filter.project_id) p.set('project_id', filter.project_id)
-    if (filter.place)      p.set('place', filter.place)
+    if (filter.project_id)   p.set('project_id', filter.project_id)
+    else if (filter.org_id)  p.set('organisation_id', filter.org_id)
+    if (filter.place)        p.set('place', filter.place)
     try { setItems(await get(`/inventory?${p}`)) } catch {}
   }
 
   useEffect(() => {
-    get('/organisations').then(async orgs => {
+    get('/organisations').then(async os => {
+      setOrgs(os)
       const all = []
-      for (const o of orgs) {
+      for (const o of os) {
         try { all.push(...(await get(`/projects?org_id=${o.id}`)).map(p => ({ ...p, orgName: o.name }))) } catch {}
       }
       setProjects(all)
@@ -49,6 +52,10 @@ function WarehouseTab() {
   }, [])
 
   useEffect(() => { load() }, [filter])
+
+  const visibleProjects = filter.org_id
+    ? projects.filter(p => String(p.organisation_id) === String(filter.org_id))
+    : projects
 
   async function remove(id) {
     if (!confirm('Delete item?')) return
@@ -99,11 +106,15 @@ function WarehouseTab() {
     <div>
       {error && <div className="error-box">{error}</div>}
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 180 }}>
-          <option value="">All projects</option>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        <select value={filter.org_id} onChange={e => setFilter(f => ({ ...f, org_id: e.target.value, project_id: '' }))} style={{ width: 170 }}>
+          <option value="">All organisations</option>
+          {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
         </select>
-        <input value={filter.place} onChange={e => setFilter(f => ({ ...f, place: e.target.value }))} placeholder="Filter by system…" style={{ width: 160 }} />
+        <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 170 }}>
+          <option value="">All projects{filter.org_id ? ' (in org)' : ''}</option>
+          {visibleProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <input value={filter.place} onChange={e => setFilter(f => ({ ...f, place: e.target.value }))} placeholder="Filter by system…" style={{ width: 150 }} />
         <div style={{ display: 'flex', gap: 4 }}>
           {['stacked', 'lots'].map(v => (
             <button key={v} className={`btn btn-sm ${view === v ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setView(v)}>
