@@ -5,8 +5,10 @@ Activity IDs: 1=Manufacturing, 3=ResearchTE, 4=ResearchME, 5=Copying, 8=Inventio
 """
 import datetime
 import math
+import time as _time
 from typing import Optional, List
 
+import requests as _requests
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -16,25 +18,51 @@ from app.core.database_eve import (
     EveSessionLocal, EveType, EveActivityMaterial, EveActivityProduct,
     EveActivityTime, EveBlueprint, EveRigBonus, EveGroup, EveSolarSystem,
 )
-from app.core.schemas import ProductionStatus, ProductionTarget
+from app.core.schemas import ProductionStatus, ProductionTarget, FacilityType
 from app.core.security import get_current_user
 
 router = APIRouter()
 
-SCC_SURCHARGE = 0.04   # fixed 4% CCP surcharge on system cost
+SCC_SURCHARGE = 0.04   # fixed 4% CCP surcharge on EIV
+
+# Engineering Complex (Raitaru/Azbel/Sotiyo) manufacturing role bonuses
+EC_MATERIAL_ROLE = 1.0   # −1% material
+EC_COST_ROLE     = 3.0   # −3% job cost
+EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
+
+# ESI adjusted prices (drive Estimated Item Value)
+_ESI_PRICES_URL = "https://esi.evetech.net/latest/markets/prices/?datasource=tranquility"
+_ADJ_CACHE: dict = {"data": None, "ts": 0.0}
+_ADJ_TTL = 3600
+
+
+def _get_adjusted_prices() -> dict:
+    """ESI adjusted prices keyed by type_id (cached 1h). Used for Estimated Item Value."""
+    now = _time.time()
+    if _ADJ_CACHE["data"] is not None and now - _ADJ_CACHE["ts"] < _ADJ_TTL:
+        return _ADJ_CACHE["data"]
+    resp = _requests.get(_ESI_PRICES_URL, timeout=30, headers={"User-Agent": "IndyOps/1.0"})
+    resp.raise_for_status()
+    data = {int(e["type_id"]): float(e.get("adjusted_price") or 0) for e in resp.json()}
+    _ADJ_CACHE["data"] = data
+    _ADJ_CACHE["ts"] = now
+    return data
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Calculation helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _adj_qty(base_qty: int, runs: int, me: int, extra_pct: float = 0.0) -> int:
-    """Material qty after blueprint ME and structure/rig material bonus. Always ≥ runs."""
-    return max(runs, math.ceil(base_qty * runs * (1 - me / 100) * (1 - extra_pct / 100)))
+def _adj_qty(base_qty: int, runs: int, me: int, extra_mult: float = 1.0) -> int:
+    """
+    Material qty after blueprint ME and an extra multiplier (rig + structure role,
+    combined multiplicatively by the caller). Always ≥ runs.
+    """
+    return max(runs, math.ceil(base_qty * runs * (1 - me / 100) * extra_mult))
 
 
-def _adj_time(base_time: int, runs: int, te: int, extra_pct: float = 0.0) -> int:
-    return math.ceil(base_time * runs * (1 - te / 100) * (1 - extra_pct / 100))
+def _adj_time(base_time: int, runs: int, te: int, extra_mult: float = 1.0) -> int:
+    return math.ceil(base_time * runs * (1 - te / 100) * extra_mult)
 
 
 def _run_calculation(
@@ -52,18 +80,24 @@ def _run_calculation(
     facility_tax_pct: float,
     structure_bonus_pct: float = 0.0,
     estimated_item_value: float = None,
-    material_bonus_pct: float = 0.0,   # rig/structure ME (security-scaled)
-    time_bonus_pct: float = 0.0,       # rig/structure TE
+    material_bonus_pct: float = 0.0,   # rig ME (security-scaled)
+    time_bonus_pct: float = 0.0,       # rig TE
+    material_role_pct: float = 0.0,    # structure role ME (e.g. EC −1%)
+    time_role_pct: float = 0.0,        # structure role TE
 ) -> dict:
 
     total_output = product_qty_per_run * runs
     gross_sell   = total_output * output_price
     net_sell     = gross_sell * (1 - broker_fee_pct / 100)
 
+    # rig and structure-role bonuses stack multiplicatively, like EVE
+    mat_mult  = (1 - material_bonus_pct / 100) * (1 - material_role_pct / 100)
+    time_mult = (1 - time_bonus_pct / 100) * (1 - time_role_pct / 100)
+
     mat_rows = []
     total_mat_cost = 0.0
     for m in materials:
-        adj  = _adj_qty(m["base_qty"], runs, me, material_bonus_pct)
+        adj  = _adj_qty(m["base_qty"], runs, me, mat_mult)
         base = m["base_qty"] * runs
         gross_cost = adj * m["unit_cost"]
         total_mat_cost += gross_cost
@@ -88,7 +122,7 @@ def _run_calculation(
     scc_surcharge     = round(eiv * SCC_SURCHARGE, 2)
     net_install       = round(gross_install + facility_tax_isk + scc_surcharge, 2)
 
-    job_time_s = _adj_time(base_time_per_run, runs, te, time_bonus_pct)
+    job_time_s = _adj_time(base_time_per_run, runs, te, time_mult)
 
     total_costs = round(total_mat_cost + bpc_cost + net_install, 2)
     profit      = round(net_sell - total_costs, 2)
@@ -213,8 +247,10 @@ class CalcRequest(BaseModel):
     system_cost_index:    float = 0.0    # fraction
     facility_tax_pct:     float = 0.0
     structure_bonus_pct:  float = 0.0
-    material_bonus_pct:   float = 0.0    # rig/structure ME (security-scaled)
-    time_bonus_pct:       float = 0.0    # rig/structure TE
+    material_bonus_pct:   float = 0.0    # rig ME (security-scaled)
+    time_bonus_pct:       float = 0.0    # rig TE
+    material_role_pct:    float = 0.0    # structure role ME (auto from EC if 0)
+    time_role_pct:        float = 0.0    # structure role TE
     estimated_item_value: Optional[float] = None
     material_prices:      List[MaterialPrice] = []
 
@@ -393,18 +429,36 @@ async def calculate(
         for m in base_mats
     ]
 
+    # Estimated Item Value (EVE-accurate): Σ base_qty × ESI adjusted price
+    eiv = body.estimated_item_value
+    if not eiv or eiv <= 0:
+        try:
+            adj = _get_adjusted_prices()
+            computed = sum((m["base_qty"] * body.runs) * adj.get(m["type_id"], 0.0) for m in base_mats)
+            eiv = computed if computed > 0 else None
+        except Exception:
+            eiv = None   # _run_calculation will fall back to material cost
+
     # pull facility defaults if provided
-    sci    = body.system_cost_index
-    tax    = body.facility_tax_pct
+    sci     = body.system_cost_index
+    tax     = body.facility_tax_pct
     s_bonus = body.structure_bonus_pct
-    if body.facility_id:  # override with facility values if not manually set
+    mat_role = body.material_role_pct
+    time_role = body.time_role_pct
+    if body.facility_id:
         f = db.query(Facility).filter(Facility.id == body.facility_id).first()
         if f:
             if sci == 0.0 and f.system_cost_index:
                 sci = f.system_cost_index
             if tax == 0.0 and f.tax:
                 tax = f.tax
-            if s_bonus == 0.0 and f.cost_bonus:
+            # Engineering Complex role bonuses (auto unless caller set them)
+            if f.facility_type in EC_TYPES:
+                if mat_role == 0.0:
+                    mat_role = EC_MATERIAL_ROLE
+                if s_bonus == 0.0:
+                    s_bonus = max(EC_COST_ROLE, f.cost_bonus or 0.0)
+            elif s_bonus == 0.0 and f.cost_bonus:
                 s_bonus = f.cost_bonus
 
     return _run_calculation(
@@ -421,9 +475,11 @@ async def calculate(
         system_cost_index=sci,
         facility_tax_pct=tax,
         structure_bonus_pct=s_bonus,
-        estimated_item_value=body.estimated_item_value,
+        estimated_item_value=eiv,
         material_bonus_pct=body.material_bonus_pct,
         time_bonus_pct=body.time_bonus_pct,
+        material_role_pct=mat_role,
+        time_role_pct=time_role,
     )
 
 
@@ -533,13 +589,23 @@ async def facility_bonuses(
                 "me_pct": round(eff_me, 2), "te_pct": round(eff_te, 2), "cost_pct": round(eff_cost, 2),
             })
 
+        is_ec = f.facility_type in EC_TYPES
+        structure_role = {
+            "name": f.facility_type.value if is_ec else None,
+            "material_pct": EC_MATERIAL_ROLE if is_ec else 0.0,
+            "time_pct": 0.0,
+            "cost_pct": EC_COST_ROLE if is_ec else 0.0,
+        }
+
         return {
             "facility_id": facility_id,
+            "facility_type": f.facility_type.value,
             "security": sec, "band": band,
             "product_category_id": cat_id, "product_group": group_name,
             "total_me_pct": round(tot_me, 2),
             "total_te_pct": round(tot_te, 2),
             "total_cost_pct": round(tot_cost, 2),
+            "structure_role": structure_role,
             "rigs": rigs_out,
         }
     finally:

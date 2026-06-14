@@ -155,7 +155,8 @@ function CalculatorTab() {
         const en = {}
         b.rigs.forEach(r => { en[r.type_id] = !!r.applies })
         setEnabledRigs(en)
-        if (b.total_cost_pct > 0) setParams(p => ({ ...p, structure_bonus_pct: b.total_cost_pct }))
+        const cost = (b.structure_role?.cost_pct || 0) + (b.total_cost_pct || 0)
+        if (cost > 0) setParams(p => ({ ...p, structure_bonus_pct: cost }))
       })
       .catch(() => setRigBonus(null))
   }, [params.facility_id, product?.type_id])
@@ -178,6 +179,8 @@ function CalculatorTab() {
         structure_bonus_pct: Number(params.structure_bonus_pct),
         material_bonus_pct: rigTotals().me,
         time_bonus_pct: rigTotals().te,
+        material_role_pct: rigBonus?.structure_role?.material_pct || 0,
+        time_role_pct: rigBonus?.structure_role?.time_pct || 0,
         estimated_item_value: params.estimated_item_value !== '' ? Number(params.estimated_item_value) : null,
         material_prices: Object.entries(matPrices)
           .filter(([, v]) => v !== '')
@@ -227,8 +230,12 @@ function CalculatorTab() {
   }
 
   function adjQtyOf(m) {
-    const rigMe = rigTotals().me
-    return Math.max(Number(params.runs), Math.ceil(m.base_qty * params.runs * (1 - params.me / 100) * (1 - rigMe / 100)))
+    const rigMe  = rigTotals().me
+    const roleMe = rigBonus?.structure_role?.material_pct || 0
+    return Math.max(
+      Number(params.runs),
+      Math.ceil(m.base_qty * params.runs * (1 - params.me / 100) * (1 - rigMe / 100) * (1 - roleMe / 100)),
+    )
   }
 
   async function checkWarehouse() {
@@ -386,47 +393,72 @@ function CalculatorTab() {
         </div>
       </div>
 
-      {/* ── Rig bonuses (dogma) ── */}
-      {rigBonus && rigBonus.rigs.length > 0 && (() => {
+      {/* ── Production modifiers (dogma) ── */}
+      {rigBonus && (() => {
         const tot = rigTotals()
+        const role = rigBonus.structure_role || {}
+        const roleMe = role.material_pct || 0, roleTe = role.time_pct || 0, roleCost = role.cost_pct || 0
+        const me = Number(params.me), te = Number(params.te)
+        // net multiplicative reductions (what EVE actually applies)
+        const netMe = (1 - (1 - me / 100) * (1 - tot.me / 100) * (1 - roleMe / 100)) * 100
+        const netTe = (1 - (1 - te / 100) * (1 - tot.te / 100) * (1 - roleTe / 100)) * 100
         return (
-          <div className="card" style={{ padding: '12px 16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
-              <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Facility rig bonuses</span>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+              padding: '9px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)',
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>PRODUCTION MODIFIERS</span>
               <span style={{ fontSize: 11, color: 'var(--text)' }}>
-                security band <b style={{ color: 'var(--accent)' }}>{rigBonus.band}</b>
-                {rigBonus.product_group ? ` · product: ${rigBonus.product_group}` : ''}
+                security <b style={{ color: 'var(--accent)' }}>{rigBonus.band}</b>
+                {rigBonus.product_group ? ` · ${rigBonus.product_group}` : ''}
+                {rigBonus.facility_type ? ` · ${rigBonus.facility_type}` : ''}
               </span>
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
-                <BonusStat label="ME" pct={+tot.me.toFixed(2)} />
-                <BonusStat label="TE" pct={+tot.te.toFixed(2)} />
-                <BonusStat label="Cost" pct={+tot.cost.toFixed(2)} />
-              </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+
+            {/* column headers */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px', gap: 0, padding: '6px 16px', fontSize: 10, color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>
+              <span>MODIFIER</span>
+              <span style={{ textAlign: 'right' }}>MATERIAL</span>
+              <span style={{ textAlign: 'right' }}>TIME</span>
+              <span style={{ textAlign: 'right' }}>COST</span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <ModRow label="Blueprint Efficiency" me={me} te={te} />
               {rigBonus.rigs.map((r, i) => {
                 const on = !!enabledRigs[r.type_id]
                 const hasData = r.me_pct != null
                 return (
-                  <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: hasData ? 'pointer' : 'default' }}>
-                    <input
-                      type="checkbox" checked={on} disabled={!hasData}
-                      onChange={e => setEnabledRigs(prev => ({ ...prev, [r.type_id]: e.target.checked }))}
-                    />
-                    <span style={{ color: on ? 'var(--text-white)' : 'var(--text)' }}>{r.name}</span>
-                    {hasData
-                      ? <span style={{ color: 'var(--text)', fontSize: 11 }}>
-                          −{r.me_pct}% ME · −{r.te_pct}% TE{r.cost_pct ? ` · −${r.cost_pct}% cost` : ''}
-                          {!r.applies && <span style={{ color: 'var(--border2)' }}> · auto-skipped, tick to force</span>}
-                        </span>
-                      : <span style={{ color: 'var(--border2)', fontSize: 11 }}>{r.reason || 'no industry bonus'}</span>
-                    }
-                  </label>
+                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px', alignItems: 'center', padding: '6px 16px', borderTop: '1px solid var(--border)' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: hasData ? 'pointer' : 'default', minWidth: 0 }}>
+                      <input type="checkbox" checked={on} disabled={!hasData}
+                        onChange={e => setEnabledRigs(prev => ({ ...prev, [r.type_id]: e.target.checked }))} />
+                      <span style={{ fontSize: 12, color: on ? 'var(--text-white)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.name.replace('Standup M-Set ', '')}
+                        {hasData && !r.applies && <span style={{ color: 'var(--border2)', fontSize: 10 }}> · auto-skipped</span>}
+                      </span>
+                    </label>
+                    <Pct v={on ? r.me_pct : 0} />
+                    <Pct v={on ? r.te_pct : 0} />
+                    <Pct v={on ? r.cost_pct : 0} />
+                  </div>
                 )
               })}
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 8 }}>
-              Effective bonus = rig base × security multiplier ({rigBonus.band}). Tick / untick to control what applies.
+              {(roleMe || roleTe || roleCost) ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px', alignItems: 'center', padding: '6px 16px', borderTop: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-white)' }}>Structure Role Bonus{role.name ? ` (${role.name})` : ''}</span>
+                  <Pct v={roleMe} /><Pct v={roleTe} /><Pct v={roleCost} />
+                </div>
+              ) : null}
+
+              {/* net effective */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px', alignItems: 'center', padding: '8px 16px', borderTop: '2px solid var(--border2)', background: 'var(--surface2)' }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-white)' }}>Effective reduction</span>
+                <Pct v={+netMe.toFixed(2)} bold />
+                <Pct v={+netTe.toFixed(2)} bold />
+                <Pct v={+(tot.cost + roleCost).toFixed(2)} bold />
+              </div>
             </div>
           </div>
         )
@@ -1132,13 +1164,19 @@ function Hint({ children }) {
   return <span style={{ fontWeight: 400, color: 'var(--border2)', marginLeft: 4 }}>{children}</span>
 }
 
-function BonusStat({ label, pct }) {
+function Pct({ v, bold }) {
   return (
-    <div style={{ textAlign: 'right' }}>
-      <span style={{ fontSize: 11, color: 'var(--text)', marginRight: 6 }}>{label}</span>
-      <span style={{ fontWeight: 600, color: pct > 0 ? '#4caf7d' : 'var(--text)' }}>
-        {pct > 0 ? `−${pct}%` : '—'}
-      </span>
+    <span style={{ textAlign: 'right', fontSize: 12, fontWeight: bold ? 700 : 400, color: v > 0 ? '#4caf7d' : 'var(--border2)' }}>
+      {v > 0 ? `−${v}%` : '—'}
+    </span>
+  )
+}
+
+function ModRow({ label, me, te }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px', alignItems: 'center', padding: '6px 16px' }}>
+      <span style={{ fontSize: 12, color: 'var(--text-white)' }}>{label}</span>
+      <Pct v={me} /><Pct v={te} /><Pct v={0} />
     </div>
   )
 }
