@@ -429,7 +429,12 @@ async def calculate(
 
 # ─── Facility rig bonuses (dogma-based) ──────────────────────────────────────
 
-_SHIP_CAT, _MODULE_CAT, _CHARGE_CAT, _DRONE_CAT, _FIGHTER_CAT, _STRUCT_CAT = 6, 7, 8, 18, 87, 65
+# EVE category IDs. Affected sets are taken from the rig multiplier attribute
+# descriptions in dgmAttributeTypes (e.g. attr 2561 "Structure" explicitly lists
+# Structure Components/Modules, Upwell & Starbase Structures, *Fuel Blocks*).
+_CAT_SHIP, _CAT_MODULE, _CAT_CHARGE, _CAT_DRONE = 6, 7, 8, 18
+_CAT_IMPLANT, _CAT_FIGHTER, _CAT_POS_STRUCT = 20, 87, 23
+_CAT_UPWELL, _CAT_STRUCT_MODULE = 65, 66
 
 
 def _ship_size(group_name: str) -> Optional[str]:
@@ -445,17 +450,29 @@ def _ship_size(group_name: str) -> Optional[str]:
 
 
 def _rig_applies(rig_name: str, cat_id: Optional[int], group_name: str) -> bool:
-    """Best-effort: match an engineering rig to a product by its name + product category."""
+    """
+    Match an engineering rig to a product, based on the official affected-category
+    lists from the SDE rig multiplier attribute descriptions.
+    """
     n = (rig_name or "").lower()
     gn = (group_name or "").lower()
-    if "equipment" in n:        return cat_id == _MODULE_CAT
-    if "ammunition" in n:       return cat_id == _CHARGE_CAT
-    if "drone" in n or "fighter" in n:  return cat_id in (_DRONE_CAT, _FIGHTER_CAT)
-    if "capital component" in n:  return "component" in gn
-    if "component" in n:        return "component" in gn
-    if "structure" in n:        return cat_id == _STRUCT_CAT
+    if "equipment" in n:
+        # Ship Modules, Ship Rigs, Personal Deployables, Implants, Cargo Containers
+        return cat_id in (_CAT_MODULE, _CAT_IMPLANT) or "cargo container" in gn or "deployable" in gn
+    if "ammunition" in n:
+        return cat_id == _CAT_CHARGE
+    if "drone" in n or "fighter" in n:
+        return cat_id in (_CAT_DRONE, _CAT_FIGHTER)
+    if "capital component" in n:
+        return "component" in gn
+    if "component" in n:            # Advanced/T2/T3 Components, Tools, Data Interfaces
+        return "component" in gn or "tool" in gn or "data interface" in gn
+    if "structure" in n:
+        # Structure Components/Modules, Upwell & Starbase Structures, Fuel Blocks
+        return (cat_id in (_CAT_UPWELL, _CAT_STRUCT_MODULE, _CAT_POS_STRUCT)
+                or "fuel block" in gn or "structure" in gn or "component" in gn)
     if "ship" in n:
-        if cat_id != _SHIP_CAT:
+        if cat_id != _CAT_SHIP:
             return False
         size = _ship_size(group_name)
         if "small" in n:  return size == "small"
