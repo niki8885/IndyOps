@@ -3,6 +3,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 
 from app.core.database import SessionLocal
 from app.tasks.update_sde import run_sde_update
+from app.tasks.update_indices import run_index_update
 
 import logging
 
@@ -22,6 +23,14 @@ def scheduled_update_daily():
         logger.error(f"Full sync failed: {e}")
     finally:
         db.close()
+
+
+def scheduled_index_update():
+    logger.info("Starting hourly commodity-index update...")
+    try:
+        run_index_update()
+    except Exception as e:
+        logger.error(f"Index update failed: {e}")
 
 
 def scheduled_sde_update():
@@ -54,3 +63,13 @@ scheduler.add_job(
     id="sde_update_job",
     replace_existing=True,
 )
+
+# Commodity index snapshots — every hour on the hour
+scheduler.add_job(
+    scheduled_index_update,
+    "cron",
+    minute=2,
+    id="index_update_job",
+    replace_existing=True,
+)
+

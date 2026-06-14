@@ -242,6 +242,21 @@ class StockMovement(Base):
     job     = relationship("ProductionJob", backref="stock_movements")
 
 
+class MarketIndexSnapshot(Base):
+    """Hourly snapshot of a commodity index (price/volume + concentration/liquidity)."""
+    __tablename__ = "market_index_snapshots"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    index_key       = Column(String(20), nullable=False, index=True)   # plex, mineral, …
+    timestamp       = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, index=True)
+    price_index     = Column(Float, nullable=True)
+    volume_index    = Column(Float, nullable=True)
+    top3_share      = Column(Float, nullable=True)
+    h_index         = Column(Float, nullable=True)
+    entropy         = Column(Float, nullable=True)
+    liquidity_index = Column(Float, nullable=True)
+
+
 def get_db():
     db = SessionLocal()
     try:
