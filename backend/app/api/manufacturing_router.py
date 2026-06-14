@@ -893,6 +893,19 @@ async def issue_job_materials(
             "cost": round(cost, 2),
         })
 
+    # recompute the real unit cost from what was actually consumed (warehouse FIFO)
+    snap = dict(job.calc_snapshot or {})
+    out_qty = (snap.get("output") or {}).get("quantity") or 0
+    bpc = snap.get("bpc_cost") or 0
+    install = (snap.get("job_cost") or {}).get("net_install_cost") or 0
+    actual_total = grand_total + bpc + install
+    snap["actual"] = {
+        "material_cost": round(grand_total, 2),
+        "total_cost": round(actual_total, 2),
+        "unit_cost": round(actual_total / out_qty, 2) if out_qty else None,
+    }
+    job.calc_snapshot = snap   # reassign new dict → JSON column marked dirty
+
     if job.status in (ProductionStatus.PLANNING, ProductionStatus.PREPARING):
         job.status = ProductionStatus.IN_PROGRESS
     job.updated_at = datetime.datetime.utcnow()
@@ -901,9 +914,92 @@ async def issue_job_materials(
     return {
         "job_id": job.id,
         "total_cost": round(grand_total, 2),
+        "actual_unit_cost": snap["actual"]["unit_cost"],
         "materials": results,
         "shortfalls": [r for r in results if r["shortfall"] > 0],
     }
+
+
+class ReceiveRequest(BaseModel):
+    unit_price: Optional[float] = None
+    quantity:   Optional[int]   = None
+    place:      Optional[str]   = None
+
+
+@router.post("/jobs/{job_id}/receive")
+async def receive_job_output(
+    job_id: int,
+    body: ReceiveRequest,
+    force: bool = False,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Mark a PAK received: add the produced units to inventory as OUTPUT at their
+    production cost (actual if materials were issued, else planned), log an 'in'
+    movement, and complete the job.
+    """
+    job = _job_or_404(db, job_id, current_user.id)
+    snap = job.calc_snapshot or {}
+    out = snap.get("output") or {}
+    qty = int(body.quantity or out.get("quantity") or 0)
+    if qty <= 0:
+        raise HTTPException(400, "Nothing to receive (no output quantity)")
+
+    already = (
+        db.query(StockMovement)
+        .filter(StockMovement.production_job_id == job.id, StockMovement.direction == "in")
+        .first()
+    )
+    if already and not force:
+        raise HTTPException(400, "Output already received for this job (use force=true to repeat)")
+
+    # cost basis: actual (post-issue) → else planned total cost per unit
+    actual = snap.get("actual") or {}
+    unit = actual.get("unit_cost")
+    if unit is None:
+        tc = (snap.get("results") or {}).get("total_costs")
+        oq = out.get("quantity")
+        unit = round(tc / oq, 2) if tc and oq else None
+    if body.unit_price is not None:
+        unit = body.unit_price
+
+    eve_db = EveSessionLocal()
+    try:
+        t = eve_db.query(EveType).filter(EveType.type_id == job.product_type_id).first()
+        vol = t.volume if t else None
+    finally:
+        eve_db.close()
+
+    item = InventoryItem(
+        user_id=current_user.id,
+        project_id=job.project_id,
+        eve_type_id=job.product_type_id,
+        name=job.product_name,
+        volume=vol,
+        quantity=qty,
+        price=unit,
+        place=body.place or job.place,
+        flow="output",
+        item_status="in_stock",
+        note=f"PAK #{job.id} output",
+    )
+    db.add(item)
+    db.add(StockMovement(
+        user_id=current_user.id, project_id=job.project_id, production_job_id=job.id,
+        eve_type_id=job.product_type_id, name=job.product_name,
+        quantity=qty, direction="in",
+        unit_cost=unit, total_cost=round(unit * qty, 2) if unit else None,
+        reason=f"PAK #{job.id} received — {job.product_name}",
+    ))
+
+    job.status = ProductionStatus.COMPLETED
+    job.date_released = datetime.datetime.utcnow()
+    job.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+
+    return {"job_id": job.id, "received_qty": qty, "unit_cost": unit, "inventory_id": item.id}
 
 
 @router.get("/jobs/{job_id}/movements")

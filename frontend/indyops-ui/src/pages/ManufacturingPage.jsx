@@ -306,10 +306,15 @@ function CalculatorTab() {
   // when the Save-as-PAK panel opens: auto Initial Contract + auto product prices
   useEffect(() => {
     if (!saveOpen || !result || !product?.type_id) return
-    const initial = Math.round((result.results.total_material_cost || 0) + (result.bpc_cost || 0))
+    const w = result.windows || 1
+    // per-PAK initial contract = (materials + BPC) for one window
+    const perPakInitial = Math.round(((result.results.total_material_cost || 0) + (result.bpc_cost || 0)) / w)
+    const perPakUnits = Math.round((result.output.quantity || 0) / w)
     setJobForm(f => ({
       ...f,
-      initial_contract_price: f.initial_contract_price || String(initial),
+      initial_contract_price: f.initial_contract_price || String(perPakInitial),
+      paks: f.paks || String(w),
+      units_per_pak: f.units_per_pak || String(perPakUnits),
       project_id: f.project_id || calcProjectId || '',
     }))
 
@@ -394,8 +399,9 @@ function CalculatorTab() {
   const profit = result?.results?.profit ?? 0
   const margin = result?.results?.margin_pct ?? 0
 
-  // PAK economics — Reward = Return − Initial − Job(install) cost
-  const jobInstallCost  = result?.job_cost?.net_install_cost ?? 0
+  // PAK economics are PER PAK (one window); the batch = windows PAKs.
+  const calcWindows     = result?.windows || 1
+  const jobInstallCost  = (result?.job_cost?.net_install_cost ?? 0) / calcWindows
   const initialContract = Number(jobForm.initial_contract_price) || 0
   const returnContract  = Number(jobForm.return_contract_price) || 0
   const pakRewardCalc   = returnContract ? returnContract - initialContract - jobInstallCost : 0
@@ -767,15 +773,15 @@ function CalculatorTab() {
             <CInput label="Pack Tier" value={jobForm.pack_tier} onChange={setJ('pack_tier')} placeholder="F" />
 
             <div>
-              <CLabel>Initial Contract (ISK) <Hint>materials + BPC, auto</Hint></CLabel>
+              <CLabel>Initial Contract / PAK <Hint>(materials + BPC) ÷ windows</Hint></CLabel>
               <input type="number" value={jobForm.initial_contract_price} onChange={setJ('initial_contract_price')} placeholder="0" />
             </div>
             <div>
-              <CLabel>Return Contract (ISK) <Hint>you set this</Hint></CLabel>
+              <CLabel>Return Contract / PAK <Hint>you set this</Hint></CLabel>
               <input type="number" value={jobForm.return_contract_price} onChange={setJ('return_contract_price')} placeholder="0" />
             </div>
             <div>
-              <CLabel>PAK Reward <Hint>Return − Initial − Job</Hint></CLabel>
+              <CLabel>PAK Reward / PAK <Hint>Return − Initial − Job</Hint></CLabel>
               <div style={{
                 padding: '7px 10px', borderRadius: 4, fontWeight: 600,
                 background: 'var(--surface3)', border: '1px solid var(--border2)',
@@ -956,6 +962,13 @@ function PakCard({ job, onChange }) {
   const [movements, setMovements] = useState([])
   const [issuing, setIssuing]     = useState(false)
   const [issueMsg, setIssueMsg]   = useState('')
+  const [receiving, setReceiving] = useState(false)
+  const [receiveMsg, setReceiveMsg] = useState('')
+  const [receivePrice, setReceivePrice] = useState('')
+
+  const outMoves = movements.filter(m => m.direction === 'out')
+  const inMoves  = movements.filter(m => m.direction === 'in')
+  const actualUnit = s?.actual?.unit_cost ?? null
 
   async function loadMovements() {
     try { setMovements(await get(`/manufacturing/jobs/${job.id}/movements`)) } catch {}
@@ -964,7 +977,7 @@ function PakCard({ job, onChange }) {
   useEffect(() => { loadMovements() }, [job.id])
 
   async function issue(force = false) {
-    const already = movements.length > 0
+    const already = outMoves.length > 0
     if (already && !force) {
       if (!confirm('Materials already issued for this job. Issue again (deduct more stock)?')) return
       force = true
@@ -976,13 +989,29 @@ function PakCard({ job, onChange }) {
       const res = await post(`/manufacturing/jobs/${job.id}/issue${force ? '?force=true' : ''}`, {})
       const shorts = res.shortfalls || []
       setIssueMsg(
-        `✓ Consumed ${res.materials.filter(m => m.consumed > 0).length} materials · ${fmtIsk(res.total_cost)}` +
+        `✓ Consumed ${res.materials.filter(m => m.consumed > 0).length} materials · ${fmtIsk(res.total_cost)} · unit cost ${fmtIsk(res.actual_unit_cost)}` +
         (shorts.length ? ` · ⚠ ${shorts.length} short: ${shorts.map(x => x.name + ' (-' + x.shortfall + ')').join(', ')}` : '')
       )
       await loadMovements()
       onChange?.()
     } catch (e) { setIssueMsg('⚠ ' + e.message) }
     finally { setIssuing(false) }
+  }
+
+  async function receive(force = false) {
+    if (inMoves.length > 0 && !force) {
+      if (!confirm('Output already received. Receive again (add more to stock)?')) return
+      force = true
+    }
+    setReceiving(true); setReceiveMsg('')
+    try {
+      const body = receivePrice !== '' ? { unit_price: Number(receivePrice) } : {}
+      const res = await post(`/manufacturing/jobs/${job.id}/receive${force ? '?force=true' : ''}`, body)
+      setReceiveMsg(`✓ Added ${res.received_qty.toLocaleString()} ${job.product_name} to output @ ${fmtIsk(res.unit_cost)}/u`)
+      await loadMovements()
+      onChange?.()
+    } catch (e) { setReceiveMsg('⚠ ' + e.message) }
+    finally { setReceiving(false) }
   }
 
   if (!s) {
@@ -1028,7 +1057,8 @@ function PakCard({ job, onChange }) {
       <CardSection title="PAK Prices">
         <Row label="Initial contract" value={job.initial_contract_price ? fmtIsk(job.initial_contract_price) : '—'} />
         <Row label="Return contract" value={job.return_contract_price ? fmtIsk(job.return_contract_price) : '—'} />
-        <Row label="Unit cost" value={s.output ? fmtIsk(r.total_costs / s.output.quantity) : '—'} />
+        <Row label="Unit cost (plan)" value={s.output ? fmtIsk(r.total_costs / s.output.quantity) : '—'} />
+        {actualUnit != null && <Row label="Unit cost (actual)" value={fmtIsk(actualUnit)} accent />}
       </CardSection>
       <CardSection title="Prices">
         <Row label="Jita SELL" value={job.jita_sell ? fmtIsk(job.jita_sell) : '—'} />
@@ -1045,28 +1075,43 @@ function PakCard({ job, onChange }) {
 
       {/* Material write-off / issue */}
       <CardSection title="Warehouse write-off" style={{ gridColumn: '1 / -1' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: movements.length ? 10 : 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
           <button className="btn btn-primary btn-sm" onClick={() => issue(false)} disabled={issuing}>
-            {issuing ? 'Issuing…' : movements.length ? '📦 Issue again' : '📦 Issue materials'}
+            {issuing ? 'Issuing…' : outMoves.length ? '📦 Issue again' : '📦 Issue materials'}
           </button>
           <span style={{ fontSize: 11, color: 'var(--text)' }}>
-            Deducts the job's materials from {job.project_id ? 'the project' : 'unassigned'} stock (FIFO) and logs it.
+            Deduct the batch's materials from {job.project_id ? 'project' : 'unassigned'} stock (FIFO)
           </span>
-          {issueMsg && (
-            <span style={{ fontSize: 12, color: issueMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{issueMsg}</span>
-          )}
+          {issueMsg && <span style={{ fontSize: 12, color: issueMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{issueMsg}</span>}
         </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => receive(false)} disabled={receiving}
+            style={{ borderColor: '#4caf7d', color: '#4caf7d' }}>
+            {receiving ? 'Receiving…' : inMoves.length ? '✅ Received again' : '✅ Received'}
+          </button>
+          <label style={{ fontSize: 11, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            unit cost
+            <input type="number" value={receivePrice} onChange={e => setReceivePrice(e.target.value)}
+              placeholder={actualUnit != null ? String(actualUnit) : 'auto'} style={{ width: 110 }} />
+          </label>
+          <span style={{ fontSize: 11, color: 'var(--text)' }}>→ adds output to stock at production cost</span>
+          {receiveMsg && <span style={{ fontSize: 12, color: receiveMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{receiveMsg}</span>}
+        </div>
+
         {movements.length > 0 && (
           <table style={{ marginTop: 6 }}>
             <thead>
-              <tr><th>Date</th><th>Material</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Reason</th></tr>
+              <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Reason</th></tr>
             </thead>
             <tbody>
               {movements.map(mv => (
                 <tr key={mv.id}>
                   <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.created_at ? new Date(mv.created_at).toLocaleString() : '—'}</td>
                   <td style={{ color: 'var(--text-white)' }}>{mv.name}</td>
-                  <td style={{ color: '#e05252' }}>-{mv.quantity.toLocaleString()}</td>
+                  <td style={{ color: mv.direction === 'in' ? '#4caf7d' : '#e05252' }}>
+                    {mv.direction === 'in' ? '+' : '-'}{mv.quantity.toLocaleString()}
+                  </td>
                   <td style={{ color: 'var(--text)' }}>{fmtIsk(mv.unit_cost)}</td>
                   <td style={{ color: 'var(--text-bright)' }}>{fmtIsk(mv.total_cost)}</td>
                   <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.reason}</td>

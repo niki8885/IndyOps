@@ -207,9 +207,13 @@ class InventoryItem(Base):
     name        = Column(String(200), nullable=False)
     volume      = Column(Float, nullable=True)                  # m³ per unit, from SDE
     quantity    = Column(BigInteger, nullable=False, default=1)
-    price       = Column(Float, nullable=True)                  # ISK per unit
+    price       = Column(Float, nullable=True)                  # ISK per unit (cost basis)
     place       = Column(String(200), nullable=True)            # solar system / station name
     note        = Column(Text, nullable=True)
+
+    flow        = Column(String(10), nullable=False, default="input")   # input | output
+    item_status = Column(String(12), nullable=False, default="in_stock")  # in_stock | used | sold
+    sale_price  = Column(Float, nullable=True)                  # ISK per unit when sold
 
     created_at  = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at  = Column(DateTime, nullable=True)
@@ -275,6 +279,9 @@ _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS closed BOOLEAN DEFAULT FALSE",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS priority VARCHAR(10) DEFAULT 'medium'",
     "ALTER TABLE production_jobs ADD COLUMN IF NOT EXISTS windows INTEGER DEFAULT 1",
+    "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS flow VARCHAR(10) DEFAULT 'input'",
+    "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS item_status VARCHAR(12) DEFAULT 'in_stock'",
+    "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS sale_price DOUBLE PRECISION",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Athanor'",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Tatara'",
 ]

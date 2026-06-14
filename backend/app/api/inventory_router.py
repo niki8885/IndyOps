@@ -60,6 +60,9 @@ class InventoryOut(BaseModel):
     price: Optional[float]
     place: Optional[str]
     note: Optional[str]
+    flow: Optional[str] = "input"
+    item_status: Optional[str] = "in_stock"
+    sale_price: Optional[float] = None
     created_at: datetime.datetime
     updated_at: Optional[datetime.datetime]
 
