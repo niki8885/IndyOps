@@ -251,6 +251,18 @@ function ParseTab() {
   const [globalPlace, setGlobalPlace]     = useState('')
   const [priceMethod, setPriceMethod]     = useState('Buy')
   const [market, setMarket]               = useState('Jita')
+  const [flow, setFlow]                   = useState('input')   // input | output
+  const [deliveryCoef, setDeliveryCoef]   = useState(1200)      // ISK/m³ added to buy price
+  const [deliveryApplied, setDeliveryApplied] = useState(false)
+
+  function applyDelivery() {
+    setRows(rs => rs.map(r => {
+      if (!r.volume) return r
+      const base = Number(r.price) || 0
+      return { ...r, price: (base + Number(deliveryCoef || 0) * r.volume).toFixed(2) }
+    }))
+    setDeliveryApplied(true)
+  }
 
   useEffect(() => {
     get('/organisations').then(async orgs => {
@@ -268,6 +280,7 @@ function ParseTab() {
     try {
       const res = await post('/inventory/preview', { text: rawText })
       setWarnings(res.warnings)
+      setDeliveryApplied(false)
       setRows(res.items.map(item => ({
         ...item,
         price: '',
@@ -347,6 +360,7 @@ function ParseTab() {
           place:      r.place || null,
           note:       r.note || autoNote,
           project_id: r.project_id ? Number(r.project_id) : null,
+          flow,
         })),
       })
 
@@ -480,9 +494,32 @@ function ParseTab() {
                 </button>
               )}
 
+              {/* Flow marker */}
+              <div>
+                <L>Mark as</L>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {['input', 'output'].map(f => (
+                    <button key={f} className={`btn btn-sm ${flow === f ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFlow(f)}>
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <button className="btn btn-primary" onClick={saveAll} disabled={saving} style={{ marginLeft: 'auto', alignSelf: 'flex-end' }}>
                 {saving ? 'Saving…' : `💾 Save ${rows.length} items`}
               </button>
+            </div>
+
+            {/* Delivery surcharge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: 'var(--text)' }}>Delivery to add to buy price:</span>
+              <label style={{ fontSize: 12, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                ISK/m³
+                <input type="number" value={deliveryCoef} onChange={e => setDeliveryCoef(e.target.value)} style={{ width: 100 }} />
+              </label>
+              <button className="btn btn-ghost btn-sm" onClick={applyDelivery}>🚚 Apply delivery</button>
+              {deliveryApplied && <span style={{ fontSize: 11, color: '#4caf7d' }}>✓ added {fmtIsk(Number(deliveryCoef))}/m³ to unit prices</span>}
             </div>
           </div>
 

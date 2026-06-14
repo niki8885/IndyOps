@@ -115,6 +115,7 @@ class BatchItemCreate(BaseModel):
     place: Optional[str] = None
     note: Optional[str] = None
     project_id: Optional[int] = None
+    flow: Optional[str] = "input"   # input | output
 
 
 class BatchCreate(BaseModel):
@@ -251,6 +252,7 @@ async def batch_add(
             price=it.price,
             place=it.place,
             note=it.note,
+            flow=it.flow or "input",
         )
         db.add(item)
         created.append(item)
