@@ -61,6 +61,38 @@ function WarehouseTab() {
     if (!confirm('Delete item?')) return
     try { await del(`/inventory/${id}`); load() } catch {}
   }
+
+  async function sell(item) {
+    const p = prompt(`Sell "${item.name}" ×${item.quantity.toLocaleString()}\nSale price per unit (ISK):`, item.price || '')
+    if (p == null) return
+    const sp = Number(p)
+    if (!sp || sp <= 0) { setError('Invalid sale price'); return }
+    try { await post(`/inventory/${item.id}/sell`, { sale_price: sp }); load() }
+    catch (e) { setError(e.message) }
+  }
+
+  async function useItem(item) {
+    const reason = prompt(`Write off "${item.name}" ×${item.quantity.toLocaleString()} for internal use.\nReason:`, 'internal use')
+    if (reason == null) return
+    try { await post(`/inventory/${item.id}/use`, { reason }); load() }
+    catch (e) { setError(e.message) }
+  }
+
+  const flowBadge = f => (
+    <span style={{
+      fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3, marginLeft: 6,
+      background: f === 'output' ? '#0e2a1a' : '#10243d',
+      color: f === 'output' ? '#4caf7d' : '#3a9bd6',
+    }}>{f === 'output' ? 'OUT' : 'IN'}</span>
+  )
+
+  const ItemActions = ({ item }) => (
+    <span style={{ whiteSpace: 'nowrap' }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => sell(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Sell (record price)">💰</button>
+      <button className="btn btn-ghost btn-sm" onClick={() => useItem(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Write off / internal use">🔧</button>
+      <button className="btn btn-danger btn-sm" onClick={() => remove(item.id)} title="Delete">✕</button>
+    </span>
+  )
   async function clearProject() {
     const proj = projects.find(p => String(p.id) === filter.project_id)
     if (!confirm(`Clear ALL items in project "${proj?.name}"?\nCannot be undone.`)) return
@@ -172,21 +204,23 @@ function WarehouseTab() {
                           <td style={{ color: 'var(--accent)' }}>{uc != null ? fmtIsk(uc) : <span style={{ color: 'var(--text)' }}>—</span>}</td>
                           <td style={{ color: 'var(--text-white)' }}>{g.value > 0 ? fmtIsk(g.value) : '—'}</td>
                           <td style={{ color: 'var(--text)', fontSize: 12 }}>{[...g.places].join(', ') || '—'}</td>
-                          <td style={{ color: 'var(--text)', fontSize: 12 }}>{g.lots.length > 1 ? (expand === g.key ? '▲' : '▼') : ''}</td>
+                          <td style={{ color: 'var(--text)', fontSize: 12 }}>{expand === g.key ? '▲' : '▼'}</td>
                         </tr>,
-                        expand === g.key && g.lots.length > 1 && (
+                        expand === g.key && (
                           <tr key={`x-${g.key}`}>
                             <td colSpan={7} style={{ background: 'var(--surface2)', padding: 0 }}>
                               <table>
                                 <tbody>
                                   {g.lots.map(l => (
                                     <tr key={l.id}>
-                                      <td style={{ color: 'var(--text)', paddingLeft: 28 }}>{l.quantity.toLocaleString()}</td>
+                                      <td style={{ color: 'var(--text)', paddingLeft: 28, whiteSpace: 'nowrap' }}>
+                                        {l.quantity.toLocaleString()}{flowBadge(l.flow)}
+                                      </td>
                                       <td style={{ color: 'var(--text)' }}>{l.price ? fmtIsk(l.price) : '—'}</td>
                                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{l.place || '—'}</td>
                                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{projName(l.project_id)}</td>
                                       <td style={{ color: 'var(--text)', fontSize: 11 }}>{l.created_at ? new Date(l.created_at).toLocaleDateString() : ''}</td>
-                                      <td><button className="btn btn-danger btn-sm" onClick={() => remove(l.id)}>✕</button></td>
+                                      <td><ItemActions item={l} /></td>
                                     </tr>
                                   ))}
                                 </tbody>
@@ -211,7 +245,7 @@ function WarehouseTab() {
                   <tbody>
                     {items.map(item => (
                       <tr key={item.id}>
-                        <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{item.name}</td>
+                        <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{item.name}{flowBadge(item.flow)}</td>
                         <td>{item.quantity.toLocaleString()}</td>
                         <td style={{ color: 'var(--text)' }}>{item.volume != null ? item.volume + ' m³' : '—'}</td>
                         <td>{item.price ? fmtIsk(item.price) : '—'}</td>
@@ -219,7 +253,7 @@ function WarehouseTab() {
                         <td style={{ color: 'var(--text)', fontSize: 12 }}>{item.place || '—'}</td>
                         <td style={{ color: 'var(--text)', fontSize: 12 }}>{projName(item.project_id)}</td>
                         <td style={{ color: 'var(--text)', fontSize: 12, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.note || '—'}</td>
-                        <td><button className="btn btn-danger btn-sm" onClick={() => remove(item.id)}>✕</button></td>
+                        <td><ItemActions item={item} /></td>
                       </tr>
                     ))}
                   </tbody>

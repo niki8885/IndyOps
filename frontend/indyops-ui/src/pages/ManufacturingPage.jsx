@@ -802,7 +802,18 @@ function CalculatorTab() {
             <CInput label="Code" value={jobForm.code} onChange={setJ('code')} placeholder="gud63" />
             <div style={{ gridColumn: '1 / -1' }}>
               <CLabel>Contract Code</CLabel>
-              <input value={jobForm.contract_code} onChange={setJ('contract_code')} placeholder="gud63 ASCEE Tier F: 180.000.000 @RYC-19" />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input value={jobForm.contract_code} onChange={setJ('contract_code')} placeholder="gud63 Tier:F 180.000.000 @RYC-19" />
+                <button type="button" className="btn btn-ghost btn-sm" style={{ whiteSpace: 'nowrap' }}
+                  onClick={() => {
+                    const ret = Number(jobForm.return_contract_price) || 0
+                    const code = `${jobForm.code || ''} Tier:${jobForm.pack_tier || ''} ${ret.toLocaleString('de-DE')} @${jobForm.place || ''}`
+                      .replace(/\s+/g, ' ').trim()
+                    setJobForm(f => ({ ...f, contract_code: code }))
+                  }}>
+                  ⚙ Generate
+                </button>
+              </div>
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
               <CLabel>Note</CLabel>

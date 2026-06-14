@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db, InventoryItem, Projects, UserDB
+from app.core.database import get_db, InventoryItem, Projects, UserDB, StockMovement
 from app.core.database_eve import EveSessionLocal, EveType
 from app.core.security import get_current_user
 
@@ -384,10 +384,11 @@ async def list_inventory(
     project_id: Optional[int] = None,
     organisation_id: Optional[int] = None,
     place: Optional[str] = None,
+    item_status: Optional[str] = "in_stock",   # in_stock | used | sold | all
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List all items in personal inventory with optional filters."""
+    """List inventory. Defaults to in-stock items (sold/used are hidden)."""
     q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
     if project_id is not None:
         q = q.filter(InventoryItem.project_id == project_id)
@@ -396,7 +397,92 @@ async def list_inventory(
         q = q.filter(InventoryItem.project_id.in_(proj_ids or [-1]))
     if place is not None:
         q = q.filter(InventoryItem.place.ilike(f"%{place}%"))
+    if item_status and item_status != "all":
+        # treat legacy NULL as in_stock
+        if item_status == "in_stock":
+            q = q.filter((InventoryItem.item_status == "in_stock") | (InventoryItem.item_status.is_(None)))
+        else:
+            q = q.filter(InventoryItem.item_status == item_status)
     return q.order_by(InventoryItem.created_at.desc()).all()
+
+
+class SellRequest(BaseModel):
+    sale_price: float
+    quantity: Optional[int] = None
+
+
+class UseRequest(BaseModel):
+    quantity: Optional[int] = None
+    reason: Optional[str] = None
+
+
+def _split_off(db: Session, item: InventoryItem, qty: Optional[int]) -> InventoryItem:
+    """
+    Return the InventoryItem representing `qty` units to act on. If qty < the
+    lot, the lot is reduced and a new detached row is created for `qty`.
+    """
+    take = min(int(qty or item.quantity), item.quantity)
+    if take >= item.quantity:
+        return item
+    item.quantity -= take
+    item.updated_at = datetime.datetime.utcnow()
+    clone = InventoryItem(
+        user_id=item.user_id, project_id=item.project_id, eve_type_id=item.eve_type_id,
+        name=item.name, volume=item.volume, quantity=take, price=item.price,
+        place=item.place, note=item.note, flow=item.flow,
+    )
+    db.add(clone)
+    db.flush()
+    return clone
+
+
+@router.post("/{item_id}/sell", response_model=InventoryOut)
+async def sell_item(
+    item_id: int,
+    body: SellRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Mark units sold at a sale price (for profit tracking) and remove from stock."""
+    item = _get_item_or_404(db, item_id, current_user.id)
+    target = _split_off(db, item, body.quantity)
+    target.item_status = "sold"
+    target.sale_price = body.sale_price
+    target.updated_at = datetime.datetime.utcnow()
+    db.add(StockMovement(
+        user_id=current_user.id, project_id=target.project_id,
+        eve_type_id=target.eve_type_id, name=target.name,
+        quantity=target.quantity, direction="out",
+        unit_cost=body.sale_price, total_cost=round(body.sale_price * target.quantity, 2),
+        reason="Sold",
+    ))
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@router.post("/{item_id}/use", response_model=InventoryOut)
+async def use_item(
+    item_id: int,
+    body: UseRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Write units off for internal use (e.g. refueling) and remove from stock."""
+    item = _get_item_or_404(db, item_id, current_user.id)
+    target = _split_off(db, item, body.quantity)
+    target.item_status = "used"
+    target.updated_at = datetime.datetime.utcnow()
+    db.add(StockMovement(
+        user_id=current_user.id, project_id=target.project_id,
+        eve_type_id=target.eve_type_id, name=target.name,
+        quantity=target.quantity, direction="out",
+        unit_cost=target.price, total_cost=round((target.price or 0) * target.quantity, 2),
+        reason=f"Used: {body.reason}" if body.reason else "Used (internal)",
+    ))
+    db.commit()
+    db.refresh(target)
+    return target
 
 
 @router.get("/{item_id}", response_model=InventoryOut)
