@@ -4,225 +4,30 @@ Manufacturing calculator + Production Job (PAK) CRUD.
 Activity IDs: 1=Manufacturing, 3=ResearchTE, 4=ResearchME, 5=Copying, 8=Invention
 """
 import datetime
-import math
-import time as _time
+from dataclasses import asdict
 from typing import Optional, List
 
-import requests as _requests
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.adapters import market
 from app.core.database import get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement
 from app.core.database_eve import (
-    EveSessionLocal, EveType, EveActivityMaterial, EveActivityProduct,
-    EveActivityTime, EveBlueprint, EveRigBonus, EveGroup, EveSolarSystem,
+    EveSessionLocal, EveType, EveRigBonus, EveGroup, EveSolarSystem,
 )
 from app.core.schemas import ProductionStatus, ProductionTarget, FacilityType
 from app.core.security import get_current_user
+from app.repositories import eve as eve_repo
+from app.services.costing import plan_fifo
+from app.services.manufacturing import CalcInput, Material, run_calculation
 
 router = APIRouter()
-
-SCC_SURCHARGE = 0.04   # fixed 4% CCP surcharge on EIV
 
 # Engineering Complex (Raitaru/Azbel/Sotiyo) manufacturing role bonuses
 EC_MATERIAL_ROLE = 1.0   # −1% material
 EC_COST_ROLE     = 3.0   # −3% job cost
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
-
-# ESI adjusted prices (drive Estimated Item Value)
-_ESI_PRICES_URL = "https://esi.evetech.net/latest/markets/prices/?datasource=tranquility"
-_ADJ_CACHE: dict = {"data": None, "ts": 0.0}
-_ADJ_TTL = 3600
-
-
-def _get_adjusted_prices() -> dict:
-    """ESI adjusted prices keyed by type_id (cached 1h). Used for Estimated Item Value."""
-    now = _time.time()
-    if _ADJ_CACHE["data"] is not None and now - _ADJ_CACHE["ts"] < _ADJ_TTL:
-        return _ADJ_CACHE["data"]
-    resp = _requests.get(_ESI_PRICES_URL, timeout=30, headers={"User-Agent": "IndyOps/1.0"})
-    resp.raise_for_status()
-    data = {int(e["type_id"]): float(e.get("adjusted_price") or 0) for e in resp.json()}
-    _ADJ_CACHE["data"] = data
-    _ADJ_CACHE["ts"] = now
-    return data
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Calculation helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _adj_qty(base_qty: int, runs: int, me: int, extra_mult: float = 1.0) -> int:
-    """
-    Material qty after blueprint ME and an extra multiplier (rig + structure role,
-    combined multiplicatively by the caller). Always ≥ runs.
-    """
-    return max(runs, math.ceil(base_qty * runs * (1 - me / 100) * extra_mult))
-
-
-def _adj_time(base_time: int, runs: int, te: int, extra_mult: float = 1.0) -> int:
-    return math.ceil(base_time * runs * (1 - te / 100) * extra_mult)
-
-
-def _run_calculation(
-    product_name: str,
-    product_qty_per_run: int,
-    runs: int,
-    me: int,
-    te: int,
-    base_time_per_run: int,
-    materials: list,           # [{type_id, name, base_qty, unit_cost}]
-    output_price: float,
-    bpc_cost: float,
-    broker_fee_pct: float,
-    system_cost_index: float,  # fraction e.g. 0.0593
-    facility_tax_pct: float,
-    structure_bonus_pct: float = 0.0,
-    estimated_item_value: float = None,
-    material_bonus_pct: float = 0.0,   # rig ME (security-scaled)
-    time_bonus_pct: float = 0.0,       # rig TE
-    material_role_pct: float = 0.0,    # structure role ME (e.g. EC −1%)
-    time_role_pct: float = 0.0,        # structure role TE
-    windows: int = 1,                  # parallel production slots (jobs), each `runs` runs
-) -> dict:
-    w = max(1, int(windows))
-
-    total_output = product_qty_per_run * runs * w
-    gross_sell   = total_output * output_price
-    net_sell     = gross_sell * (1 - broker_fee_pct / 100)
-
-    # rig and structure-role bonuses stack multiplicatively, like EVE
-    mat_mult  = (1 - material_bonus_pct / 100) * (1 - material_role_pct / 100)
-    time_mult = (1 - time_bonus_pct / 100) * (1 - time_role_pct / 100)
-
-    mat_rows = []
-    total_mat_cost = 0.0
-    for m in materials:
-        # ME rounds per job, then × number of windows
-        adj_job = _adj_qty(m["base_qty"], runs, me, mat_mult)
-        adj  = adj_job * w
-        base = m["base_qty"] * runs * w
-        gross_cost = adj * m["unit_cost"]
-        total_mat_cost += gross_cost
-        mat_rows.append({
-            "type_id":    m["type_id"],
-            "name":       m["name"],
-            "base_qty":   base,
-            "adj_qty":    adj,
-            "saved":      base - adj,
-            "unit_cost":  m["unit_cost"],
-            "gross_cost": round(gross_cost, 2),
-            "net_cost":   round(gross_cost, 2),
-        })
-
-    total_mat_cost = round(total_mat_cost, 2)
-
-    # EIV passed in is single-job; scale to the whole batch
-    eiv = estimated_item_value * w if (estimated_item_value and estimated_item_value > 0) else total_mat_cost
-    system_cost       = round(eiv * system_cost_index, 2)
-    structure_bonus   = round(system_cost * structure_bonus_pct / 100, 2)
-    gross_install     = round(system_cost - structure_bonus, 2)
-    facility_tax_isk  = round(eiv * facility_tax_pct / 100, 2)
-    scc_surcharge     = round(eiv * SCC_SURCHARGE, 2)
-    net_install       = round(gross_install + facility_tax_isk + scc_surcharge, 2)
-
-    bpc_total  = round(bpc_cost * w, 2)            # one BPC per window
-    job_time_s = _adj_time(base_time_per_run, runs, te, time_mult)   # parallel slots → per-job time
-
-    total_costs = round(total_mat_cost + bpc_total + net_install, 2)
-    profit      = round(net_sell - total_costs, 2)
-    margin      = round(profit / total_costs * 100, 2) if total_costs else 0.0
-
-    return {
-        "windows": w,
-        "runs_per_window": runs,
-        "output": {
-            "name":      product_name,
-            "quantity":  total_output,
-            "unit_price": output_price,
-            "gross_sell": round(gross_sell, 2),
-            "net_sell":   round(net_sell, 2),
-        },
-        "materials": mat_rows,
-        "materials_total_gross": total_mat_cost,
-        "materials_total_net":   total_mat_cost,
-        "job_cost": {
-            "estimated_item_value": round(eiv, 2),
-            "system_cost_index_pct": round(system_cost_index * 100, 4),
-            "system_cost":      system_cost,
-            "structure_bonus":  structure_bonus,
-            "gross_install_cost": gross_install,
-            "facility_tax":     facility_tax_isk,
-            "scc_surcharge":    scc_surcharge,
-            "net_install_cost": net_install,
-        },
-        "bpc_cost": bpc_total,
-        "job_time": {
-            "seconds": job_time_s,
-            "hours":   round(job_time_s / 3600, 2),
-            "total_slot_hours": round(job_time_s / 3600 * w, 2),
-        },
-        "results": {
-            "total_material_cost": total_mat_cost,
-            "total_install_cost":  net_install,
-            "total_costs":   total_costs,
-            "total_sell":    round(net_sell, 2),
-            "profit":        profit,
-            "margin_pct":    margin,
-        },
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SDE helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _get_blueprint_for_product(eve_db, product_type_id: int):
-    """Find the manufacturing blueprint that produces this product_type_id."""
-    row = (
-        eve_db.query(EveActivityProduct)
-        .filter(
-            EveActivityProduct.product_type_id == product_type_id,
-            EveActivityProduct.activity_id == 1,
-        )
-        .first()
-    )
-    return row
-
-
-def _get_materials(eve_db, blueprint_type_id: int):
-    rows = (
-        eve_db.query(EveActivityMaterial)
-        .filter(
-            EveActivityMaterial.type_id == blueprint_type_id,
-            EveActivityMaterial.activity_id == 1,
-        )
-        .all()
-    )
-    # enrich with names + per-unit volume (for delivery cost)
-    result = []
-    for r in rows:
-        t = eve_db.query(EveType).filter(EveType.type_id == r.material_type_id).first()
-        result.append({
-            "type_id":  r.material_type_id,
-            "name":     t.type_name if t else str(r.material_type_id),
-            "base_qty": r.quantity,
-            "volume":   t.volume if t else None,
-        })
-    return result
-
-
-def _get_base_time(eve_db, blueprint_type_id: int) -> int:
-    row = (
-        eve_db.query(EveActivityTime)
-        .filter(
-            EveActivityTime.type_id == blueprint_type_id,
-            EveActivityTime.activity_id == 1,
-        )
-        .first()
-    )
-    return row.time if row else 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -385,27 +190,23 @@ async def get_blueprint_info(
     """
     eve_db = EveSessionLocal()
     try:
-        bp_row = _get_blueprint_for_product(eve_db, product_type_id)
-        if not bp_row:
+        bp = eve_repo.blueprint_for_product(eve_db, product_type_id)
+        if not bp:
             raise HTTPException(404, f"No manufacturing blueprint found for type_id {product_type_id}")
 
-        bp_type_id   = bp_row.type_id
-        qty_per_run  = bp_row.quantity
-        base_time    = _get_base_time(eve_db, bp_type_id)
-        materials    = _get_materials(eve_db, bp_type_id)
-
-        bp_type = eve_db.query(EveType).filter(EveType.type_id == bp_type_id).first()
-        prod_type = eve_db.query(EveType).filter(EveType.type_id == product_type_id).first()
-        bp_lim = eve_db.query(EveBlueprint).filter(EveBlueprint.type_id == bp_type_id).first()
+        bp_type_id   = bp.blueprint_type_id
+        base_time    = eve_repo.base_time(eve_db, bp_type_id)
+        materials    = eve_repo.materials(eve_db, bp_type_id)
+        names        = eve_repo.type_names(eve_db, [bp_type_id, product_type_id])
 
         return BlueprintInfoOut(
             blueprint_type_id=bp_type_id,
-            blueprint_name=bp_type.type_name if bp_type else None,
+            blueprint_name=names.get(bp_type_id),
             product_type_id=product_type_id,
-            product_name=prod_type.type_name if prod_type else str(product_type_id),
-            qty_per_run=qty_per_run,
+            product_name=names.get(product_type_id, str(product_type_id)),
+            qty_per_run=bp.qty_per_run,
             base_time_per_run=base_time,
-            max_production_limit=bp_lim.max_production_limit if bp_lim else None,
+            max_production_limit=eve_repo.max_production_limit(eve_db, bp_type_id),
             materials=materials,
         )
     finally:
@@ -421,17 +222,17 @@ async def calculate(
     """Full manufacturing cost calculation."""
     eve_db = EveSessionLocal()
     try:
-        bp_row = _get_blueprint_for_product(eve_db, body.product_type_id)
-        if not bp_row:
+        bp = eve_repo.blueprint_for_product(eve_db, body.product_type_id)
+        if not bp:
             raise HTTPException(404, "Blueprint not found")
 
-        bp_type_id  = bp_row.type_id
-        qty_per_run = bp_row.quantity
-        base_time   = _get_base_time(eve_db, bp_type_id)
-        base_mats   = _get_materials(eve_db, bp_type_id)
+        bp_type_id  = bp.blueprint_type_id
+        qty_per_run = bp.qty_per_run
+        base_time   = eve_repo.base_time(eve_db, bp_type_id)
+        base_mats   = eve_repo.materials(eve_db, bp_type_id)
 
-        prod_type = eve_db.query(EveType).filter(EveType.type_id == body.product_type_id).first()
-        product_name = prod_type.type_name if prod_type else str(body.product_type_id)
+        product_name = eve_repo.type_names(eve_db, [body.product_type_id]).get(
+            body.product_type_id, str(body.product_type_id))
 
     finally:
         eve_db.close()
@@ -447,11 +248,11 @@ async def calculate(
     eiv = body.estimated_item_value
     if not eiv or eiv <= 0:
         try:
-            adj = _get_adjusted_prices()
+            adj = market.esi_adjusted_prices()
             computed = sum((m["base_qty"] * body.runs) * adj.get(m["type_id"], 0.0) for m in base_mats)
             eiv = computed if computed > 0 else None
         except Exception:
-            eiv = None   # _run_calculation will fall back to material cost
+            eiv = None   # run_calculation will fall back to material cost
 
     # pull facility defaults if provided
     sci     = body.system_cost_index
@@ -475,14 +276,18 @@ async def calculate(
             elif s_bonus == 0.0 and f.cost_bonus:
                 s_bonus = f.cost_bonus
 
-    return _run_calculation(
+    inp = CalcInput(
         product_name=product_name,
         product_qty_per_run=qty_per_run,
         runs=body.runs,
         me=body.me,
         te=body.te,
         base_time_per_run=base_time,
-        materials=materials,
+        materials=[
+            Material(type_id=m["type_id"], name=m["name"],
+                     base_qty=m["base_qty"], unit_cost=m["unit_cost"])
+            for m in materials
+        ],
         output_price=body.output_price,
         bpc_cost=body.bpc_cost,
         broker_fee_pct=body.broker_fee_pct,
@@ -496,6 +301,7 @@ async def calculate(
         time_role_pct=time_role,
         windows=body.windows,
     )
+    return asdict(run_calculation(inp))
 
 
 # ─── Facility rig bonuses (dogma-based) ──────────────────────────────────────
@@ -586,10 +392,16 @@ async def facility_bonuses(
         cat_id = grp.category_id if grp else None
         group_name = grp.group_name if grp else None
 
+        # batch the per-rig SDE lookups (was a query per rig — N+1)
+        rig_types = {t.type_id: t for t in
+                     eve_db.query(EveType).filter(EveType.type_id.in_(rig_ids or [-1])).all()}
+        rig_bonuses = {rb.type_id: rb for rb in
+                       eve_db.query(EveRigBonus).filter(EveRigBonus.type_id.in_(rig_ids or [-1])).all()}
+
         rigs_out, tot_me, tot_te, tot_cost = [], 0.0, 0.0, 0.0
         for rid in rig_ids:
-            t = eve_db.query(EveType).filter(EveType.type_id == rid).first()
-            rb = eve_db.query(EveRigBonus).filter(EveRigBonus.type_id == rid).first()
+            t = rig_types.get(rid)
+            rb = rig_bonuses.get(rid)
             name = t.type_name if t else str(rid)
             if not rb:
                 rigs_out.append({"type_id": rid, "name": name, "applies": False, "reason": "no industry bonus"})
@@ -855,17 +667,13 @@ async def issue_job_materials(
             continue
         lots = _match_lots(db, current_user.id, job.project_id, m.get("type_id"), m.get("name", ""))
 
-        remaining = need
-        consumed = 0
-        cost = 0.0
-        for lot in lots:
-            if remaining <= 0:
-                break
-            take = min(lot.quantity, remaining)
-            cost += take * (lot.price or 0)
-            consumed += take
-            remaining -= take
-            lot.quantity -= take
+        # pure FIFO plan → then apply the warehouse mutation here
+        plan = plan_fifo([(lot.quantity, lot.price) for lot in lots], need)
+        consumed = plan.consumed
+        cost = plan.cost
+        for line in plan.lines:
+            lot = lots[line.index]
+            lot.quantity -= line.take
             if lot.quantity == 0:
                 db.delete(lot)
 
@@ -966,8 +774,7 @@ async def receive_job_output(
 
     eve_db = EveSessionLocal()
     try:
-        t = eve_db.query(EveType).filter(EveType.type_id == job.product_type_id).first()
-        vol = t.volume if t else None
+        vol = eve_repo.type_volume(eve_db, job.product_type_id)
     finally:
         eve_db.close()
 

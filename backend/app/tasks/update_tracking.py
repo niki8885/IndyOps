@@ -8,65 +8,16 @@ snapshot. Region/system places use Fuzzwork region aggregates; places flagged
 import logging
 from datetime import datetime, timezone
 
-import requests
-from bs4 import BeautifulSoup
-
+from app.adapters import market
 from app.core.database import SessionLocal, TrackedPlace, TrackedItem, TrackPrice
 
 logger = logging.getLogger(__name__)
-
-_AGG_URL = "https://market.fuzzwork.co.uk/aggregates/"
-_GNF_REGION = "C-J6MT"
-_HEADERS = {"User-Agent": "IndyOps/1.0 (price tracker)"}
-_TIMEOUT = 25
-
-
-def _fuzzwork(region_id: int, type_ids: list[int]) -> dict:
-    if not type_ids:
-        return {}
-    try:
-        r = requests.get(_AGG_URL, params={"region": region_id, "types": ",".join(map(str, type_ids))},
-                         headers=_HEADERS, timeout=_TIMEOUT)
-        r.raise_for_status()
-        return r.json()
-    except Exception as exc:
-        logger.warning("fuzzwork region %s failed: %s", region_id, exc)
-        return {}
 
 
 def _fnum(v):
     try:
         return float(v)
     except (TypeError, ValueError):
-        return None
-
-
-def _gnf(type_id: int) -> dict | None:
-    """Scrape C-J local buy/sell from appraise.gnf.lt."""
-    try:
-        resp = requests.get(f"https://appraise.gnf.lt/item/{type_id}", timeout=_TIMEOUT, headers=_HEADERS)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        tab = soup.find("div", id=_GNF_REGION)
-        if not tab:
-            return None
-        tables = tab.find_all("table")
-        if len(tables) < 2:
-            return None
-
-        def parse(t):
-            out = {}
-            for row in t.find_all("tr"):
-                th, td = row.find("th"), row.find("td")
-                if th and td:
-                    raw = td.text.strip().replace(",", "").replace(" ISK", "")
-                    out[th.text.strip()] = _fnum(raw)
-            return out
-
-        sell = parse(tables[0]); buy = parse(tables[1])
-        return {"sell": sell.get("Min") or sell.get("1st Percentile"),
-                "buy": buy.get("Max") or buy.get("99th Percentile")}
-    except Exception:
         return None
 
 
@@ -90,8 +41,8 @@ def collect_for_user(db, user_id: int) -> int:
             elif p.region_id:
                 region_types.setdefault(p.region_id, set()).add(it.type_id)
 
-    region_data = {rid: _fuzzwork(rid, list(tids)) for rid, tids in region_types.items()}
-    special_data = {tid: _gnf(tid) for tid in special_types}
+    region_data = {rid: market.fuzzwork_aggregates_or_empty(rid, list(tids)) for rid, tids in region_types.items()}
+    special_data = {tid: market.gnf_local(tid) for tid in special_types}
 
     now = datetime.now(timezone.utc)
     stored = 0

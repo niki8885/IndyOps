@@ -1,0 +1,25 @@
+# Tooling config only (pytest / coverage / ruff). No [build-system]/[project]
+# on purpose — the Docker image installs from requirements.txt, not this package.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/main.py",
+    "app/tasks/scheduler.py",
+    "app/tasks/update_sde.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# High-signal, low-noise: pyflakes (unused imports / undefined names) + syntax.
+select = ["E9", "F"]

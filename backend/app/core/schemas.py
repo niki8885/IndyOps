@@ -1,5 +1,5 @@
 import enum
-from pydantic import BaseModel
+
 
 class EmployeeType(str, enum.Enum):
     OWNER= "OWNER"

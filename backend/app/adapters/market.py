@@ -1,0 +1,127 @@
+"""
+External market-data access (HTTP / scraping).
+
+The single place in the backend that talks to ESI, Fuzzwork and the C-J
+appraisal scraper. Consolidates what was scattered across manufacturing_router
+(``_get_adjusted_prices``), update_indices (``_fetch_aggregates``),
+update_tracking (``_fuzzwork``/``_gnf``) and tracking_router (``_esi_history``).
+Keeps the service layer pure and gives callers one import for market I/O.
+"""
+from __future__ import annotations
+
+import logging
+import time as _time
+from typing import Optional
+
+import requests
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
+
+_HEADERS = {"User-Agent": "IndyOps/1.0"}
+_TIMEOUT = 30
+
+_AGG_URL = "https://market.fuzzwork.co.uk/aggregates/"
+_ESI_PRICES_URL = "https://esi.evetech.net/latest/markets/prices/?datasource=tranquility"
+_GNF_REGION = "C-J6MT"
+
+
+# ── ESI adjusted prices (drive Estimated Item Value), cached 1h ──────────────
+_ADJ_CACHE: dict = {"data": None, "ts": 0.0}
+_ADJ_TTL = 3600
+
+
+def esi_adjusted_prices() -> dict:
+    """ESI adjusted prices keyed by type_id (cached 1h). Raises on HTTP error."""
+    now = _time.time()
+    if _ADJ_CACHE["data"] is not None and now - _ADJ_CACHE["ts"] < _ADJ_TTL:
+        return _ADJ_CACHE["data"]
+    resp = requests.get(_ESI_PRICES_URL, timeout=_TIMEOUT, headers=_HEADERS)
+    resp.raise_for_status()
+    data = {int(e["type_id"]): float(e.get("adjusted_price") or 0) for e in resp.json()}
+    _ADJ_CACHE["data"] = data
+    _ADJ_CACHE["ts"] = now
+    return data
+
+
+# ── Fuzzwork market aggregates ───────────────────────────────────────────────
+def fuzzwork_aggregates(region: int, type_ids: list[int]) -> dict:
+    """Fuzzwork aggregate data keyed by type_id (str). Raises on HTTP error."""
+    if not type_ids:
+        return {}
+    ids = ",".join(str(t) for t in type_ids)
+    resp = requests.get(_AGG_URL, params={"region": region, "types": ids}, headers=_HEADERS, timeout=_TIMEOUT)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fuzzwork_aggregates_or_empty(region: int, type_ids: list[int]) -> dict:
+    """Like :func:`fuzzwork_aggregates` but swallows errors to {} (warns)."""
+    try:
+        return fuzzwork_aggregates(region, type_ids)
+    except Exception as exc:
+        logger.warning("fuzzwork region %s failed: %s", region, exc)
+        return {}
+
+
+# ── ESI 30-day region history, cached 6h ─────────────────────────────────────
+_HIST_CACHE: dict = {}
+_HIST_TTL = 6 * 3600
+
+
+def esi_region_history(region_id: int, type_id: int) -> Optional[list]:
+    """Last 30 days of ESI market history for (region, type). None on failure."""
+    key = (region_id, type_id)
+    now = _time.time()
+    hit = _HIST_CACHE.get(key)
+    if hit and now - hit[0] < _HIST_TTL:
+        return hit[1]
+    try:
+        r = requests.get(
+            f"https://esi.evetech.net/latest/markets/{region_id}/history/",
+            params={"type_id": type_id, "datasource": "tranquility"},
+            headers=_HEADERS, timeout=25,
+        )
+        r.raise_for_status()
+        data = r.json()[-30:]
+    except Exception:
+        data = None
+    _HIST_CACHE[key] = (now, data)
+    return data
+
+
+# ── C-J local market scraper (appraise.gnf.lt) ───────────────────────────────
+def _fnum(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def gnf_local(type_id: int) -> Optional[dict]:
+    """Scrape C-J local buy/sell from appraise.gnf.lt. None on failure."""
+    try:
+        resp = requests.get(f"https://appraise.gnf.lt/item/{type_id}", timeout=25, headers=_HEADERS)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        tab = soup.find("div", id=_GNF_REGION)
+        if not tab:
+            return None
+        tables = tab.find_all("table")
+        if len(tables) < 2:
+            return None
+
+        def parse(t):
+            out = {}
+            for row in t.find_all("tr"):
+                th, td = row.find("th"), row.find("td")
+                if th and td:
+                    raw = td.text.strip().replace(",", "").replace(" ISK", "")
+                    out[th.text.strip()] = _fnum(raw)
+            return out
+
+        sell = parse(tables[0]); buy = parse(tables[1])
+        return {"sell": sell.get("Min") or sell.get("1st Percentile"),
+                "buy": buy.get("Max") or buy.get("99th Percentile")}
+    except Exception:
+        return None

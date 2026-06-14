@@ -7,31 +7,17 @@ MarketIndexSnapshot row per index. The Volume index is synthesised from the
 combined throughput of the mineral/ice/pi/moon sub-indices.
 """
 import logging
-import math
+from dataclasses import asdict
 from datetime import datetime, timezone
 
-import requests
-
+from app.adapters import market
 from app.core.database import SessionLocal, MarketIndexSnapshot
 from app.core.indices_data import (
     BASKETS, VOLUME_COMPONENTS, JITA_REGION, PLEX_REGION, PLEX_TYPE_ID,
 )
+from app.services import indices
 
 logger = logging.getLogger(__name__)
-
-_AGG_URL = "https://market.fuzzwork.co.uk/aggregates/"
-_HEADERS = {"User-Agent": "IndyOps/1.0 (industry analytics)"}
-_TIMEOUT = 30
-
-
-def _fetch_aggregates(region: int, type_ids: list[int]) -> dict:
-    """Return Fuzzwork aggregate data keyed by type_id (str)."""
-    if not type_ids:
-        return {}
-    ids = ",".join(str(t) for t in type_ids)
-    resp = requests.get(_AGG_URL, params={"region": region, "types": ids}, headers=_HEADERS, timeout=_TIMEOUT)
-    resp.raise_for_status()
-    return resp.json()
 
 
 def _sell_price(entry: dict) -> float:
@@ -53,30 +39,10 @@ def _sell_volume(entry: dict) -> float:
         return 0.0
 
 
-def _concentration(weights: list[float]) -> dict:
-    ws = [w for w in weights if w > 0]
-    total = sum(ws) or 1.0
-    norm = [w / total for w in ws]
-    top3 = sum(sorted(norm, reverse=True)[:3])
-    h = sum(w * w for w in norm)
-    entropy = -sum(w * math.log(w) for w in norm if w > 0)
-    return {"top3_share": round(top3, 6), "h_index": round(h, 6), "entropy": round(entropy, 6)}
-
-
-def _liquidity(volumes: list[float]) -> float | None:
-    vs = [v for v in volumes if v and v > 0]
-    if len(vs) < 2:
-        return None
-    mean = sum(vs) / len(vs)
-    var = sum((v - mean) ** 2 for v in vs) / len(vs)
-    std = math.sqrt(var)
-    return round(mean / std, 4) if std else None
-
-
 def _compute_basket(key: str, basket: list[tuple[int, float]], region: int) -> dict | None:
     type_ids = [t for t, _ in basket]
     try:
-        data = _fetch_aggregates(region, type_ids)
+        data = market.fuzzwork_aggregates(region, type_ids)
     except Exception as exc:
         logger.warning("index %s: aggregate fetch failed: %s", key, exc)
         return None
@@ -98,15 +64,15 @@ def _compute_basket(key: str, basket: list[tuple[int, float]], region: int) -> d
     if price_index <= 0:
         return None
     snap = {"price_index": round(price_index, 2), "volume_index": round(volume_index, 2)}
-    snap.update(_concentration(weights))
-    snap["liquidity_index"] = _liquidity(volumes)
+    snap.update(asdict(indices.concentration(weights)))
+    snap["liquidity_index"] = indices.liquidity(volumes)
     return snap
 
 
 def _compute_plex() -> dict | None:
     for region in (PLEX_REGION, JITA_REGION):
         try:
-            data = _fetch_aggregates(region, [PLEX_TYPE_ID])
+            data = market.fuzzwork_aggregates(region, [PLEX_TYPE_ID])
         except Exception:
             continue
         e = data.get(str(PLEX_TYPE_ID)) or {}

@@ -1,51 +1,35 @@
 """
 Per-user item price tracking — favourite places, tracked items, and a
 detail endpoint with technical indicators + cross-place comparison.
+
+Technical indicators, the price-distribution histogram and the sell-allocation
+split are computed by the pure service layer (app.services.*). This router
+fetches live/historical prices and shapes the response.
 """
-import math
-import time as _time
+from dataclasses import asdict
 from typing import Optional, List
 
 import numpy as np
 import pandas as pd
-import requests as _requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.adapters import market
 from app.core.database import get_db, UserDB, TrackedPlace, TrackedItem, TrackPrice
-from app.core.database_eve import EveSessionLocal, EveType
+from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
-from app.tasks.update_tracking import collect_for_user, _fuzzwork, _gnf
+from app.repositories import eve as eve_repo
+from app.services import allocation
+from app.services._numeric import clean, series
+from app.services.indicators import compute as compute_indicators
+from app.services.risk import histogram
+from app.tasks.update_tracking import collect_for_user
 
 router = APIRouter()
 
 MAX_PLACES = 5
 MAX_ITEMS = 100
-
-# ── ESI 30-day region history (cached) ──
-_HIST_CACHE: dict = {}
-_HIST_TTL = 6 * 3600
-
-
-def _esi_history(region_id: int, type_id: int) -> Optional[list]:
-    key = (region_id, type_id)
-    now = _time.time()
-    hit = _HIST_CACHE.get(key)
-    if hit and now - hit[0] < _HIST_TTL:
-        return hit[1]
-    try:
-        r = _requests.get(
-            f"https://esi.evetech.net/latest/markets/{region_id}/history/",
-            params={"type_id": type_id, "datasource": "tranquility"},
-            headers={"User-Agent": "IndyOps/1.0"}, timeout=25,
-        )
-        r.raise_for_status()
-        data = r.json()[-30:]
-    except Exception:
-        data = None
-    _HIST_CACHE[key] = (now, data)
-    return data
 
 
 def _hist_stats(rows: Optional[list]) -> dict:
@@ -56,20 +40,6 @@ def _hist_stats(rows: Optional[list]) -> dict:
     hi = float(max(d["highest"] for d in rows))
     vol = float(np.mean([d["volume"] for d in rows]))
     return {"avg": round(avg, 2), "min": round(lo, 2), "max": round(hi, 2), "vol": round(vol, 0)}
-
-
-def _clean(x):
-    if x is None:
-        return None
-    if isinstance(x, (np.floating, float)):
-        return None if (math.isnan(x) or math.isinf(x)) else float(x)
-    if isinstance(x, np.integer):
-        return int(x)
-    return x
-
-
-def _ser(s):
-    return [_clean(v) for v in s.tolist()]
 
 
 # ── schemas ──
@@ -213,16 +183,16 @@ async def item_detail(
         prows = [r for r in rows if r.place_id == pid]
         series_by_place[pid] = {
             "timestamps": [r.timestamp.isoformat() for r in prows],
-            "buy":  [_clean(r.buy) for r in prows],
-            "sell": [_clean(r.sell) for r in prows],
-            "volume": [_clean(r.volume) for r in prows],
+            "buy":  [clean(r.buy) for r in prows],
+            "sell": [clean(r.sell) for r in prows],
+            "volume": [clean(r.volume) for r in prows],
         }
         last = prows[-1] if prows else None
         places_meta.append({
             "place_id": pid, "name": p.name, "kind": p.kind, "special": p.special_parser,
-            "latest_buy": _clean(last.buy) if last else None,
-            "latest_sell": _clean(last.sell) if last else None,
-            "latest_volume": _clean(last.volume) if last else None,
+            "latest_buy": clean(last.buy) if last else None,
+            "latest_sell": clean(last.sell) if last else None,
+            "latest_volume": clean(last.volume) if last else None,
             "points": len(prows),
         })
 
@@ -238,36 +208,22 @@ async def item_detail(
             buy = pd.to_numeric(df["buy"], errors="coerce")
             sell = pd.to_numeric(df["sell"], errors="coerce")
             mid = pd.concat([buy, sell], axis=1).mean(axis=1)
-            win = max(2, int(window))
-            sma = mid.rolling(win).mean()
-            std = mid.rolling(win).std()
-            ema = mid.ewm(span=win, adjust=False).mean()
-            delta = mid.diff(); up = delta.clip(lower=0); dn = -delta.clip(upper=0)
-            rs = up.rolling(14).mean() / dn.rolling(14).mean()
-            rsi = 100 - 100 / (1 + rs)
-            ema12 = mid.ewm(span=12, adjust=False).mean(); ema26 = mid.ewm(span=26, adjust=False).mean()
-            macd = ema12 - ema26; macd_sig = macd.ewm(span=9, adjust=False).mean()
-            hi9 = mid.rolling(9).max(); lo9 = mid.rolling(9).min(); tenkan = (hi9 + lo9) / 2
-            hi26 = mid.rolling(26).max(); lo26 = mid.rolling(26).min(); kijun = (hi26 + lo26) / 2
-            senkou_a = ((tenkan + kijun) / 2).shift(26)
-            hi52 = mid.rolling(52).max(); lo52 = mid.rolling(52).min()
-            senkou_b = ((hi52 + lo52) / 2).shift(26)
+            ind = compute_indicators(mid, window)
 
             indicators = {
                 "timestamps": s["timestamps"],
-                "buy": _ser(buy), "sell": _ser(sell), "mid": _ser(mid),
-                "sma": _ser(sma), "ema": _ser(ema),
-                "bb_upper": _ser(sma + 2 * std), "bb_lower": _ser(sma - 2 * std),
-                "rsi": _ser(rsi), "macd": _ser(macd), "macd_signal": _ser(macd_sig),
-                "macd_hist": _ser(macd - macd_sig),
-                "tenkan": _ser(tenkan), "kijun": _ser(kijun),
-                "senkou_a": _ser(senkou_a), "senkou_b": _ser(senkou_b),
+                "buy": series(buy), "sell": series(sell), "mid": series(mid),
+                "sma": series(ind.sma), "ema": series(ind.ema),
+                "bb_upper": series(ind.bb_upper), "bb_lower": series(ind.bb_lower),
+                "rsi": series(ind.rsi), "macd": series(ind.macd), "macd_signal": series(ind.macd_signal),
+                "macd_hist": series(ind.macd_hist),
+                "tenkan": series(ind.tenkan), "kijun": series(ind.kijun),
+                "senkou_a": series(ind.senkou_a), "senkou_b": series(ind.senkou_b),
             }
-            md = mid.dropna()
-            if len(md) >= 5:
-                counts, edges = np.histogram(md, bins=min(30, max(8, len(md) // 3)))
-                distribution = {"counts": counts.tolist(), "edges": [float(e) for e in edges]}
-            lb = _clean(buy.iloc[-1]); ls = _clean(sell.iloc[-1])
+            counts, edges = histogram(mid, min_bins=8)
+            if counts is not None:
+                distribution = {"counts": counts, "edges": edges}
+            lb = clean(buy.iloc[-1]); ls = clean(sell.iloc[-1])
             if lb and ls:
                 spread = {"buy": lb, "sell": ls, "abs": round(ls - lb, 2),
                           "pct": round((ls - lb) / ls * 100, 2) if ls else None}
@@ -305,9 +261,9 @@ class AllocateRequest(BaseModel):
 def _current_prices(place: TrackedPlace, type_id: int) -> dict:
     """Live buy/sell for a place."""
     if place.special_parser:
-        d = _gnf(type_id) or {}
+        d = market.gnf_local(type_id) or {}
         return {"buy": d.get("buy"), "sell": d.get("sell")}
-    e = (_fuzzwork(place.region_id, [type_id]) or {}).get(str(type_id)) or {}
+    e = (market.fuzzwork_aggregates_or_empty(place.region_id, [type_id]) or {}).get(str(type_id)) or {}
     def f(v):
         try: return float(v)
         except (TypeError, ValueError): return None
@@ -328,8 +284,7 @@ async def allocate(
     # volumes for delivery
     eve_db = EveSessionLocal()
     try:
-        vol_map = {tid: vol for tid, vol in eve_db.query(EveType.type_id, EveType.volume)
-                   .filter(EveType.type_id.in_([i.type_id for i in body.items] or [-1])).all()}
+        vol_map = eve_repo.volumes(eve_db, [i.type_id for i in body.items])
     finally:
         eve_db.close()
 
@@ -340,7 +295,7 @@ async def allocate(
         venues = []
         for pid, p in places.items():
             cur = _current_prices(p, it.type_id)
-            hist = _hist_stats(_esi_history(p.region_id, it.type_id)) if p.region_id else {"avg": None, "min": None, "max": None, "vol": None}
+            hist = _hist_stats(market.esi_region_history(p.region_id, it.type_id)) if p.region_id else {"avg": None, "min": None, "max": None, "vol": None}
             delivery_unit = (body.delivery_coef * unit_vol) if pid in body.delivery_place_ids else 0.0
             buy, sell = cur["buy"], cur["sell"]
             venues.append({
@@ -359,7 +314,11 @@ async def allocate(
             ratio = best["sell"] / best["hist"]["avg"]
             signal = "sell" if ratio >= 1.0 else ("hold" if ratio < 0.9 else "neutral")
 
-        allocations = _allocate(venues, it.quantity, body.strategy, body.balance_days)
+        svc_venues = [
+            allocation.Venue(v["place_id"], v["place_name"], v["net_instant"], v["net_patient"], v["hist"]["vol"])
+            for v in venues
+        ]
+        allocations = [asdict(a) for a in allocation.allocate(svc_venues, it.quantity, body.strategy, body.balance_days)]
         total_net = round(sum(a["net_total"] for a in allocations), 2)
         total_profit = round(total_net - (it.cost or 0) * it.quantity, 2) if it.cost else None
         out_items.append({
@@ -369,43 +328,3 @@ async def allocate(
         })
 
     return {"strategy": body.strategy, "items": out_items}
-
-
-def _allocate(venues: list, qty: int, strategy: str, balance_days: int) -> list:
-    """Split qty across venues by strategy → [{place, qty, method, unit_net, net_total, est_days}]."""
-    def row(v, q, method, unit):
-        vol = v["hist"]["vol"] or 0
-        days = round(q / vol, 1) if (method == "sell order" and vol) else 0
-        return {"place_id": v["place_id"], "place_name": v["place_name"], "qty": q,
-                "method": method, "unit_net": unit, "net_total": round((unit or 0) * q, 2), "est_days": days}
-
-    instant = [v for v in venues if v["net_instant"] is not None]
-    patient = [v for v in venues if v["net_patient"] is not None]
-
-    if strategy == "fast":
-        if not instant:
-            return []
-        v = max(instant, key=lambda v: v["net_instant"])
-        return [row(v, qty, "instant (buy order)", v["net_instant"])]
-
-    if strategy == "maxprofit":
-        if not patient:
-            return []
-        v = max(patient, key=lambda v: v["net_patient"])
-        return [row(v, qty, "sell order", v["net_patient"])]
-
-    # balanced: fill best sell-order venues up to capacity (vol × days), remainder instant
-    allocs, remaining = [], qty
-    for v in sorted(patient, key=lambda v: v["net_patient"], reverse=True):
-        if remaining <= 0:
-            break
-        cap = int((v["hist"]["vol"] or 0) * balance_days) or remaining
-        take = min(remaining, cap)
-        if take > 0:
-            allocs.append(row(v, take, "sell order", v["net_patient"]))
-            remaining -= take
-    if remaining > 0 and instant:
-        v = max(instant, key=lambda v: v["net_instant"])
-        allocs.append(row(v, remaining, "instant (buy order)", v["net_instant"]))
-        remaining = 0
-    return allocs
