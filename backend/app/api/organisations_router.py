@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.core.database import get_db, Organisation, Employee, UserDB
-from app.core.schemas import EmployeeType
+from app.core.schemas import EmployeeType, OrganisationType
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -12,12 +12,24 @@ router = APIRouter()
 
 class OrganisationCreate(BaseModel):
     name: str
+    org_type: OrganisationType = OrganisationType.PERSONAL
+    corporation_id: Optional[int] = None
+    corporation_name: Optional[str] = None
+
+class OrganisationUpdate(BaseModel):
+    name: Optional[str] = None
+    org_type: Optional[OrganisationType] = None
+    corporation_id: Optional[int] = None
+    corporation_name: Optional[str] = None
 
 class OrganisationOut(BaseModel):
-    id:         int
-    name:       str
-    owner_id:   int
-    created_at: datetime.datetime
+    id:               int
+    name:             str
+    owner_id:         int
+    org_type:         Optional[str] = None
+    corporation_id:   Optional[int] = None
+    corporation_name: Optional[str] = None
+    created_at:       datetime.datetime
 
     class Config:
         from_attributes = True
@@ -55,8 +67,43 @@ async def create_organisation(
     if db.query(Organisation).filter(Organisation.name == body.name).first():
         raise HTTPException(status_code=400, detail="Organisation name already taken")
 
-    org = Organisation(name=body.name, owner_id=current_user.id)
+    org = Organisation(
+        name=body.name,
+        owner_id=current_user.id,
+        org_type=body.org_type.value,
+        corporation_id=body.corporation_id,
+        corporation_name=body.corporation_name,
+    )
     db.add(org)
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+@router.patch("/{org_id}", response_model=OrganisationOut)
+async def update_organisation(
+    org_id: int,
+    body: OrganisationUpdate,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    org = _get_org_or_404(db, org_id)
+    _require_owner(org, current_user)
+
+    if body.name is not None:
+        clash = db.query(Organisation).filter(
+            Organisation.name == body.name, Organisation.id != org_id
+        ).first()
+        if clash:
+            raise HTTPException(status_code=400, detail="Organisation name already taken")
+        org.name = body.name
+    if body.org_type is not None:
+        org.org_type = body.org_type.value
+    if body.corporation_id is not None:
+        org.corporation_id = body.corporation_id
+    if body.corporation_name is not None:
+        org.corporation_name = body.corporation_name
+
     db.commit()
     db.refresh(org)
     return org

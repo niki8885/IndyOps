@@ -26,7 +26,13 @@ class FacilityType(str, enum.Enum):
     RAITARU = "Raitaru"
     AZBEL   = "Azbel"
     SOTIYO  = "Sotiyo"
+    ATHANOR = "Athanor"   # reactions (medium refinery)
+    TATARA  = "Tatara"    # reactions (large refinery)
     OTHER   = "Other"
+
+class OrganisationType(str, enum.Enum):
+    PERSONAL    = "Personal"
+    CORPORATION = "Corporation"
 
 class ProductionStatus(str, enum.Enum):
     PLANNING    = "Planning"

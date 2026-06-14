@@ -8,8 +8,9 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 from app.core.schemas import (
     EmployeeType, ProjectsType, ProjectsStatus,
-    FacilityType, ProductionStatus, ProductionTarget,
+    FacilityType, ProductionStatus, ProductionTarget, OrganisationType,
 )
+from sqlalchemy import text
 
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
@@ -42,6 +43,10 @@ class Organisation(Base):
     id         = Column(Integer, primary_key=True, index=True)
     name       = Column(String, unique=True, index=True, nullable=False)
     owner_id   = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    org_type         = Column(String(20), nullable=False, default=OrganisationType.PERSONAL.value)
+    corporation_id   = Column(Integer, nullable=True)     # real in-game corp ID
+    corporation_name = Column(String(200), nullable=True)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -103,6 +108,7 @@ class Facility(Base):
 
     id                = Column(Integer, primary_key=True, index=True)
     user_id           = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    organisation_id   = Column(Integer, ForeignKey("organisations.id"), nullable=True, index=True)
 
     name              = Column(String(200), nullable=False)
     facility_type     = Column(Enum(FacilityType), nullable=False, index=True)
@@ -242,4 +248,27 @@ def get_db():
         db.close()
 
 
+# Idempotent lightweight migrations (create_all does not ALTER existing tables).
+_MIGRATIONS = [
+    "ALTER TABLE organisations ADD COLUMN IF NOT EXISTS org_type VARCHAR(20) DEFAULT 'Personal'",
+    "ALTER TABLE organisations ADD COLUMN IF NOT EXISTS corporation_id INTEGER",
+    "ALTER TABLE organisations ADD COLUMN IF NOT EXISTS corporation_name VARCHAR(200)",
+    "ALTER TABLE facilities ADD COLUMN IF NOT EXISTS organisation_id INTEGER",
+    "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Athanor'",
+    "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Tatara'",
+]
+
+
+def run_migrations():
+    """Apply idempotent schema tweaks. Each runs in its own autocommit tx."""
+    for stmt in _MIGRATIONS:
+        try:
+            with engine.connect() as conn:
+                conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+                conn.execute(text(stmt))
+        except Exception as exc:  # noqa: BLE001 — best-effort, log and continue
+            print(f"[migration] skipped: {stmt} -> {exc}")
+
+
 Base.metadata.create_all(bind=engine)
+run_migrations()

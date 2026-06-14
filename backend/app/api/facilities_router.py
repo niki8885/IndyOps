@@ -24,6 +24,7 @@ class RigIn(BaseModel):
 class FacilityCreate(BaseModel):
     name:              str
     facility_type:     FacilityType
+    organisation_id:   Optional[int]   = None
     tax:               Optional[float] = None
     cost_bonus:        Optional[float] = None
     system_name:       Optional[str]   = None
@@ -36,6 +37,7 @@ class FacilityCreate(BaseModel):
 class FacilityUpdate(BaseModel):
     name:              Optional[str]          = None
     facility_type:     Optional[FacilityType] = None
+    organisation_id:   Optional[int]          = None
     tax:               Optional[float]        = None
     cost_bonus:        Optional[float]        = None
     system_name:       Optional[str]          = None
@@ -53,6 +55,7 @@ class RigOut(BaseModel):
 class FacilityOut(BaseModel):
     id:                int
     user_id:           int
+    organisation_id:   Optional[int]
     name:              str
     facility_type:     FacilityType
     tax:               Optional[float]
@@ -71,7 +74,7 @@ class FacilityOut(BaseModel):
     @classmethod
     def from_orm_model(cls, f: Facility) -> "FacilityOut":
         return cls(
-            id=f.id, user_id=f.user_id, name=f.name,
+            id=f.id, user_id=f.user_id, organisation_id=f.organisation_id, name=f.name,
             facility_type=f.facility_type,
             tax=f.tax, cost_bonus=f.cost_bonus,
             system_name=f.system_name, system_cost_index=f.system_cost_index,
@@ -89,12 +92,15 @@ class FacilityOut(BaseModel):
 @router.get("", response_model=List[FacilityOut])
 async def list_facilities(
     facility_type: Optional[FacilityType] = None,
+    organisation_id: Optional[int] = None,
     current_user:  UserDB  = Depends(get_current_user),
     db:            Session = Depends(get_db),
 ):
     q = db.query(Facility).filter(Facility.user_id == current_user.id)
     if facility_type:
         q = q.filter(Facility.facility_type == facility_type)
+    if organisation_id is not None:
+        q = q.filter(Facility.organisation_id == organisation_id)
     return [FacilityOut.from_orm_model(f) for f in q.order_by(Facility.name).all()]
 
 
@@ -106,6 +112,7 @@ async def create_facility(
 ):
     f = Facility(
         user_id=current_user.id,
+        organisation_id=body.organisation_id,
         name=body.name,
         facility_type=body.facility_type,
         tax=body.tax,
@@ -145,6 +152,7 @@ async def update_facility(
 
     if body.name              is not None: f.name              = body.name
     if body.facility_type     is not None: f.facility_type     = body.facility_type
+    if body.organisation_id   is not None: f.organisation_id   = body.organisation_id
     if body.tax               is not None: f.tax               = body.tax
     if body.cost_bonus        is not None: f.cost_bonus        = body.cost_bonus
     if body.system_name       is not None: f.system_name       = body.system_name
