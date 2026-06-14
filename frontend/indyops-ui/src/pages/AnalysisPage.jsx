@@ -1,9 +1,24 @@
 import { useState, useEffect } from 'react'
-import createPlotlyComponent from 'react-plotly.js/factory'
-import Plotly from 'plotly.js-dist-min'
+import * as factoryModule from 'react-plotly.js/factory'
+import * as plotlyModule from 'plotly.js-dist-min'
 import { get, post } from '../api/client'
 
-const Plot = createPlotlyComponent(Plotly)
+// Robust interop: the factory (CJS) and plotly-dist (UMD) can land as the
+// module itself, under `.default`, or double-wrapped depending on the bundler.
+function asFn(m) {
+  if (typeof m === 'function') return m
+  if (m && typeof m.default === 'function') return m.default
+  if (m && m.default && typeof m.default.default === 'function') return m.default.default
+  return null
+}
+let Plot = null
+try {
+  const create = asFn(factoryModule)
+  const Plotly = plotlyModule.default || plotlyModule
+  if (create) Plot = create(Plotly)
+} catch (e) {
+  console.error('Plotly init failed', e)
+}
 
 const C = {
   text: '#8b93b0', grid: '#252a40', accent: '#c8a951', white: '#e8ecf4',
@@ -63,6 +78,15 @@ export default function AnalysisPage() {
 
   const ts = detail?.timestamps || []
   const s  = detail?.series || {}
+
+  if (!Plot) {
+    return (
+      <div>
+        <h2 style={{ marginBottom: 16 }}>Analysis</h2>
+        <div className="error-box">Charting library failed to load. Please hard-refresh (Ctrl+F5).</div>
+      </div>
+    )
+  }
 
   return (
     <div>

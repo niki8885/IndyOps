@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './store/AuthContext'
 import PrivateRoute from './components/PrivateRoute'
@@ -7,8 +8,11 @@ import Layout from './pages/Layout'
 import InventoryPage from './pages/InventoryPage'
 import ManufacturingPage from './pages/ManufacturingPage'
 import MarketPage from './pages/MarketPage'
-import AnalysisPage from './pages/AnalysisPage'
 import OrganisationsHub from './pages/OrganisationsHub'
+
+// Analysis pulls in Plotly (~4MB) — load it on demand so it can never block
+// the rest of the app and stays out of the main bundle.
+const AnalysisPage = lazy(() => import('./pages/AnalysisPage'))
 
 export default function App() {
   return (
@@ -23,7 +27,11 @@ export default function App() {
               <Route path="/manufacturing" element={<ManufacturingPage />} />
               <Route path="/inventory"     element={<InventoryPage />} />
               <Route path="/market"        element={<MarketPage />} />
-              <Route path="/analysis"      element={<AnalysisPage />} />
+              <Route path="/analysis"      element={
+                <Suspense fallback={<div className="empty-state">Loading analytics…</div>}>
+                  <AnalysisPage />
+                </Suspense>
+              } />
               <Route path="/organisations" element={<OrganisationsHub />} />
               {/* legacy redirects */}
               <Route path="/facilities" element={<Navigate to="/organisations" replace />} />
