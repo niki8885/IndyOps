@@ -84,9 +84,11 @@ def _run_calculation(
     time_bonus_pct: float = 0.0,       # rig TE
     material_role_pct: float = 0.0,    # structure role ME (e.g. EC −1%)
     time_role_pct: float = 0.0,        # structure role TE
+    windows: int = 1,                  # parallel production slots (jobs), each `runs` runs
 ) -> dict:
+    w = max(1, int(windows))
 
-    total_output = product_qty_per_run * runs
+    total_output = product_qty_per_run * runs * w
     gross_sell   = total_output * output_price
     net_sell     = gross_sell * (1 - broker_fee_pct / 100)
 
@@ -97,8 +99,10 @@ def _run_calculation(
     mat_rows = []
     total_mat_cost = 0.0
     for m in materials:
-        adj  = _adj_qty(m["base_qty"], runs, me, mat_mult)
-        base = m["base_qty"] * runs
+        # ME rounds per job, then × number of windows
+        adj_job = _adj_qty(m["base_qty"], runs, me, mat_mult)
+        adj  = adj_job * w
+        base = m["base_qty"] * runs * w
         gross_cost = adj * m["unit_cost"]
         total_mat_cost += gross_cost
         mat_rows.append({
@@ -114,7 +118,8 @@ def _run_calculation(
 
     total_mat_cost = round(total_mat_cost, 2)
 
-    eiv = estimated_item_value if (estimated_item_value and estimated_item_value > 0) else total_mat_cost
+    # EIV passed in is single-job; scale to the whole batch
+    eiv = estimated_item_value * w if (estimated_item_value and estimated_item_value > 0) else total_mat_cost
     system_cost       = round(eiv * system_cost_index, 2)
     structure_bonus   = round(system_cost * structure_bonus_pct / 100, 2)
     gross_install     = round(system_cost - structure_bonus, 2)
@@ -122,13 +127,16 @@ def _run_calculation(
     scc_surcharge     = round(eiv * SCC_SURCHARGE, 2)
     net_install       = round(gross_install + facility_tax_isk + scc_surcharge, 2)
 
-    job_time_s = _adj_time(base_time_per_run, runs, te, time_mult)
+    bpc_total  = round(bpc_cost * w, 2)            # one BPC per window
+    job_time_s = _adj_time(base_time_per_run, runs, te, time_mult)   # parallel slots → per-job time
 
-    total_costs = round(total_mat_cost + bpc_cost + net_install, 2)
+    total_costs = round(total_mat_cost + bpc_total + net_install, 2)
     profit      = round(net_sell - total_costs, 2)
     margin      = round(profit / total_costs * 100, 2) if total_costs else 0.0
 
     return {
+        "windows": w,
+        "runs_per_window": runs,
         "output": {
             "name":      product_name,
             "quantity":  total_output,
@@ -149,10 +157,11 @@ def _run_calculation(
             "scc_surcharge":    scc_surcharge,
             "net_install_cost": net_install,
         },
-        "bpc_cost": bpc_cost,
+        "bpc_cost": bpc_total,
         "job_time": {
             "seconds": job_time_s,
             "hours":   round(job_time_s / 3600, 2),
+            "total_slot_hours": round(job_time_s / 3600 * w, 2),
         },
         "results": {
             "total_material_cost": total_mat_cost,
@@ -240,6 +249,7 @@ class CalcRequest(BaseModel):
     product_type_id:      int
     facility_id:          Optional[int]   = None
     runs:                 int   = 1
+    windows:              int   = 1    # parallel production slots
     me:                   int   = 0
     te:                   int   = 0
     bpc_cost:             float = 0.0
@@ -264,6 +274,7 @@ class JobCreate(BaseModel):
     facility_id:       Optional[int]   = None
     project_id:        Optional[int]   = None
     runs:              int   = 1
+    windows:           int   = 1
     me:                int   = 0
     te:                int   = 0
     bpc_cost:          float = 0.0
@@ -293,6 +304,7 @@ class JobUpdate(BaseModel):
     facility_id:    Optional[int]   = None
     project_id:     Optional[int]   = None
     runs:           Optional[int]   = None
+    windows:        Optional[int]   = None
     me:             Optional[int]   = None
     te:             Optional[int]   = None
     bpc_cost:       Optional[float] = None
@@ -328,6 +340,7 @@ class JobOut(BaseModel):
     product_type_id:  int
     product_name:     str
     runs:             int
+    windows:          Optional[int] = 1
     me:               int
     te:               int
     bpc_cost:         Optional[float]
@@ -481,6 +494,7 @@ async def calculate(
         time_bonus_pct=body.time_bonus_pct,
         material_role_pct=mat_role,
         time_role_pct=time_role,
+        windows=body.windows,
     )
 
 

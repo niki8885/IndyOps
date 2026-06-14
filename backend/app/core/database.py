@@ -152,6 +152,7 @@ class ProductionJob(Base):
 
     # Production parameters
     runs    = Column(Integer, nullable=False, default=1)
+    windows = Column(Integer, nullable=False, default=1)   # parallel production slots
     me      = Column(Integer, nullable=False, default=0)   # 0-10
     te      = Column(Integer, nullable=False, default=0)   # 0-20
     bpc_cost = Column(Float, nullable=True, default=0)
@@ -273,6 +274,7 @@ _MIGRATIONS = [
     "ALTER TABLE facilities ADD COLUMN IF NOT EXISTS organisation_id INTEGER",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS closed BOOLEAN DEFAULT FALSE",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS priority VARCHAR(10) DEFAULT 'medium'",
+    "ALTER TABLE production_jobs ADD COLUMN IF NOT EXISTS windows INTEGER DEFAULT 1",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Athanor'",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Tatara'",
 ]

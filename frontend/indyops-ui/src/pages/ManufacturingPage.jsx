@@ -67,7 +67,7 @@ function CalculatorTab() {
   const [projects, setProjects]     = useState([])
 
   const [params, setParams] = useState({
-    runs: 1, me: 0, te: 0,
+    runs: 1, windows: 1, me: 0, te: 0,
     bpc_cost: 0,
     output_price: 0,
     broker_fee_pct: 3.6,
@@ -173,8 +173,9 @@ function CalculatorTab() {
     try {
       const res = await post('/manufacturing/calculate', {
         product_type_id: product.type_id,
-        runs:   Number(params.runs),
-        me:     Number(params.me),
+        runs:    Number(params.runs),
+        windows: Number(params.windows) || 1,
+        me:      Number(params.me),
         te:     Number(params.te),
         bpc_cost: Number(params.bpc_cost),
         output_price: Number(params.output_price),
@@ -238,10 +239,12 @@ function CalculatorTab() {
   function adjQtyOf(m) {
     const rigMe  = rigTotals().me
     const roleMe = rigBonus?.structure_role?.material_pct || 0
-    return Math.max(
+    const w = Math.max(1, Number(params.windows) || 1)
+    const perJob = Math.max(
       Number(params.runs),
       Math.ceil(m.base_qty * params.runs * (1 - params.me / 100) * (1 - rigMe / 100) * (1 - roleMe / 100)),
     )
+    return perJob * w
   }
 
   async function checkWarehouse() {
@@ -358,7 +361,8 @@ function CalculatorTab() {
         blueprint_name: bpInfo.blueprint_name,
         facility_id: params.facility_id ? Number(params.facility_id) : null,
         project_id: jobForm.project_id ? Number(jobForm.project_id) : null,
-        runs: Number(params.runs), me: Number(params.me), te: Number(params.te),
+        runs: Number(params.runs), windows: Number(params.windows) || 1,
+        me: Number(params.me), te: Number(params.te),
         bpc_cost: Number(params.bpc_cost),
         paks: jobForm.paks ? Number(jobForm.paks) : null,
         units_per_pak: jobForm.units_per_pak ? Number(jobForm.units_per_pak) : null,
@@ -409,10 +413,14 @@ function CalculatorTab() {
             {bpLoading && <span style={{ fontSize: 11, color: 'var(--text)' }}>Loading blueprint…</span>}
             {bpInfo && <span style={{ fontSize: 11, color: 'var(--success)' }}>✓ {bpInfo.blueprint_name} · {bpInfo.qty_per_run} units/run · {fmtTime(bpInfo.base_time_per_run)}/run</span>}
           </div>
-          <NumField label="Runs" value={params.runs} onChange={setP('runs')} min={1} />
+          <NumField label="Runs / window" value={params.runs} onChange={setP('runs')} min={1} />
+          <div>
+            <CLabel>Windows (slots) <Hint>{`${params.windows}×${params.runs} = ${(Number(params.windows) || 1) * Number(params.runs)} runs`}</Hint></CLabel>
+            <input type="number" value={params.windows} onChange={setP('windows')} min={1} />
+          </div>
           <NumField label="ME (0–10)" value={params.me} onChange={setP('me')} min={0} max={10} />
           <NumField label="TE (0–20)" value={params.te} onChange={setP('te')} min={0} max={20} />
-          <NumField label="BPC Cost (ISK)" value={params.bpc_cost} onChange={setP('bpc_cost')} step={1000} />
+          <NumField label="BPC Cost / window" value={params.bpc_cost} onChange={setP('bpc_cost')} step={1000} />
           <div>
             <CLabel>Facility</CLabel>
             <select value={params.facility_id} onChange={setP('facility_id')}>
@@ -542,7 +550,7 @@ function CalculatorTab() {
             <thead>
               <tr>
                 <th>Item</th>
-                <th>Base Qty (×{params.runs} runs)</th>
+                <th>Base Qty ({params.windows}×{params.runs})</th>
                 <th>After ME{params.me}</th>
                 <th>Saved</th>
                 {availability && <th>Have</th>}
@@ -554,7 +562,7 @@ function CalculatorTab() {
             <tbody>
               {bpInfo.materials.map(m => {
                 const adjQty = adjQtyOf(m)
-                const baseQty = m.base_qty * Number(params.runs)
+                const baseQty = m.base_qty * Number(params.runs) * (Number(params.windows) || 1)
                 const price = Number(matPrices[m.type_id] || 0)
                 const grossCost = adjQty * price
                 const av = availability?.[m.type_id]
@@ -995,6 +1003,7 @@ function PakCard({ job, onChange }) {
       <CardSection title="Info">
         <Row label="Module"  value={job.product_name} />
         <Row label="Station" value={job.place} />
+        <Row label="Production" value={`${job.windows || 1} × ${job.runs} runs`} />
         <Row label="Pack Tier" value={job.pack_tier} />
         <Row label="PAKs" value={job.paks} />
         <Row label="Units/PAK" value={job.units_per_pak} />
@@ -1588,21 +1597,25 @@ function CostPie({ result }) {
 }
 
 function ProductionMetrics({ result }) {
-  const hours = result.job_time?.hours || 0
+  const hours = result.job_time?.hours || 0     // parallel slots → batch wall-clock
+  const windows = result.windows || 1
   const profit = result.results.profit
   const costs = result.results.total_costs
   const units = result.output.quantity
-  const profitPerHour = hours ? profit / hours : null
+  const profitPerHour = hours ? profit / hours : null   // whole batch finishes in `hours`
   const roi = costs ? profit / costs * 100 : null
   const unitsPerHour = hours ? units / hours : null
   const profitPerUnit = units ? profit / units : null
+  const profitPerWindow = windows ? profit / windows : null
   const stats = [
-    { label: 'Profit / job', value: fmtIsk(profit), color: profit >= 0 ? '#4caf7d' : '#e05252' },
+    { label: 'Profit (batch)', value: fmtIsk(profit), color: profit >= 0 ? '#4caf7d' : '#e05252' },
+    { label: `Profit / window (×${windows})`, value: profitPerWindow != null ? fmtIsk(profitPerWindow) : '—', color: profitPerWindow >= 0 ? '#4caf7d' : '#e05252' },
     { label: 'Profit / hour', value: profitPerHour != null ? fmtIsk(profitPerHour) : '—', color: profitPerHour >= 0 ? '#4caf7d' : '#e05252' },
     { label: 'ROI', value: roi != null ? roi.toFixed(1) + '%' : '—', color: roi >= 0 ? '#4caf7d' : '#e05252' },
     { label: 'Profit / unit', value: profitPerUnit != null ? fmtIsk(profitPerUnit) : '—' },
     { label: 'Units / hour', value: unitsPerHour != null ? Math.round(unitsPerHour).toLocaleString() : '—' },
     { label: 'Job time', value: hours.toFixed(1) + ' h' },
+    { label: 'Output', value: units.toLocaleString() },
   ]
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(120px,1fr))', gap: 12, padding: 8 }}>
