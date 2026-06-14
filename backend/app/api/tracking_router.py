@@ -3,22 +3,59 @@ Per-user item price tracking — favourite places, tracked items, and a
 detail endpoint with technical indicators + cross-place comparison.
 """
 import math
+import time as _time
 from typing import Optional, List
 
 import numpy as np
 import pandas as pd
+import requests as _requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db, UserDB, TrackedPlace, TrackedItem, TrackPrice
+from app.core.database_eve import EveSessionLocal, EveType
 from app.core.security import get_current_user
-from app.tasks.update_tracking import collect_for_user
+from app.tasks.update_tracking import collect_for_user, _fuzzwork, _gnf
 
 router = APIRouter()
 
 MAX_PLACES = 5
 MAX_ITEMS = 100
+
+# ── ESI 30-day region history (cached) ──
+_HIST_CACHE: dict = {}
+_HIST_TTL = 6 * 3600
+
+
+def _esi_history(region_id: int, type_id: int) -> Optional[list]:
+    key = (region_id, type_id)
+    now = _time.time()
+    hit = _HIST_CACHE.get(key)
+    if hit and now - hit[0] < _HIST_TTL:
+        return hit[1]
+    try:
+        r = _requests.get(
+            f"https://esi.evetech.net/latest/markets/{region_id}/history/",
+            params={"type_id": type_id, "datasource": "tranquility"},
+            headers={"User-Agent": "IndyOps/1.0"}, timeout=25,
+        )
+        r.raise_for_status()
+        data = r.json()[-30:]
+    except Exception:
+        data = None
+    _HIST_CACHE[key] = (now, data)
+    return data
+
+
+def _hist_stats(rows: Optional[list]) -> dict:
+    if not rows:
+        return {"avg": None, "min": None, "max": None, "vol": None}
+    avg = float(np.mean([d["average"] for d in rows]))
+    lo = float(min(d["lowest"] for d in rows))
+    hi = float(max(d["highest"] for d in rows))
+    vol = float(np.mean([d["volume"] for d in rows]))
+    return {"avg": round(avg, 2), "min": round(lo, 2), "max": round(hi, 2), "vol": round(vol, 0)}
 
 
 def _clean(x):
@@ -245,3 +282,130 @@ async def item_detail(
         "distribution": distribution,
         "spread": spread,
     }
+
+
+# ── Warehouse allocation / sell-decision ──
+class AllocItem(BaseModel):
+    type_id: int
+    name: str
+    quantity: int
+    cost: Optional[float] = None     # cost basis per unit (for profit)
+
+
+class AllocateRequest(BaseModel):
+    items: List[AllocItem]
+    place_ids: List[int]
+    strategy: str = "balanced"        # fast | balanced | maxprofit
+    fees_pct: float = 8.0             # broker + tax on sell orders
+    delivery_coef: float = 1200.0     # ISK/m³
+    delivery_place_ids: List[int] = []
+    balance_days: int = 7
+
+
+def _current_prices(place: TrackedPlace, type_id: int) -> dict:
+    """Live buy/sell for a place."""
+    if place.special_parser:
+        d = _gnf(type_id) or {}
+        return {"buy": d.get("buy"), "sell": d.get("sell")}
+    e = (_fuzzwork(place.region_id, [type_id]) or {}).get(str(type_id)) or {}
+    def f(v):
+        try: return float(v)
+        except (TypeError, ValueError): return None
+    return {"buy": f((e.get("buy") or {}).get("max")), "sell": f((e.get("sell") or {}).get("min"))}
+
+
+@router.post("/allocate")
+async def allocate(
+    body: AllocateRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    places = {p.id: p for p in db.query(TrackedPlace).filter(
+        TrackedPlace.user_id == current_user.id, TrackedPlace.id.in_(body.place_ids or [-1])).all()}
+    if not places:
+        raise HTTPException(400, "Select at least one favourite place")
+
+    # volumes for delivery
+    eve_db = EveSessionLocal()
+    try:
+        vol_map = {tid: vol for tid, vol in eve_db.query(EveType.type_id, EveType.volume)
+                   .filter(EveType.type_id.in_([i.type_id for i in body.items] or [-1])).all()}
+    finally:
+        eve_db.close()
+
+    fees = body.fees_pct / 100.0
+    out_items = []
+    for it in body.items:
+        unit_vol = vol_map.get(it.type_id) or 0
+        venues = []
+        for pid, p in places.items():
+            cur = _current_prices(p, it.type_id)
+            hist = _hist_stats(_esi_history(p.region_id, it.type_id)) if p.region_id else {"avg": None, "min": None, "max": None, "vol": None}
+            delivery_unit = (body.delivery_coef * unit_vol) if pid in body.delivery_place_ids else 0.0
+            buy, sell = cur["buy"], cur["sell"]
+            venues.append({
+                "place_id": pid, "place_name": p.name, "special": p.special_parser,
+                "buy": buy, "sell": sell,
+                "delivery_unit": round(delivery_unit, 2),
+                "net_instant": round((buy or 0) - delivery_unit, 2) if buy else None,
+                "net_patient": round((sell or 0) * (1 - fees) - delivery_unit, 2) if sell else None,
+                "hist": hist,
+            })
+
+        # hold / sell signal: best current sell vs its 30d average
+        best = max((v for v in venues if v["sell"]), key=lambda v: v["sell"], default=None)
+        signal = "neutral"
+        if best and best["hist"]["avg"]:
+            ratio = best["sell"] / best["hist"]["avg"]
+            signal = "sell" if ratio >= 1.0 else ("hold" if ratio < 0.9 else "neutral")
+
+        allocations = _allocate(venues, it.quantity, body.strategy, body.balance_days)
+        total_net = round(sum(a["net_total"] for a in allocations), 2)
+        total_profit = round(total_net - (it.cost or 0) * it.quantity, 2) if it.cost else None
+        out_items.append({
+            "type_id": it.type_id, "name": it.name, "quantity": it.quantity, "cost": it.cost,
+            "signal": signal, "venues": venues, "allocations": allocations,
+            "total_net": total_net, "total_profit": total_profit,
+        })
+
+    return {"strategy": body.strategy, "items": out_items}
+
+
+def _allocate(venues: list, qty: int, strategy: str, balance_days: int) -> list:
+    """Split qty across venues by strategy → [{place, qty, method, unit_net, net_total, est_days}]."""
+    def row(v, q, method, unit):
+        vol = v["hist"]["vol"] or 0
+        days = round(q / vol, 1) if (method == "sell order" and vol) else 0
+        return {"place_id": v["place_id"], "place_name": v["place_name"], "qty": q,
+                "method": method, "unit_net": unit, "net_total": round((unit or 0) * q, 2), "est_days": days}
+
+    instant = [v for v in venues if v["net_instant"] is not None]
+    patient = [v for v in venues if v["net_patient"] is not None]
+
+    if strategy == "fast":
+        if not instant:
+            return []
+        v = max(instant, key=lambda v: v["net_instant"])
+        return [row(v, qty, "instant (buy order)", v["net_instant"])]
+
+    if strategy == "maxprofit":
+        if not patient:
+            return []
+        v = max(patient, key=lambda v: v["net_patient"])
+        return [row(v, qty, "sell order", v["net_patient"])]
+
+    # balanced: fill best sell-order venues up to capacity (vol × days), remainder instant
+    allocs, remaining = [], qty
+    for v in sorted(patient, key=lambda v: v["net_patient"], reverse=True):
+        if remaining <= 0:
+            break
+        cap = int((v["hist"]["vol"] or 0) * balance_days) or remaining
+        take = min(remaining, cap)
+        if take > 0:
+            allocs.append(row(v, take, "sell order", v["net_patient"]))
+            remaining -= take
+    if remaining > 0 and instant:
+        v = max(instant, key=lambda v: v["net_instant"])
+        allocs.append(row(v, remaining, "instant (buy order)", v["net_instant"]))
+        remaining = 0
+    return allocs

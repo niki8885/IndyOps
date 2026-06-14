@@ -56,11 +56,13 @@ export default function AnalysisPage() {
     <div>
       <h2 style={{ marginBottom: 14 }}>Analysis</h2>
       <div className="tabs" style={{ marginBottom: 18 }}>
-        {['Indices', 'Tracking'].map((t, i) => (
+        {['Indices', 'Tracking', 'Allocation'].map((t, i) => (
           <button key={i} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
         ))}
       </div>
-      {tab === 0 ? <IndicesTab /> : <TrackingTab />}
+      {tab === 0 && <IndicesTab />}
+      {tab === 1 && <TrackingTab />}
+      {tab === 2 && <AllocationTab />}
     </div>
   )
 }
@@ -553,6 +555,210 @@ function TrackingCharts({ detail, win, setWin, selPlace, setSelPlace, placeName 
     </>
   )
 }
+
+/* ════════════════════════════ ALLOCATION ════════════════════════════ */
+
+const SIGNAL_COLOR = { sell: '#4caf7d', hold: '#e05252', neutral: '#c8a951' }
+
+function AllocationTab() {
+  const [places, setPlaces]       = useState([])
+  const [selPlaces, setSelPlaces] = useState({})    // {place_id: true}
+  const [deliveryPlaces, setDeliveryPlaces] = useState({})
+  const [rows, setRows]           = useState([])     // {type_id,name,quantity,cost}
+  const [rawText, setRawText]     = useState('')
+  const [projects, setProjects]   = useState([])
+  const [loadProject, setLoadProject] = useState('')
+  const [strategy, setStrategy]   = useState('balanced')
+  const [fees, setFees]           = useState(8)
+  const [deliveryCoef, setDeliveryCoef] = useState(1200)
+  const [balanceDays, setBalanceDays]   = useState(7)
+  const [result, setResult]       = useState(null)
+  const [loading, setLoading]     = useState(false)
+  const [error, setError]         = useState('')
+
+  useEffect(() => {
+    get('/tracking/places').then(setPlaces).catch(() => {})
+    get('/organisations').then(async orgs => {
+      const all = []
+      for (const o of orgs) { try { all.push(...(await get(`/projects?org_id=${o.id}`))) } catch {} }
+      setProjects(all)
+    }).catch(() => {})
+  }, [])
+
+  async function parseList() {
+    if (!rawText.trim()) return
+    try {
+      const res = await post('/inventory/preview', { text: rawText })
+      setRows(res.items.map(i => ({ type_id: i.eve_type_id, name: i.name, quantity: i.quantity, cost: '' })))
+    } catch (e) { setError(e.message) }
+  }
+
+  async function loadFromWarehouse() {
+    setError('')
+    try {
+      const p = new URLSearchParams()
+      if (loadProject) p.set('project_id', loadProject)
+      const items = await get(`/inventory?${p}`)
+      const g = {}
+      for (const it of items) {
+        if (!it.eve_type_id) continue
+        const k = it.eve_type_id
+        if (!g[k]) g[k] = { type_id: k, name: it.name, quantity: 0, value: 0, priced: 0 }
+        g[k].quantity += it.quantity
+        if (it.price) { g[k].value += it.price * it.quantity; g[k].priced += it.quantity }
+      }
+      setRows(Object.values(g).map(x => ({ type_id: x.type_id, name: x.name, quantity: x.quantity, cost: x.priced ? (x.value / x.priced).toFixed(2) : '' })))
+    } catch (e) { setError(e.message) }
+  }
+
+  async function compute() {
+    const place_ids = Object.keys(selPlaces).filter(k => selPlaces[k]).map(Number)
+    if (!place_ids.length) { setError('Select at least one place'); return }
+    if (!rows.length) { setError('Add items first'); return }
+    setLoading(true); setError('')
+    try {
+      const res = await post('/tracking/allocate', {
+        items: rows.filter(r => r.type_id && r.quantity > 0).map(r => ({ type_id: r.type_id, name: r.name, quantity: Number(r.quantity), cost: r.cost !== '' ? Number(r.cost) : null })),
+        place_ids,
+        delivery_place_ids: place_ids.filter(pid => deliveryPlaces[pid]),
+        strategy, fees_pct: Number(fees), delivery_coef: Number(deliveryCoef), balance_days: Number(balanceDays),
+      })
+      setResult(res)
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  const setRow = (i, k, v) => setRows(rs => rs.map((r, idx) => idx === i ? { ...r, [k]: v } : r))
+
+  return (
+    <div>
+      {error && <div className="error-box">{error}</div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        {/* items input */}
+        <div className="card">
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)', marginBottom: 10 }}>ITEMS TO SELL</div>
+          <textarea value={rawText} onChange={e => setRawText(e.target.value)} rows={4} placeholder={'Helium Fuel Block\t40000'} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-ghost btn-sm" onClick={parseList}>▶ Parse</button>
+            <span style={{ color: 'var(--border2)' }}>or</span>
+            <select value={loadProject} onChange={e => setLoadProject(e.target.value)} style={{ width: 150 }}>
+              <option value="">All warehouse</option>
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <button className="btn btn-ghost btn-sm" onClick={loadFromWarehouse}>📦 Load from warehouse</button>
+          </div>
+          {rows.length > 0 && (
+            <table style={{ marginTop: 10 }}>
+              <thead><tr><th>Item</th><th>Qty</th><th>Cost/unit</th></tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ color: r.type_id ? 'var(--text-white)' : '#e05252' }}>{r.name}{!r.type_id && ' (?)'}</td>
+                    <td style={{ width: 90 }}><input type="number" value={r.quantity} onChange={e => setRow(i, 'quantity', e.target.value)} style={{ padding: '3px 6px' }} /></td>
+                    <td style={{ width: 110 }}><input type="number" value={r.cost} onChange={e => setRow(i, 'cost', e.target.value)} placeholder="—" style={{ padding: '3px 6px' }} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* venues + strategy */}
+        <div className="card">
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)', marginBottom: 10 }}>VENUES & STRATEGY</div>
+          {places.length === 0 && <div style={{ fontSize: 12, color: 'var(--text)' }}>Add favourite places in the Tracking tab first.</div>}
+          {places.map(p => (
+            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 0' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!selPlaces[p.id]} onChange={e => setSelPlaces(s => ({ ...s, [p.id]: e.target.checked }))} />
+                <span style={{ color: 'var(--text-white)' }}>{p.name}</span>
+              </label>
+              <span className="badge" style={{ background: 'var(--surface3)', color: 'var(--text)' }}>{p.kind}</span>
+              <label style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text)', display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!deliveryPlaces[p.id]} onChange={e => setDeliveryPlaces(d => ({ ...d, [p.id]: e.target.checked }))} /> delivery
+              </label>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 4, marginTop: 12 }}>
+            {[['fast', 'Fast sell'], ['balanced', 'Balanced'], ['maxprofit', 'Max profit']].map(([k, l]) => (
+              <button key={k} className={`btn btn-sm ${strategy === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setStrategy(k)}>{l}</button>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginTop: 12 }}>
+            <div><label style={lbl}>Sell fees %</label><input type="number" value={fees} onChange={e => setFees(e.target.value)} /></div>
+            <div><label style={lbl}>Delivery ISK/m³</label><input type="number" value={deliveryCoef} onChange={e => setDeliveryCoef(e.target.value)} /></div>
+            <div><label style={lbl}>Balance days</label><input type="number" value={balanceDays} onChange={e => setBalanceDays(e.target.value)} /></div>
+          </div>
+          <button className="btn btn-primary" onClick={compute} disabled={loading} style={{ marginTop: 14, width: '100%' }}>
+            {loading ? 'Computing…' : '⚖ Compute allocation'}
+          </button>
+        </div>
+      </div>
+
+      {result && result.items.map(it => <AllocItemResult key={it.type_id} it={it} />)}
+    </div>
+  )
+}
+
+function AllocItemResult({ it }) {
+  return (
+    <div className="card" style={{ padding: 0, marginBottom: 14, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{it.name}</span>
+        <span style={{ color: 'var(--text)', fontSize: 12 }}>×{it.quantity.toLocaleString()}</span>
+        <span className="badge" style={{ background: (SIGNAL_COLOR[it.signal] || '#888') + '22', color: SIGNAL_COLOR[it.signal] || '#888', fontSize: 11 }}>
+          {it.signal === 'sell' ? 'SELL NOW' : it.signal === 'hold' ? 'HOLD' : 'NEUTRAL'}
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text)' }}>
+          Net <b style={{ color: 'var(--text-white)' }}>{fmtIsk(it.total_net)}</b>
+          {it.total_profit != null && <> · Profit <b style={{ color: it.total_profit >= 0 ? '#4caf7d' : '#e05252' }}>{fmtIsk(it.total_profit)}</b></>}
+        </span>
+      </div>
+
+      {/* venues 30d context */}
+      <table>
+        <thead><tr><th>Venue</th><th>Buy</th><th>Sell</th><th>30d avg</th><th>30d min/max</th><th>30d vol/day</th><th>Net instant</th><th>Net patient</th></tr></thead>
+        <tbody>
+          {it.venues.map(v => (
+            <tr key={v.place_id}>
+              <td style={{ color: 'var(--text-white)' }}>{v.place_name}{v.delivery_unit ? ' 🚚' : ''}</td>
+              <td style={{ color: '#3a9bd6' }}>{fmtIsk(v.buy)}</td>
+              <td style={{ color: '#4caf7d' }}>{fmtIsk(v.sell)}</td>
+              <td style={{ color: 'var(--text)' }}>{fmtIsk(v.hist.avg)}</td>
+              <td style={{ color: 'var(--text)', fontSize: 11 }}>{fmtIsk(v.hist.min)} / {fmtIsk(v.hist.max)}</td>
+              <td style={{ color: 'var(--text)', fontSize: 12 }}>{v.hist.vol != null ? Math.round(v.hist.vol).toLocaleString() : '—'}</td>
+              <td>{fmtIsk(v.net_instant)}</td>
+              <td style={{ color: 'var(--accent)' }}>{fmtIsk(v.net_patient)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* allocation plan */}
+      <div style={{ padding: '6px 16px', fontSize: 11, color: 'var(--accent)', fontWeight: 700, letterSpacing: 1, borderTop: '1px solid var(--border)' }}>ALLOCATION PLAN</div>
+      <table>
+        <thead><tr><th>Where</th><th>How much</th><th>Method</th><th>Net/unit</th><th>Net total</th><th>Est. time</th></tr></thead>
+        <tbody>
+          {it.allocations.length === 0
+            ? <tr><td colSpan={6} style={{ color: 'var(--text)' }}>No priced venue available.</td></tr>
+            : it.allocations.map((a, i) => (
+              <tr key={i}>
+                <td style={{ color: 'var(--text-white)' }}>{a.place_name}</td>
+                <td>{a.qty.toLocaleString()}</td>
+                <td style={{ fontSize: 12, color: a.method.startsWith('instant') ? '#3a9bd6' : '#4caf7d' }}>{a.method}</td>
+                <td>{fmtIsk(a.unit_net)}</td>
+                <td style={{ color: 'var(--text-white)' }}>{fmtIsk(a.net_total)}</td>
+                <td style={{ color: 'var(--text)', fontSize: 12 }}>{a.est_days ? `~${a.est_days} d` : 'instant'}</td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+const lbl = { display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 4 }
 
 function RegionSearch({ value, onChange }) {
   const [q, setQ] = useState(value || '')
