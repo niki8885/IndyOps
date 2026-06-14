@@ -1,11 +1,3 @@
-"""
-Hourly commodity-index collector.
-
-Fetches Fuzzwork market aggregates for each basket, computes a volume-weighted
-price index + volume index + concentration / liquidity metrics, and stores one
-MarketIndexSnapshot row per index. The Volume index is synthesised from the
-combined throughput of the mineral/ice/pi/moon sub-indices.
-"""
 import logging
 from dataclasses import asdict
 from datetime import datetime, timezone

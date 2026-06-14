@@ -1,11 +1,4 @@
-"""
-Pure commodity-index math: basket concentration + liquidity.
-
-Extracted from tasks/update_indices.py (``_concentration``/``_liquidity``).
-No I/O — the collector fetches aggregates and stores rows; this only computes.
-"""
 from __future__ import annotations
-
 import math
 from dataclasses import dataclass
 
@@ -13,7 +6,7 @@ from dataclasses import dataclass
 @dataclass
 class Concentration:
     top3_share: float
-    h_index: float      # Herfindahl
+    h_index: float  # Herfindahl
     entropy: float
 
 

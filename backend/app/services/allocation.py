@@ -1,12 +1,4 @@
-"""
-Pure warehouse sell-allocation: split a quantity across venues by strategy.
-
-Extracted from tracking_router (``_allocate``). The router fetches live prices
-and 30d history (I/O), builds Venue projections and renders the result; this
-module only decides the split.
-"""
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,9 +7,9 @@ from typing import Optional
 class Venue:
     place_id: int
     place_name: str
-    net_instant: Optional[float]   # ISK/unit selling into buy orders now (after delivery)
-    net_patient: Optional[float]   # ISK/unit via a sell order (after fees + delivery)
-    hist_vol: Optional[float]      # 30d avg daily volume — capacity + ETA
+    net_instant: Optional[float]  # ISK/unit selling into buy orders now (after delivery)
+    net_patient: Optional[float]  # ISK/unit via a sell order (after fees + delivery)
+    hist_vol: Optional[float]  # 30d avg daily volume — capacity + ETA
 
 
 @dataclass

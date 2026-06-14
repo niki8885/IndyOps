@@ -16,7 +16,6 @@ from app.api.tracking_router import router as tracking_router
 
 from app.tasks.scheduler import scheduler
 
-
 Base.metadata.create_all(bind=engine)
 EveBase.metadata.create_all(bind=eve_engine)
 
@@ -40,6 +39,7 @@ def start_tasks():
         scheduler.start()
         print("[INFO] Scheduler started")
 
+
 @app.on_event("shutdown")
 def stop_tasks():
     if scheduler.running:
@@ -47,15 +47,15 @@ def stop_tasks():
         print("[INFO] Background scheduler shut down.")
 
 
-app.include_router(auth_router,          prefix="/api/v1",                    tags=["Authentication"])
-app.include_router(organisations_router, prefix="/api/v1/organisations",      tags=["Organisations"])
-app.include_router(projects_router,      prefix="/api/v1/projects",           tags=["Projects"])
-app.include_router(inventory_router,     prefix="/api/v1/inventory",          tags=["Inventory"])
-app.include_router(facilities_router,    prefix="/api/v1/facilities",         tags=["Facilities"])
-app.include_router(manufacturing_router, prefix="/api/v1/manufacturing",      tags=["Manufacturing"])
-app.include_router(eve_router,           prefix="/api/v1/eve",                tags=["EVE SDE"])
-app.include_router(analysis_router,      prefix="/api/v1/analysis",           tags=["Analysis"])
-app.include_router(tracking_router,      prefix="/api/v1/tracking",           tags=["Tracking"])
+app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])
+app.include_router(organisations_router, prefix="/api/v1/organisations", tags=["Organisations"])
+app.include_router(projects_router, prefix="/api/v1/projects", tags=["Projects"])
+app.include_router(inventory_router, prefix="/api/v1/inventory", tags=["Inventory"])
+app.include_router(facilities_router, prefix="/api/v1/facilities", tags=["Facilities"])
+app.include_router(manufacturing_router, prefix="/api/v1/manufacturing", tags=["Manufacturing"])
+app.include_router(eve_router, prefix="/api/v1/eve", tags=["EVE SDE"])
+app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])
+app.include_router(tracking_router, prefix="/api/v1/tracking", tags=["Tracking"])
 
 
 @app.get("/", tags=["Health"])

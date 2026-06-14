@@ -1,21 +1,13 @@
-"""
-Pure FIFO consumption planner.
-
-Given inventory lots (oldest first) and a required quantity, decide how much to
-draw from each lot and the running cost. The DB mutation (``lot.quantity -= take``,
-``db.delete(lot)``) stays in the caller — this only plans.
-"""
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Optional
 
 
 @dataclass
 class LotConsumption:
-    index: int          # position of the lot in the input list
-    take: int           # units drawn from that lot
-    cost: float         # take × unit_price
+    index: int  # position of the lot in the input list
+    take: int  # units drawn from that lot
+    cost: float  # take × unit_price
 
 
 @dataclass

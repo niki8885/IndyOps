@@ -2,13 +2,11 @@ import asyncio
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
-
 import requests as _requests
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-
 from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveRegion
 from app.core.database import UserDB
 from app.core.security import get_current_user
@@ -45,8 +43,6 @@ class TypeOut(BaseModel):
         from_attributes = True
 
 
-# ── EVE SDE status + trigger ──────────────────────────────────────────
-
 @router.get("/sde/status")
 async def sde_status(eve_db: Session = Depends(_get_eve_db)):
     """Return how many types are in the SDE DB (0 means not yet synced)."""
@@ -56,7 +52,7 @@ async def sde_status(eve_db: Session = Depends(_get_eve_db)):
 
 @router.post("/sde/update")
 async def trigger_sde_update(
-    current_user: UserDB = Depends(get_current_user),
+        current_user: UserDB = Depends(get_current_user),
 ):
     """Kick off an SDE update in a background thread."""
     import threading
@@ -67,13 +63,11 @@ async def trigger_sde_update(
     return {"status": "started", "message": "SDE sync started — takes 5-15 minutes, page will work once complete"}
 
 
-# ── System / Type search ──────────────────────────────────────────────
-
 @router.get("/systems", response_model=list[SystemOut])
 async def search_systems(
-    q: str = Query(..., min_length=2),
-    limit: int = Query(15, le=50),
-    eve_db: Session = Depends(_get_eve_db),
+        q: str = Query(..., min_length=2),
+        limit: int = Query(15, le=50),
+        eve_db: Session = Depends(_get_eve_db),
 ):
     return (
         eve_db.query(EveSolarSystem)
@@ -94,9 +88,9 @@ class RegionOut(BaseModel):
 
 @router.get("/regions", response_model=list[RegionOut])
 async def search_regions(
-    q: str = Query(..., min_length=2),
-    limit: int = Query(15, le=50),
-    eve_db: Session = Depends(_get_eve_db),
+        q: str = Query(..., min_length=2),
+        limit: int = Query(15, le=50),
+        eve_db: Session = Depends(_get_eve_db),
 ):
     return (
         eve_db.query(EveRegion)
@@ -109,8 +103,8 @@ async def search_regions(
 
 @router.get("/volumes")
 async def get_volumes(
-    type_ids: str = Query(..., description="Comma-separated type IDs"),
-    eve_db: Session = Depends(_get_eve_db),
+        type_ids: str = Query(..., description="Comma-separated type IDs"),
+        eve_db: Session = Depends(_get_eve_db),
 ):
     """Per-unit volume (m³) for a set of type_ids — used for delivery cost."""
     ids = [int(t) for t in type_ids.split(",") if t.strip().isdigit()]
@@ -122,9 +116,9 @@ async def get_volumes(
 
 @router.get("/types/search", response_model=list[TypeOut])
 async def search_types(
-    q: str = Query(..., min_length=2),
-    limit: int = Query(10, le=30),
-    eve_db: Session = Depends(_get_eve_db),
+        q: str = Query(..., min_length=2),
+        limit: int = Query(10, le=30),
+        eve_db: Session = Depends(_get_eve_db),
 ):
     return (
         eve_db.query(EveType)
@@ -134,8 +128,6 @@ async def search_types(
         .all()
     )
 
-
-# ── Industry System Cost Index via ESI ───────────────────────────────
 
 _ESI_SYSTEMS_URL = "https://esi.evetech.net/latest/industry/systems/?datasource=tranquility"
 _ESI_COST_CACHE: dict = {"data": None, "ts": 0.0}
@@ -163,9 +155,9 @@ def _fetch_esi_cost_indices() -> dict:
 
 @router.get("/industry/cost-index")
 async def get_cost_index(
-    system_name: Optional[str] = None,
-    solar_system_id: Optional[int] = None,
-    eve_db: Session = Depends(_get_eve_db),
+        system_name: Optional[str] = None,
+        solar_system_id: Optional[int] = None,
+        eve_db: Session = Depends(_get_eve_db),
 ):
     """
     Live industry cost indices for a solar system, straight from ESI.
@@ -194,16 +186,14 @@ async def get_cost_index(
 
     return {
         "solar_system_id": solar_system_id,
-        "manufacturing":                   indices.get("manufacturing"),
-        "reaction":                        indices.get("reaction"),
-        "copying":                         indices.get("copying"),
-        "invention":                       indices.get("invention"),
-        "researching_time_efficiency":     indices.get("researching_time_efficiency"),
+        "manufacturing": indices.get("manufacturing"),
+        "reaction": indices.get("reaction"),
+        "copying": indices.get("copying"),
+        "invention": indices.get("invention"),
+        "researching_time_efficiency": indices.get("researching_time_efficiency"),
         "researching_material_efficiency": indices.get("researching_material_efficiency"),
     }
 
-
-# ── C-J prices via appraise.gnf.lt ───────────────────────────────────
 
 _GNF_REGION = "C-J6MT"
 _GNF_HEADERS = {"User-Agent": "IndyOps/1.0 (industrial manager)"}
@@ -237,19 +227,19 @@ def _fetch_gnf_price(type_id: int) -> Optional[dict]:
                         pass
             return out
 
-        sell_data = parse_table(tables[0])   # sell orders
-        buy_data  = parse_table(tables[1])   # buy orders
+        sell_data = parse_table(tables[0])  # sell orders
+        buy_data = parse_table(tables[1])  # buy orders
 
         # CSV shows keys: Sell_Min, Buy_Max — HTML strips the prefix
         sell = sell_data.get("Min") or sell_data.get("1st Percentile")
-        buy  = buy_data.get("Max")  or buy_data.get("99th Percentile")
+        buy = buy_data.get("Max") or buy_data.get("99th Percentile")
 
         if sell is None or buy is None:
             return None
 
         return {
-            "buy":   round(buy, 2),
-            "sell":  round(sell, 2),
+            "buy": round(buy, 2),
+            "sell": round(sell, 2),
             "split": round((buy + sell) / 2, 2),
         }
     except Exception:
@@ -258,7 +248,7 @@ def _fetch_gnf_price(type_id: int) -> Optional[dict]:
 
 @router.get("/prices/cj")
 async def get_cj_prices(
-    type_ids: str = Query(..., description="Comma-separated EVE type IDs"),
+        type_ids: str = Query(..., description="Comma-separated EVE type IDs"),
 ):
     """Fetch C-J6MT local market prices from appraise.gnf.lt (parallel, max 8 workers)."""
     ids = [int(t.strip()) for t in type_ids.split(",") if t.strip().isdigit()]

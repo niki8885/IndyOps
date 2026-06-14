@@ -1,18 +1,7 @@
-"""
-External market-data access (HTTP / scraping).
-
-The single place in the backend that talks to ESI, Fuzzwork and the C-J
-appraisal scraper. Consolidates what was scattered across manufacturing_router
-(``_get_adjusted_prices``), update_indices (``_fetch_aggregates``),
-update_tracking (``_fuzzwork``/``_gnf``) and tracking_router (``_esi_history``).
-Keeps the service layer pure and gives callers one import for market I/O.
-"""
 from __future__ import annotations
-
 import logging
 import time as _time
 from typing import Optional
-
 import requests
 from bs4 import BeautifulSoup
 
@@ -25,8 +14,6 @@ _AGG_URL = "https://market.fuzzwork.co.uk/aggregates/"
 _ESI_PRICES_URL = "https://esi.evetech.net/latest/markets/prices/?datasource=tranquility"
 _GNF_REGION = "C-J6MT"
 
-
-# ── ESI adjusted prices (drive Estimated Item Value), cached 1h ──────────────
 _ADJ_CACHE: dict = {"data": None, "ts": 0.0}
 _ADJ_TTL = 3600
 
@@ -44,7 +31,6 @@ def esi_adjusted_prices() -> dict:
     return data
 
 
-# ── Fuzzwork market aggregates ───────────────────────────────────────────────
 def fuzzwork_aggregates(region: int, type_ids: list[int]) -> dict:
     """Fuzzwork aggregate data keyed by type_id (str). Raises on HTTP error."""
     if not type_ids:
@@ -64,7 +50,6 @@ def fuzzwork_aggregates_or_empty(region: int, type_ids: list[int]) -> dict:
         return {}
 
 
-# ── ESI 30-day region history, cached 6h ─────────────────────────────────────
 _HIST_CACHE: dict = {}
 _HIST_TTL = 6 * 3600
 
@@ -90,7 +75,6 @@ def esi_region_history(region_id: int, type_id: int) -> Optional[list]:
     return data
 
 
-# ── C-J local market scraper (appraise.gnf.lt) ───────────────────────────────
 def _fnum(v):
     try:
         return float(v)
@@ -120,7 +104,8 @@ def gnf_local(type_id: int) -> Optional[dict]:
                     out[th.text.strip()] = _fnum(raw)
             return out
 
-        sell = parse(tables[0]); buy = parse(tables[1])
+        sell = parse(tables[0]);
+        buy = parse(tables[1])
         return {"sell": sell.get("Min") or sell.get("1st Percentile"),
                 "buy": buy.get("Max") or buy.get("99th Percentile")}
     except Exception:

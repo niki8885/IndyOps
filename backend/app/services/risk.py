@@ -1,12 +1,4 @@
-"""
-Risk / market-state analytics over a returns or volatility series.
-
-Extracted from analysis_router (index_detail): historical VaR/CVaR, return
-distribution histogram, Monte-Carlo (GBM) price-path projection, weekday×hour
-volume heatmap and volatility-regime terciles. numpy/pandas only — no I/O.
-"""
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Optional
 
@@ -37,7 +29,7 @@ class MonteCarlo:
 
 @dataclass
 class MarketStates:
-    labels: list           # 0 calm / 1 normal / 2 turbulent, per point
+    labels: list  # 0 calm / 1 normal / 2 turbulent, per point
     names: list
     current: Optional[int]
     thresholds: list

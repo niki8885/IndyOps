@@ -1,20 +1,10 @@
-"""
-Per-user item price tracking — favourite places, tracked items, and a
-detail endpoint with technical indicators + cross-place comparison.
-
-Technical indicators, the price-distribution histogram and the sell-allocation
-split are computed by the pure service layer (app.services.*). This router
-fetches live/historical prices and shapes the response.
-"""
 from dataclasses import asdict
 from typing import Optional, List
-
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-
 from app.adapters import market
 from app.core.database import get_db, UserDB, TrackedPlace, TrackedItem, TrackPrice
 from app.core.database_eve import EveSessionLocal
@@ -44,7 +34,7 @@ def _hist_stats(rows: Optional[list]) -> dict:
 
 # ── schemas ──
 class PlaceCreate(BaseModel):
-    kind: str                                  # system | region
+    kind: str  # system | region
     name: str
     region_id: Optional[int] = None
     solar_system_id: Optional[int] = None
@@ -95,7 +85,9 @@ async def add_place(body: PlaceCreate, current_user: UserDB = Depends(get_curren
     if count >= MAX_PLACES:
         raise HTTPException(400, f"Max {MAX_PLACES} places")
     p = TrackedPlace(user_id=current_user.id, **body.model_dump())
-    db.add(p); db.commit(); db.refresh(p)
+    db.add(p);
+    db.commit();
+    db.refresh(p)
     return p
 
 
@@ -104,7 +96,8 @@ async def del_place(place_id: int, current_user: UserDB = Depends(get_current_us
     p = db.query(TrackedPlace).filter(TrackedPlace.id == place_id, TrackedPlace.user_id == current_user.id).first()
     if not p:
         raise HTTPException(404, "Place not found")
-    db.delete(p); db.commit()
+    db.delete(p);
+    db.commit()
 
 
 # ── items ──
@@ -124,18 +117,22 @@ async def add_item(body: ItemCreate, current_user: UserDB = Depends(get_current_
     if existing:
         raise HTTPException(400, "Item already tracked")
     it = TrackedItem(user_id=current_user.id, type_id=body.type_id, name=body.name, place_ids=body.place_ids)
-    db.add(it); db.commit(); db.refresh(it)
+    db.add(it);
+    db.commit();
+    db.refresh(it)
     return it
 
 
 @router.patch("/items/{item_id}", response_model=ItemOut)
-async def update_item(item_id: int, body: ItemUpdate, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+async def update_item(item_id: int, body: ItemUpdate, current_user: UserDB = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
     it = db.query(TrackedItem).filter(TrackedItem.id == item_id, TrackedItem.user_id == current_user.id).first()
     if not it:
         raise HTTPException(404, "Item not found")
     if body.place_ids is not None:
         it.place_ids = body.place_ids
-    db.commit(); db.refresh(it)
+    db.commit();
+    db.refresh(it)
     return it
 
 
@@ -144,7 +141,8 @@ async def del_item(item_id: int, current_user: UserDB = Depends(get_current_user
     it = db.query(TrackedItem).filter(TrackedItem.id == item_id, TrackedItem.user_id == current_user.id).first()
     if not it:
         raise HTTPException(404, "Item not found")
-    db.delete(it); db.commit()
+    db.delete(it);
+    db.commit()
 
 
 @router.post("/refresh")
@@ -156,11 +154,11 @@ async def refresh_now(current_user: UserDB = Depends(get_current_user), db: Sess
 # ── detail + indicators ──
 @router.get("/item/{item_id}")
 async def item_detail(
-    item_id: int,
-    place_id: Optional[int] = None,
-    window: int = 10,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        item_id: int,
+        place_id: Optional[int] = None,
+        window: int = 10,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     it = db.query(TrackedItem).filter(TrackedItem.id == item_id, TrackedItem.user_id == current_user.id).first()
     if not it:
@@ -183,7 +181,7 @@ async def item_detail(
         prows = [r for r in rows if r.place_id == pid]
         series_by_place[pid] = {
             "timestamps": [r.timestamp.isoformat() for r in prows],
-            "buy":  [clean(r.buy) for r in prows],
+            "buy": [clean(r.buy) for r in prows],
             "sell": [clean(r.sell) for r in prows],
             "volume": [clean(r.volume) for r in prows],
         }
@@ -223,7 +221,8 @@ async def item_detail(
             counts, edges = histogram(mid, min_bins=8)
             if counts is not None:
                 distribution = {"counts": counts, "edges": edges}
-            lb = clean(buy.iloc[-1]); ls = clean(sell.iloc[-1])
+            lb = clean(buy.iloc[-1]);
+            ls = clean(sell.iloc[-1])
             if lb and ls:
                 spread = {"buy": lb, "sell": ls, "abs": round(ls - lb, 2),
                           "pct": round((ls - lb) / ls * 100, 2) if ls else None}
@@ -245,15 +244,15 @@ class AllocItem(BaseModel):
     type_id: int
     name: str
     quantity: int
-    cost: Optional[float] = None     # cost basis per unit (for profit)
+    cost: Optional[float] = None  # cost basis per unit (for profit)
 
 
 class AllocateRequest(BaseModel):
     items: List[AllocItem]
     place_ids: List[int]
-    strategy: str = "balanced"        # fast | balanced | maxprofit
-    fees_pct: float = 8.0             # broker + tax on sell orders
-    delivery_coef: float = 1200.0     # ISK/m³
+    strategy: str = "balanced"  # fast | balanced | maxprofit
+    fees_pct: float = 8.0  # broker + tax on sell orders
+    delivery_coef: float = 1200.0  # ISK/m³
     delivery_place_ids: List[int] = []
     balance_days: int = 7
 
@@ -264,17 +263,21 @@ def _current_prices(place: TrackedPlace, type_id: int) -> dict:
         d = market.gnf_local(type_id) or {}
         return {"buy": d.get("buy"), "sell": d.get("sell")}
     e = (market.fuzzwork_aggregates_or_empty(place.region_id, [type_id]) or {}).get(str(type_id)) or {}
+
     def f(v):
-        try: return float(v)
-        except (TypeError, ValueError): return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     return {"buy": f((e.get("buy") or {}).get("max")), "sell": f((e.get("sell") or {}).get("min"))}
 
 
 @router.post("/allocate")
 async def allocate(
-    body: AllocateRequest,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        body: AllocateRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     places = {p.id: p for p in db.query(TrackedPlace).filter(
         TrackedPlace.user_id == current_user.id, TrackedPlace.id.in_(body.place_ids or [-1])).all()}
@@ -295,7 +298,10 @@ async def allocate(
         venues = []
         for pid, p in places.items():
             cur = _current_prices(p, it.type_id)
-            hist = _hist_stats(market.esi_region_history(p.region_id, it.type_id)) if p.region_id else {"avg": None, "min": None, "max": None, "vol": None}
+            hist = _hist_stats(market.esi_region_history(p.region_id, it.type_id)) if p.region_id else {"avg": None,
+                                                                                                        "min": None,
+                                                                                                        "max": None,
+                                                                                                        "vol": None}
             delivery_unit = (body.delivery_coef * unit_vol) if pid in body.delivery_place_ids else 0.0
             buy, sell = cur["buy"], cur["sell"]
             venues.append({
@@ -318,7 +324,8 @@ async def allocate(
             allocation.Venue(v["place_id"], v["place_name"], v["net_instant"], v["net_patient"], v["hist"]["vol"])
             for v in venues
         ]
-        allocations = [asdict(a) for a in allocation.allocate(svc_venues, it.quantity, body.strategy, body.balance_days)]
+        allocations = [asdict(a) for a in
+                       allocation.allocate(svc_venues, it.quantity, body.strategy, body.balance_days)]
         total_net = round(sum(a["net_total"] for a in allocations), 2)
         total_profit = round(total_net - (it.cost or 0) * it.quantity, 2) if it.cost else None
         out_items.append({

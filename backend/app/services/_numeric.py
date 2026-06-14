@@ -1,14 +1,5 @@
-"""
-Shared numeric helpers for the pure service layer.
-
-JSON-safety + numpy→python coercion lived duplicated in analysis_router
-(``_clean``/``_series``) and tracking_router (``_clean``/``_ser``). This is the
-single source of truth. No SQLAlchemy / FastAPI / requests here — numbers only.
-"""
 from __future__ import annotations
-
 import math
-
 import numpy as np
 
 

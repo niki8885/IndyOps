@@ -1,10 +1,3 @@
-"""
-Per-user price tracking collector (hourly).
-
-For every user's tracked (item × favourite place) it stores a buy/sell/volume
-snapshot. Region/system places use Fuzzwork region aggregates; places flagged
-`special_parser` (e.g. C-J) use the appraise.gnf.lt local-market scraper.
-"""
 import logging
 from datetime import datetime, timezone
 
@@ -27,7 +20,7 @@ def collect_for_user(db, user_id: int) -> int:
     if not places or not items:
         return 0
 
-    plan = []                      # (item, place)
+    plan = []  # (item, place)
     region_types: dict[int, set] = {}
     special_types: set = set()
     for it in items:

@@ -1,13 +1,4 @@
-"""
-Read-only EVE SDE access.
-
-Functions return plain values / dicts / dataclasses — never ORM rows — so the
-service layer and routers stay decoupled from SQLAlchemy. The per-material and
-per-rig EveType lookups that used to run one query per row (N+1) are batched
-here with a single ``type_id.in_(...)`` + map.
-"""
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Optional
 
@@ -70,10 +61,10 @@ def materials(eve_db, blueprint_type_id: int) -> list[dict]:
     for r in rows:
         t = types.get(r.material_type_id)
         result.append({
-            "type_id":  r.material_type_id,
-            "name":     t.type_name if t else str(r.material_type_id),
+            "type_id": r.material_type_id,
+            "name": t.type_name if t else str(r.material_type_id),
             "base_qty": r.quantity,
-            "volume":   t.volume if t else None,
+            "volume": t.volume if t else None,
         })
     return result
 

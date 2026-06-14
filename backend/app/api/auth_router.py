@@ -2,7 +2,6 @@ import bcrypt as _bcrypt
 from fastapi import HTTPException, Depends, APIRouter
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
-
 from app.core.security import create_access_token
 from app.core.database import UserDB, get_db
 
@@ -12,7 +11,8 @@ router = APIRouter()
 class UserRegister(BaseModel):
     username: str
     password: str
-    email:    EmailStr
+    email: EmailStr
+
 
 class UserLogin(BaseModel):
     username: str
@@ -22,14 +22,16 @@ class UserLogin(BaseModel):
 def _hash_password(password: str) -> str:
     return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
 
+
 def _verify_password(plain: str, hashed: str) -> bool:
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
+
 def _user_profile(user: UserDB) -> dict:
     return {
-        "user_id":  user.id,
+        "user_id": user.id,
         "username": user.username,
-        "email":    user.email,
+        "email": user.email,
     }
 
 
@@ -59,4 +61,3 @@ async def login(user: UserLogin, db: Session = Depends(get_db)):
 
     token = create_access_token({"sub": str(db_user.id)})
     return {"access_token": token, "token_type": "bearer", **_user_profile(db_user)}
-

@@ -1,16 +1,9 @@
-"""
-Manufacturing calculator + Production Job (PAK) CRUD.
-
-Activity IDs: 1=Manufacturing, 3=ResearchTE, 4=ResearchME, 5=Copying, 8=Invention
-"""
 import datetime
 from dataclasses import asdict
 from typing import Optional, List
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-
 from app.adapters import market
 from app.core.database import get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement
 from app.core.database_eve import (
@@ -25,8 +18,8 @@ from app.services.manufacturing import CalcInput, Material, run_calculation
 router = APIRouter()
 
 # Engineering Complex (Raitaru/Azbel/Sotiyo) manufacturing role bonuses
-EC_MATERIAL_ROLE = 1.0   # −1% material
-EC_COST_ROLE     = 3.0   # −3% job cost
+EC_MATERIAL_ROLE = 1.0  # −1% material
+EC_COST_ROLE = 3.0  # −3% job cost
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
 
 
@@ -51,126 +44,126 @@ class MaterialPrice(BaseModel):
 
 
 class CalcRequest(BaseModel):
-    product_type_id:      int
-    facility_id:          Optional[int]   = None
-    runs:                 int   = 1
-    windows:              int   = 1    # parallel production slots
-    me:                   int   = 0
-    te:                   int   = 0
-    bpc_cost:             float = 0.0
-    output_price:         float = 0.0
-    broker_fee_pct:       float = 3.6
-    system_cost_index:    float = 0.0    # fraction
-    facility_tax_pct:     float = 0.0
-    structure_bonus_pct:  float = 0.0
-    material_bonus_pct:   float = 0.0    # rig ME (security-scaled)
-    time_bonus_pct:       float = 0.0    # rig TE
-    material_role_pct:    float = 0.0    # structure role ME (auto from EC if 0)
-    time_role_pct:        float = 0.0    # structure role TE
+    product_type_id: int
+    facility_id: Optional[int] = None
+    runs: int = 1
+    windows: int = 1  # parallel production slots
+    me: int = 0
+    te: int = 0
+    bpc_cost: float = 0.0
+    output_price: float = 0.0
+    broker_fee_pct: float = 3.6
+    system_cost_index: float = 0.0  # fraction
+    facility_tax_pct: float = 0.0
+    structure_bonus_pct: float = 0.0
+    material_bonus_pct: float = 0.0  # rig ME (security-scaled)
+    time_bonus_pct: float = 0.0  # rig TE
+    material_role_pct: float = 0.0  # structure role ME (auto from EC if 0)
+    time_role_pct: float = 0.0  # structure role TE
     estimated_item_value: Optional[float] = None
-    material_prices:      List[MaterialPrice] = []
+    material_prices: List[MaterialPrice] = []
 
 
 class JobCreate(BaseModel):
-    product_type_id:   int
-    product_name:      str
-    blueprint_type_id: Optional[int]   = None
-    blueprint_name:    Optional[str]   = None
-    facility_id:       Optional[int]   = None
-    project_id:        Optional[int]   = None
-    runs:              int   = 1
-    windows:           int   = 1
-    me:                int   = 0
-    te:                int   = 0
-    bpc_cost:          float = 0.0
-    paks:              Optional[int]   = None
-    units_per_pak:     Optional[int]   = None
-    pack_tier:         Optional[str]   = None
-    pak_reward:        Optional[float] = None
-    sell_price:        Optional[float] = None
-    jita_sell:         Optional[float] = None
-    jita_buy:          Optional[float] = None
-    cj_sell:           Optional[float] = None
-    cj_buy:            Optional[float] = None
+    product_type_id: int
+    product_name: str
+    blueprint_type_id: Optional[int] = None
+    blueprint_name: Optional[str] = None
+    facility_id: Optional[int] = None
+    project_id: Optional[int] = None
+    runs: int = 1
+    windows: int = 1
+    me: int = 0
+    te: int = 0
+    bpc_cost: float = 0.0
+    paks: Optional[int] = None
+    units_per_pak: Optional[int] = None
+    pack_tier: Optional[str] = None
+    pak_reward: Optional[float] = None
+    sell_price: Optional[float] = None
+    jita_sell: Optional[float] = None
+    jita_buy: Optional[float] = None
+    cj_sell: Optional[float] = None
+    cj_buy: Optional[float] = None
     initial_contract_price: Optional[float] = None
-    return_contract_price:  Optional[float] = None
-    status:   ProductionStatus = ProductionStatus.PLANNING
-    target:   Optional[ProductionTarget] = None
-    place:    Optional[str]   = None
-    date_planned:  Optional[datetime.datetime] = None
+    return_contract_price: Optional[float] = None
+    status: ProductionStatus = ProductionStatus.PLANNING
+    target: Optional[ProductionTarget] = None
+    place: Optional[str] = None
+    date_planned: Optional[datetime.datetime] = None
     date_released: Optional[datetime.datetime] = None
-    code:          Optional[str] = None
+    code: Optional[str] = None
     contract_code: Optional[str] = None
-    note:          Optional[str] = None
+    note: Optional[str] = None
     calc_snapshot: Optional[dict] = None
 
 
 class JobUpdate(BaseModel):
-    facility_id:    Optional[int]   = None
-    project_id:     Optional[int]   = None
-    runs:           Optional[int]   = None
-    windows:        Optional[int]   = None
-    me:             Optional[int]   = None
-    te:             Optional[int]   = None
-    bpc_cost:       Optional[float] = None
-    paks:           Optional[int]   = None
-    units_per_pak:  Optional[int]   = None
-    pack_tier:      Optional[str]   = None
-    pak_reward:     Optional[float] = None
-    sell_price:     Optional[float] = None
-    jita_sell:      Optional[float] = None
-    jita_buy:       Optional[float] = None
-    cj_sell:        Optional[float] = None
-    cj_buy:         Optional[float] = None
+    facility_id: Optional[int] = None
+    project_id: Optional[int] = None
+    runs: Optional[int] = None
+    windows: Optional[int] = None
+    me: Optional[int] = None
+    te: Optional[int] = None
+    bpc_cost: Optional[float] = None
+    paks: Optional[int] = None
+    units_per_pak: Optional[int] = None
+    pack_tier: Optional[str] = None
+    pak_reward: Optional[float] = None
+    sell_price: Optional[float] = None
+    jita_sell: Optional[float] = None
+    jita_buy: Optional[float] = None
+    cj_sell: Optional[float] = None
+    cj_buy: Optional[float] = None
     initial_contract_price: Optional[float] = None
-    return_contract_price:  Optional[float] = None
-    status:   Optional[ProductionStatus] = None
-    target:   Optional[ProductionTarget] = None
-    place:    Optional[str]   = None
-    date_planned:  Optional[datetime.datetime] = None
+    return_contract_price: Optional[float] = None
+    status: Optional[ProductionStatus] = None
+    target: Optional[ProductionTarget] = None
+    place: Optional[str] = None
+    date_planned: Optional[datetime.datetime] = None
     date_released: Optional[datetime.datetime] = None
-    code:          Optional[str] = None
+    code: Optional[str] = None
     contract_code: Optional[str] = None
-    note:          Optional[str] = None
+    note: Optional[str] = None
     calc_snapshot: Optional[dict] = None
 
 
 class JobOut(BaseModel):
-    id:               int
-    user_id:          int
-    project_id:       Optional[int]
-    facility_id:      Optional[int]
+    id: int
+    user_id: int
+    project_id: Optional[int]
+    facility_id: Optional[int]
     blueprint_type_id: Optional[int]
-    blueprint_name:   Optional[str]
-    product_type_id:  int
-    product_name:     str
-    runs:             int
-    windows:          Optional[int] = 1
-    me:               int
-    te:               int
-    bpc_cost:         Optional[float]
-    paks:             Optional[int]
-    units_per_pak:    Optional[int]
-    pack_tier:        Optional[str]
-    pak_reward:       Optional[float]
-    sell_price:       Optional[float]
-    jita_sell:        Optional[float]
-    jita_buy:         Optional[float]
-    cj_sell:          Optional[float]
-    cj_buy:           Optional[float]
+    blueprint_name: Optional[str]
+    product_type_id: int
+    product_name: str
+    runs: int
+    windows: Optional[int] = 1
+    me: int
+    te: int
+    bpc_cost: Optional[float]
+    paks: Optional[int]
+    units_per_pak: Optional[int]
+    pack_tier: Optional[str]
+    pak_reward: Optional[float]
+    sell_price: Optional[float]
+    jita_sell: Optional[float]
+    jita_buy: Optional[float]
+    cj_sell: Optional[float]
+    cj_buy: Optional[float]
     initial_contract_price: Optional[float]
-    return_contract_price:  Optional[float]
-    calc_snapshot:    Optional[dict]
-    status:           ProductionStatus
-    target:           Optional[ProductionTarget]
-    place:            Optional[str]
-    date_planned:     Optional[datetime.datetime]
-    date_released:    Optional[datetime.datetime]
-    code:             Optional[str]
-    contract_code:    Optional[str]
-    note:             Optional[str]
-    created_at:       datetime.datetime
-    updated_at:       Optional[datetime.datetime]
+    return_contract_price: Optional[float]
+    calc_snapshot: Optional[dict]
+    status: ProductionStatus
+    target: Optional[ProductionTarget]
+    place: Optional[str]
+    date_planned: Optional[datetime.datetime]
+    date_released: Optional[datetime.datetime]
+    code: Optional[str]
+    contract_code: Optional[str]
+    note: Optional[str]
+    created_at: datetime.datetime
+    updated_at: Optional[datetime.datetime]
 
     class Config:
         from_attributes = True
@@ -182,8 +175,8 @@ class JobOut(BaseModel):
 
 @router.get("/blueprint", response_model=BlueprintInfoOut)
 async def get_blueprint_info(
-    product_type_id: int,
-    current_user: UserDB = Depends(get_current_user),
+        product_type_id: int,
+        current_user: UserDB = Depends(get_current_user),
 ):
     """
     Given a product type_id, return the manufacturing blueprint info + base materials.
@@ -194,10 +187,10 @@ async def get_blueprint_info(
         if not bp:
             raise HTTPException(404, f"No manufacturing blueprint found for type_id {product_type_id}")
 
-        bp_type_id   = bp.blueprint_type_id
-        base_time    = eve_repo.base_time(eve_db, bp_type_id)
-        materials    = eve_repo.materials(eve_db, bp_type_id)
-        names        = eve_repo.type_names(eve_db, [bp_type_id, product_type_id])
+        bp_type_id = bp.blueprint_type_id
+        base_time = eve_repo.base_time(eve_db, bp_type_id)
+        materials = eve_repo.materials(eve_db, bp_type_id)
+        names = eve_repo.type_names(eve_db, [bp_type_id, product_type_id])
 
         return BlueprintInfoOut(
             blueprint_type_id=bp_type_id,
@@ -215,9 +208,9 @@ async def get_blueprint_info(
 
 @router.post("/calculate")
 async def calculate(
-    body: CalcRequest,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        body: CalcRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """Full manufacturing cost calculation."""
     eve_db = EveSessionLocal()
@@ -226,10 +219,10 @@ async def calculate(
         if not bp:
             raise HTTPException(404, "Blueprint not found")
 
-        bp_type_id  = bp.blueprint_type_id
+        bp_type_id = bp.blueprint_type_id
         qty_per_run = bp.qty_per_run
-        base_time   = eve_repo.base_time(eve_db, bp_type_id)
-        base_mats   = eve_repo.materials(eve_db, bp_type_id)
+        base_time = eve_repo.base_time(eve_db, bp_type_id)
+        base_mats = eve_repo.materials(eve_db, bp_type_id)
 
         product_name = eve_repo.type_names(eve_db, [body.product_type_id]).get(
             body.product_type_id, str(body.product_type_id))
@@ -252,11 +245,11 @@ async def calculate(
             computed = sum((m["base_qty"] * body.runs) * adj.get(m["type_id"], 0.0) for m in base_mats)
             eiv = computed if computed > 0 else None
         except Exception:
-            eiv = None   # run_calculation will fall back to material cost
+            eiv = None  # run_calculation will fall back to material cost
 
     # pull facility defaults if provided
-    sci     = body.system_cost_index
-    tax     = body.facility_tax_pct
+    sci = body.system_cost_index
+    tax = body.facility_tax_pct
     s_bonus = body.structure_bonus_pct
     mat_role = body.material_role_pct
     time_role = body.time_role_pct
@@ -342,7 +335,7 @@ def _rig_applies(rig_name: str, cat_id: Optional[int], group_name: str) -> bool:
         return cat_id in (_CAT_DRONE, _CAT_FIGHTER)
     if "capital component" in n:
         return "component" in gn
-    if "component" in n:            # Advanced/T2/T3 Components, Tools, Data Interfaces
+    if "component" in n:  # Advanced/T2/T3 Components, Tools, Data Interfaces
         return "component" in gn or "tool" in gn or "data interface" in gn
     if "structure" in n:
         # Structure Components/Modules, Upwell & Starbase Structures, Fuel Blocks
@@ -361,10 +354,10 @@ def _rig_applies(rig_name: str, cat_id: Optional[int], group_name: str) -> bool:
 
 @router.get("/facility-bonuses")
 async def facility_bonuses(
-    facility_id: int,
-    product_type_id: int,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        facility_id: int,
+        product_type_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """
     Effective ME/TE/cost bonus from a facility's rigs for a given product,
@@ -408,9 +401,12 @@ async def facility_bonuses(
                 continue
             mod = {"hi": rb.hisec_mod, "low": rb.lowsec_mod, "null": rb.nullsec_mod}[band] or 1.0
             applies = _rig_applies(name, cat_id, group_name)
-            eff_me, eff_te, eff_cost = abs(rb.me_bonus or 0) * mod, abs(rb.te_bonus or 0) * mod, abs(rb.cost_bonus or 0) * mod
+            eff_me, eff_te, eff_cost = abs(rb.me_bonus or 0) * mod, abs(rb.te_bonus or 0) * mod, abs(
+                rb.cost_bonus or 0) * mod
             if applies:
-                tot_me += eff_me; tot_te += eff_te; tot_cost += eff_cost
+                tot_me += eff_me;
+                tot_te += eff_te;
+                tot_cost += eff_cost
             rigs_out.append({
                 "type_id": rid, "name": name, "applies": applies,
                 "me_pct": round(eff_me, 2), "te_pct": round(eff_te, 2), "cost_pct": round(eff_cost, 2),
@@ -443,10 +439,10 @@ async def facility_bonuses(
 
 @router.get("/jobs", response_model=List[JobOut])
 async def list_jobs(
-    project_id:  Optional[int]             = None,
-    job_status:  Optional[ProductionStatus] = None,
-    current_user: UserDB  = Depends(get_current_user),
-    db:           Session = Depends(get_db),
+        project_id: Optional[int] = None,
+        job_status: Optional[ProductionStatus] = None,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     q = db.query(ProductionJob).filter(ProductionJob.user_id == current_user.id)
     if project_id:  q = q.filter(ProductionJob.project_id == project_id)
@@ -456,9 +452,9 @@ async def list_jobs(
 
 @router.post("/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
 async def create_job(
-    body:         JobCreate,
-    current_user: UserDB  = Depends(get_current_user),
-    db:           Session = Depends(get_db),
+        body: JobCreate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     j = ProductionJob(user_id=current_user.id, **body.model_dump())
     db.add(j)
@@ -469,19 +465,19 @@ async def create_job(
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
 async def get_job(
-    job_id: int,
-    current_user: UserDB  = Depends(get_current_user),
-    db:           Session = Depends(get_db),
+        job_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     return _job_or_404(db, job_id, current_user.id)
 
 
 @router.patch("/jobs/{job_id}", response_model=JobOut)
 async def update_job(
-    job_id: int,
-    body:   JobUpdate,
-    current_user: UserDB  = Depends(get_current_user),
-    db:           Session = Depends(get_db),
+        job_id: int,
+        body: JobUpdate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     j = _job_or_404(db, job_id, current_user.id)
     for field, val in body.model_dump(exclude_none=True).items():
@@ -494,9 +490,9 @@ async def update_job(
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_job(
-    job_id: int,
-    current_user: UserDB  = Depends(get_current_user),
-    db:           Session = Depends(get_db),
+        job_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     j = _job_or_404(db, job_id, current_user.id)
     db.delete(j)
@@ -507,11 +503,11 @@ async def delete_job(
 
 @router.get("/inventory-analysis")
 async def inventory_analysis(
-    method:     str = "FIFO",   # FIFO | LIFO
-    project_id: Optional[int] = None,
-    organisation_id: Optional[int] = None,
-    current_user: UserDB  = Depends(get_current_user),
-    db:           Session = Depends(get_db),
+        method: str = "FIFO",  # FIFO | LIFO
+        project_id: Optional[int] = None,
+        organisation_id: Optional[int] = None,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """
     Cost-basis analysis of inventory using FIFO or LIFO costing.
@@ -541,27 +537,27 @@ async def inventory_analysis(
 
     result = []
     for key, items in groups.items():
-        total_qty   = sum(i.quantity for i in items)
-        priced      = [i for i in items if i.price]
+        total_qty = sum(i.quantity for i in items)
+        priced = [i for i in items if i.price]
         total_value = sum(i.quantity * (i.price or 0) for i in items)
-        avg_cost    = total_value / total_qty if total_qty else 0
+        avg_cost = total_value / total_qty if total_qty else 0
 
         result.append({
-            "key":          key,
-            "eve_type_id":  items[0].eve_type_id,
-            "name":         items[0].name,
-            "method":       method.upper(),
-            "total_qty":    total_qty,
-            "lots":         len(items),
-            "priced_lots":  len(priced),
+            "key": key,
+            "eve_type_id": items[0].eve_type_id,
+            "name": items[0].name,
+            "method": method.upper(),
+            "total_qty": total_qty,
+            "lots": len(items),
+            "priced_lots": len(priced),
             "avg_cost_isk": round(avg_cost, 2),
             "total_value_isk": round(total_value, 2),
             "lots_detail": [
                 {
-                    "id":        i.id,
-                    "qty":       i.quantity,
-                    "price":     i.price,
-                    "place":     i.place,
+                    "id": i.id,
+                    "qty": i.quantity,
+                    "price": i.price,
+                    "place": i.place,
                     "created_at": i.created_at.isoformat() if i.created_at else None,
                 }
                 for i in items
@@ -609,9 +605,9 @@ def _match_lots(db, user_id, project_id, type_id, name):
 
 @router.post("/material-availability")
 async def material_availability(
-    body: AvailabilityRequest,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        body: AvailabilityRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """How much of each material is on the warehouse (scoped), plus shortfall + avg price."""
     out = []
@@ -619,12 +615,12 @@ async def material_availability(
         lots = _match_lots(db, current_user.id, body.project_id, m.type_id, m.name)
         available = sum(l.quantity for l in lots)
         priced_qty = sum(l.quantity for l in lots if l.price)
-        total_val  = sum(l.quantity * l.price for l in lots if l.price)
+        total_val = sum(l.quantity * l.price for l in lots if l.price)
         wavg = round(total_val / priced_qty, 2) if priced_qty else None
         out.append({
-            "type_id":   m.type_id,
-            "name":      m.name,
-            "required":  m.required_qty,
+            "type_id": m.type_id,
+            "name": m.name,
+            "required": m.required_qty,
             "available": available,
             "shortfall": max(0, m.required_qty - available),
             "warehouse_unit_price": wavg,
@@ -634,10 +630,10 @@ async def material_availability(
 
 @router.post("/jobs/{job_id}/issue")
 async def issue_job_materials(
-    job_id: int,
-    force: bool = False,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        job_id: int,
+        force: bool = False,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """
     Consume the job's materials from the warehouse (FIFO) and record a stock
@@ -712,7 +708,7 @@ async def issue_job_materials(
         "total_cost": round(actual_total, 2),
         "unit_cost": round(actual_total / out_qty, 2) if out_qty else None,
     }
-    job.calc_snapshot = snap   # reassign new dict → JSON column marked dirty
+    job.calc_snapshot = snap  # reassign new dict → JSON column marked dirty
 
     if job.status in (ProductionStatus.PLANNING, ProductionStatus.PREPARING):
         job.status = ProductionStatus.IN_PROGRESS
@@ -730,17 +726,17 @@ async def issue_job_materials(
 
 class ReceiveRequest(BaseModel):
     unit_price: Optional[float] = None
-    quantity:   Optional[int]   = None
-    place:      Optional[str]   = None
+    quantity: Optional[int] = None
+    place: Optional[str] = None
 
 
 @router.post("/jobs/{job_id}/receive")
 async def receive_job_output(
-    job_id: int,
-    body: ReceiveRequest,
-    force: bool = False,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        job_id: int,
+        body: ReceiveRequest,
+        force: bool = False,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """
     Mark a PAK received: add the produced units to inventory as OUTPUT at their
@@ -811,9 +807,9 @@ async def receive_job_output(
 
 @router.get("/jobs/{job_id}/movements")
 async def job_movements(
-    job_id: int,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        job_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """Stock movements recorded against a job (audit trail)."""
     _job_or_404(db, job_id, current_user.id)

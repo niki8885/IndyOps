@@ -1,10 +1,8 @@
 import datetime
 from typing import Optional, List
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
-
 from app.core.database import get_db, InventoryItem, Projects, UserDB, StockMovement
 from app.core.database_eve import EveSessionLocal, EveType
 from app.core.security import get_current_user
@@ -115,7 +113,7 @@ class BatchItemCreate(BaseModel):
     place: Optional[str] = None
     note: Optional[str] = None
     project_id: Optional[int] = None
-    flow: Optional[str] = "input"   # input | output
+    flow: Optional[str] = "input"  # input | output
 
 
 class BatchCreate(BaseModel):
@@ -201,8 +199,8 @@ def _check_project(db: Session, project_id: int, user: UserDB) -> Projects:
 
 @router.post("/preview", response_model=PreviewResult)
 async def preview_bulk(
-    body: BulkParseRequest,
-    current_user: UserDB = Depends(get_current_user),
+        body: BulkParseRequest,
+        current_user: UserDB = Depends(get_current_user),
 ):
     """Parse tab-separated text and resolve EVE types — does NOT save anything."""
     rows = _parse_bulk_text(body.text)
@@ -233,9 +231,9 @@ async def preview_bulk(
 
 @router.post("/batch", response_model=List[InventoryOut], status_code=status.HTTP_201_CREATED)
 async def batch_add(
-    body: BatchCreate,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        body: BatchCreate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """Save multiple inventory items at once (used after preview + user edits)."""
     created = []
@@ -264,9 +262,9 @@ async def batch_add(
 
 @router.post("", response_model=InventoryOut, status_code=status.HTTP_201_CREATED)
 async def add_item(
-    body: InventoryCreate,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        body: InventoryCreate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """Add a single item to personal inventory."""
     if body.project_id:
@@ -305,9 +303,9 @@ async def add_item(
 
 @router.post("/bulk", response_model=BulkParseResult, status_code=status.HTTP_201_CREATED)
 async def bulk_add_items(
-    body: BulkParseRequest,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        body: BulkParseRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """
     Parse tab-separated text and add items to inventory.
@@ -367,9 +365,9 @@ async def bulk_add_items(
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
 async def clear_inventory(
-    project_id: Optional[int] = None,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        project_id: Optional[int] = None,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """Delete all inventory items for the current user (optionally filtered by project)."""
     q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
@@ -381,12 +379,12 @@ async def clear_inventory(
 
 @router.get("", response_model=List[InventoryOut])
 async def list_inventory(
-    project_id: Optional[int] = None,
-    organisation_id: Optional[int] = None,
-    place: Optional[str] = None,
-    item_status: Optional[str] = "in_stock",   # in_stock | used | sold | all
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        project_id: Optional[int] = None,
+        organisation_id: Optional[int] = None,
+        place: Optional[str] = None,
+        item_status: Optional[str] = "in_stock",  # in_stock | used | sold | all
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """List inventory. Defaults to in-stock items (sold/used are hidden)."""
     q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
@@ -438,10 +436,10 @@ def _split_off(db: Session, item: InventoryItem, qty: Optional[int]) -> Inventor
 
 @router.post("/{item_id}/sell", response_model=InventoryOut)
 async def sell_item(
-    item_id: int,
-    body: SellRequest,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        item_id: int,
+        body: SellRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """Mark units sold at a sale price (for profit tracking) and remove from stock."""
     item = _get_item_or_404(db, item_id, current_user.id)
@@ -463,10 +461,10 @@ async def sell_item(
 
 @router.post("/{item_id}/use", response_model=InventoryOut)
 async def use_item(
-    item_id: int,
-    body: UseRequest,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        item_id: int,
+        body: UseRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """Write units off for internal use (e.g. refueling) and remove from stock."""
     item = _get_item_or_404(db, item_id, current_user.id)
@@ -487,19 +485,19 @@ async def use_item(
 
 @router.get("/{item_id}", response_model=InventoryOut)
 async def get_item(
-    item_id: int,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        item_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     return _get_item_or_404(db, item_id, current_user.id)
 
 
 @router.patch("/{item_id}", response_model=InventoryOut)
 async def update_item(
-    item_id: int,
-    body: InventoryUpdate,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        item_id: int,
+        body: InventoryUpdate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     item = _get_item_or_404(db, item_id, current_user.id)
 
@@ -523,9 +521,9 @@ async def update_item(
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_item(
-    item_id: int,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        item_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     item = _get_item_or_404(db, item_id, current_user.id)
     db.delete(item)

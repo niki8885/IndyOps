@@ -1,6 +1,5 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.executors.pool import ThreadPoolExecutor
-
 from app.core.database import SessionLocal
 from app.tasks.update_sde import run_sde_update
 from app.tasks.update_indices import run_index_update
@@ -90,4 +89,3 @@ scheduler.add_job(
     id="tracking_update_job",
     replace_existing=True,
 )
-

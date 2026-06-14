@@ -1,17 +1,7 @@
-"""
-Commodity-index analytics: technical indicators, risk (VaR/CVaR/Monte Carlo),
-volume heatmap and volatility-regime market states. Data comes from the hourly
-MarketIndexSnapshot collector.
-
-The heavy lifting lives in the pure service layer (app.services.indicators /
-risk / _numeric); this router only loads snapshots and shapes the response.
-"""
 from dataclasses import asdict
-
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-
 from app.core.database import get_db, MarketIndexSnapshot, UserDB
 from app.core.indices_data import INDEX_META, INDEX_ORDER
 from app.core.security import get_current_user
@@ -24,8 +14,8 @@ router = APIRouter()
 
 @router.get("/indices")
 async def list_indices(
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     """All indices with a small latest-summary for the overview cards."""
     out = []
@@ -64,11 +54,11 @@ async def refresh_now(current_user: UserDB = Depends(get_current_user)):
 
 @router.get("/index/{key}")
 async def index_detail(
-    key: str,
-    window: int = 10,
-    days: int = 60,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        key: str,
+        window: int = 10,
+        days: int = 60,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     if key not in INDEX_META:
         raise HTTPException(404, "Unknown index")

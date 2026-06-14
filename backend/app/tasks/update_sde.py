@@ -1,17 +1,3 @@
-"""
-EVE Online SDE updater.
-
-Downloads CSV exports from https://www.fuzzwork.co.uk/dump/latest/csv/
-and upserts them into the eve_* tables defined in database_eve.py.
-
-Activity IDs:
-  1 = Manufacturing
-  3 = Researching Time Efficiency
-  4 = Researching Material Efficiency
-  5 = Copying
-  8 = Invention
-  11 = Reactions
-"""
 import bz2
 import csv
 import datetime
@@ -142,7 +128,7 @@ def _dedup(rows: list[dict], *keys: str) -> list[dict]:
 def _upsert_chunks(db, stmt_builder, rows: list[dict], chunk: int = CHUNK_SIZE) -> int:
     total = 0
     for i in range(0, len(rows), chunk):
-        batch = rows[i : i + chunk]
+        batch = rows[i: i + chunk]
         stmt = stmt_builder(batch)
         db.execute(stmt)
         total += len(batch)
@@ -156,10 +142,10 @@ def update_categories(db) -> int:
     def build(batch):
         values = [
             {
-                "category_id":   _coerce(r, "categoryID",   int),
+                "category_id": _coerce(r, "categoryID", int),
                 "category_name": r.get("categoryName", "")[:100],
-                "icon_id":       _coerce(r, "iconID",       int),
-                "published":     _bool(r.get("published")),
+                "icon_id": _coerce(r, "iconID", int),
+                "published": _bool(r.get("published")),
             }
             for r in batch
         ]
@@ -178,13 +164,13 @@ def update_groups(db) -> int:
     def build(batch):
         values = [
             {
-                "group_id":    _coerce(r, "groupID",    int),
+                "group_id": _coerce(r, "groupID", int),
                 "category_id": _coerce(r, "categoryID", int),
-                "group_name":  r.get("groupName", "")[:100],
-                "icon_id":     _coerce(r, "iconID",     int),
-                "published":   _bool(r.get("published")),
-                "anchored":    _bool(r.get("anchored")),
-                "anchorable":  _bool(r.get("anchorable")),
+                "group_name": r.get("groupName", "")[:100],
+                "icon_id": _coerce(r, "iconID", int),
+                "published": _bool(r.get("published")),
+                "anchored": _bool(r.get("anchored")),
+                "anchorable": _bool(r.get("anchorable")),
                 "fittable_non_singleton": _bool(r.get("fittableNonSingleton")),
             }
             for r in batch
@@ -204,12 +190,12 @@ def update_market_groups(db) -> int:
     def build(batch):
         values = [
             {
-                "market_group_id":   _coerce(r, "marketGroupID",   int),
-                "parent_group_id":   _coerce(r, "parentGroupID",   int),
+                "market_group_id": _coerce(r, "marketGroupID", int),
+                "parent_group_id": _coerce(r, "parentGroupID", int),
                 "market_group_name": r.get("marketGroupName", "")[:100],
-                "description":       r.get("description") or None,
-                "icon_id":           _coerce(r, "iconID",           int),
-                "has_types":         _bool(r.get("hasTypes")),
+                "description": r.get("description") or None,
+                "icon_id": _coerce(r, "iconID", int),
+                "has_types": _bool(r.get("hasTypes")),
             }
             for r in batch
         ]
@@ -229,21 +215,21 @@ def update_types(db) -> int:
     def build(batch):
         values = [
             {
-                "type_id":         _coerce(r, "typeID",        int),
-                "group_id":        _coerce(r, "groupID",       int),
-                "type_name":       (r.get("typeName") or "")[:200],
-                "description":     r.get("description") or None,
-                "mass":            _coerce(r, "mass",          float),
-                "volume":          _coerce(r, "volume",        float),
-                "capacity":        _coerce(r, "capacity",      float),
-                "portion_size":    _coerce(r, "portionSize",   int),
-                "race_id":         _coerce(r, "raceID",        int),
-                "base_price":      _coerce(r, "basePrice",     float),
-                "published":       _bool(r.get("published")),
+                "type_id": _coerce(r, "typeID", int),
+                "group_id": _coerce(r, "groupID", int),
+                "type_name": (r.get("typeName") or "")[:200],
+                "description": r.get("description") or None,
+                "mass": _coerce(r, "mass", float),
+                "volume": _coerce(r, "volume", float),
+                "capacity": _coerce(r, "capacity", float),
+                "portion_size": _coerce(r, "portionSize", int),
+                "race_id": _coerce(r, "raceID", int),
+                "base_price": _coerce(r, "basePrice", float),
+                "published": _bool(r.get("published")),
                 "market_group_id": _coerce(r, "marketGroupID", int),
-                "icon_id":         _coerce(r, "iconID",        int),
-                "graphic_id":      _coerce(r, "graphicID",     int),
-                "sound_id":        _coerce(r, "soundID",       int),
+                "icon_id": _coerce(r, "iconID", int),
+                "graphic_id": _coerce(r, "graphicID", int),
+                "sound_id": _coerce(r, "soundID", int),
             }
             for r in batch
         ]
@@ -266,7 +252,7 @@ def update_blueprints(db) -> int:
     def build(batch):
         values = [
             {
-                "type_id":              _coerce(r, "typeID",             int),
+                "type_id": _coerce(r, "typeID", int),
                 "max_production_limit": _coerce(r, "maxProductionLimit", int),
             }
             for r in batch
@@ -286,9 +272,9 @@ def update_activity_times(db) -> int:
     def build(batch):
         values = [
             {
-                "type_id":     _coerce(r, "typeID",     int),
+                "type_id": _coerce(r, "typeID", int),
                 "activity_id": _coerce(r, "activityID", int),
-                "time":        _coerce(r, "time",        int),
+                "time": _coerce(r, "time", int),
             }
             for r in batch
         ]
@@ -307,10 +293,10 @@ def update_activity_materials(db) -> int:
     def build(batch):
         values = [
             {
-                "type_id":          _coerce(r, "typeID",         int),
-                "activity_id":      _coerce(r, "activityID",     int),
+                "type_id": _coerce(r, "typeID", int),
+                "activity_id": _coerce(r, "activityID", int),
                 "material_type_id": _coerce(r, "materialTypeID", int),
-                "quantity":         _coerce(r, "quantity",        int),
+                "quantity": _coerce(r, "quantity", int),
             }
             for r in batch
         ]
@@ -329,11 +315,11 @@ def update_activity_products(db) -> int:
     def build(batch):
         values = [
             {
-                "type_id":         _coerce(r, "typeID",        int),
-                "activity_id":     _coerce(r, "activityID",    int),
+                "type_id": _coerce(r, "typeID", int),
+                "activity_id": _coerce(r, "activityID", int),
                 "product_type_id": _coerce(r, "productTypeID", int),
-                "quantity":        _coerce(r, "quantity",       int),
-                "probability":     _coerce(r, "probability",    float),
+                "quantity": _coerce(r, "quantity", int),
+                "probability": _coerce(r, "probability", float),
             }
             for r in batch
         ]
@@ -352,10 +338,10 @@ def update_activity_skills(db) -> int:
     def build(batch):
         values = [
             {
-                "type_id":     _coerce(r, "typeID",     int),
+                "type_id": _coerce(r, "typeID", int),
                 "activity_id": _coerce(r, "activityID", int),
-                "skill_id":    _coerce(r, "skillID",    int),
-                "level":       _coerce(r, "level",      int),
+                "skill_id": _coerce(r, "skillID", int),
+                "level": _coerce(r, "level", int),
             }
             for r in batch
         ]
@@ -404,13 +390,13 @@ def update_rig_bonuses(db) -> int:
     for tid in rig_ids:
         a = pivot[tid]
         rows.append({
-            "type_id":     tid,
-            "group_id":    groups.get(tid),
-            "me_bonus":    a.get(_RIG_ATTR_ME),
-            "te_bonus":    a.get(_RIG_ATTR_TE),
-            "cost_bonus":  a.get(_RIG_ATTR_COST),
-            "hisec_mod":   a.get(_RIG_ATTR_HI),
-            "lowsec_mod":  a.get(_RIG_ATTR_LOW),
+            "type_id": tid,
+            "group_id": groups.get(tid),
+            "me_bonus": a.get(_RIG_ATTR_ME),
+            "te_bonus": a.get(_RIG_ATTR_TE),
+            "cost_bonus": a.get(_RIG_ATTR_COST),
+            "hisec_mod": a.get(_RIG_ATTR_HI),
+            "lowsec_mod": a.get(_RIG_ATTR_LOW),
             "nullsec_mod": a.get(_RIG_ATTR_NULL),
         })
 
@@ -435,9 +421,9 @@ def update_regions(db) -> int:
     def build(batch):
         values = [
             {
-                "region_id":   _coerce(r, "regionID",   int),
+                "region_id": _coerce(r, "regionID", int),
                 "region_name": (r.get("regionName") or "")[:100],
-                "faction_id":  _coerce(r, "factionID",  int),
+                "faction_id": _coerce(r, "factionID", int),
                 "x": _coerce(r, "x", float),
                 "y": _coerce(r, "y", float),
                 "z": _coerce(r, "z", float),
@@ -459,10 +445,10 @@ def update_constellations(db) -> int:
     def build(batch):
         values = [
             {
-                "constellation_id":   _coerce(r, "constellationID",   int),
-                "region_id":          _coerce(r, "regionID",          int),
+                "constellation_id": _coerce(r, "constellationID", int),
+                "region_id": _coerce(r, "regionID", int),
                 "constellation_name": (r.get("constellationName") or "")[:100],
-                "faction_id":         _coerce(r, "factionID",         int),
+                "faction_id": _coerce(r, "factionID", int),
                 "x": _coerce(r, "x", float),
                 "y": _coerce(r, "y", float),
                 "z": _coerce(r, "z", float),
@@ -485,13 +471,13 @@ def update_solar_systems(db) -> int:
     def build(batch):
         values = [
             {
-                "solar_system_id":   _coerce(r, "solarSystemID",   int),
-                "region_id":         _coerce(r, "regionID",         int),
-                "constellation_id":  _coerce(r, "constellationID",  int),
+                "solar_system_id": _coerce(r, "solarSystemID", int),
+                "region_id": _coerce(r, "regionID", int),
+                "constellation_id": _coerce(r, "constellationID", int),
                 "solar_system_name": (r.get("solarSystemName") or "")[:100],
-                "security":          _coerce(r, "security",         float),
-                "security_class":    (r.get("securityClass") or "")[:10] or None,
-                "faction_id":        _coerce(r, "factionID",        int),
+                "security": _coerce(r, "security", float),
+                "security_class": (r.get("securityClass") or "")[:10] or None,
+                "faction_id": _coerce(r, "factionID", int),
                 "x": _coerce(r, "x", float),
                 "y": _coerce(r, "y", float),
                 "z": _coerce(r, "z", float),
@@ -516,14 +502,14 @@ def update_stations(db) -> int:
     def build(batch):
         values = [
             {
-                "station_id":       _coerce(r, "stationID",       int),
-                "station_name":     (r.get("stationName") or "")[:200],
-                "solar_system_id":  _coerce(r, "solarSystemID",   int),
+                "station_id": _coerce(r, "stationID", int),
+                "station_name": (r.get("stationName") or "")[:200],
+                "solar_system_id": _coerce(r, "solarSystemID", int),
                 "constellation_id": _coerce(r, "constellationID", int),
-                "region_id":        _coerce(r, "regionID",        int),
-                "corporation_id":   _coerce(r, "corporationID",   int),
-                "station_type_id":  _coerce(r, "stationTypeID",   int),
-                "reprocessing_efficiency":    _coerce(r, "reprocessingEfficiency",    float),
+                "region_id": _coerce(r, "regionID", int),
+                "corporation_id": _coerce(r, "corporationID", int),
+                "station_type_id": _coerce(r, "stationTypeID", int),
+                "reprocessing_efficiency": _coerce(r, "reprocessingEfficiency", float),
                 "reprocessing_stations_take": _coerce(r, "reprocessingStationsTake", float),
                 "x": _coerce(r, "x", float),
                 "y": _coerce(r, "y", float),
@@ -550,20 +536,20 @@ def update_stations(db) -> int:
 # ---------------------------------------------------------------------------
 
 STEPS: list[tuple[str, Any]] = [
-    ("categories",         update_categories),
-    ("groups",             update_groups),
-    ("market_groups",      update_market_groups),
-    ("types",              update_types),
-    ("blueprints",         update_blueprints),
-    ("activity_times",     update_activity_times),
+    ("categories", update_categories),
+    ("groups", update_groups),
+    ("market_groups", update_market_groups),
+    ("types", update_types),
+    ("blueprints", update_blueprints),
+    ("activity_times", update_activity_times),
     ("activity_materials", update_activity_materials),
-    ("activity_products",  update_activity_products),
-    ("activity_skills",    update_activity_skills),
-    ("rig_bonuses",        update_rig_bonuses),
-    ("regions",            update_regions),
-    ("constellations",     update_constellations),
-    ("solar_systems",      update_solar_systems),
-    ("stations",           update_stations),
+    ("activity_products", update_activity_products),
+    ("activity_skills", update_activity_skills),
+    ("rig_bonuses", update_rig_bonuses),
+    ("regions", update_regions),
+    ("constellations", update_constellations),
+    ("solar_systems", update_solar_systems),
+    ("stations", update_stations),
 ]
 
 
@@ -602,7 +588,7 @@ def run_sde_update(force: bool = False) -> dict:
         if meta is None:
             meta = EveSdeMeta(id=1)
             db.add(meta)
-        meta.build_id   = build_id
+        meta.build_id = build_id
         meta.build_date = build_date
         meta.updated_at = datetime.datetime.utcnow()
         db.commit()
@@ -622,6 +608,7 @@ def run_sde_update(force: bool = False) -> dict:
 
 if __name__ == "__main__":
     import sys
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-8s  %(message)s",

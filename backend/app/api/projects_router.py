@@ -9,6 +9,7 @@ from app.core.security import get_current_user
 
 router = APIRouter()
 
+
 class ProjectCreate(BaseModel):
     name: str
     project_type: ProjectsType
@@ -21,6 +22,7 @@ class ProjectCreate(BaseModel):
     priority: ProjectPriority = ProjectPriority.MEDIUM
     deadline_at: Optional[datetime.datetime] = None
 
+
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     project_type: Optional[ProjectsType] = None
@@ -32,6 +34,7 @@ class ProjectUpdate(BaseModel):
     closed: Optional[bool] = None
     priority: Optional[ProjectPriority] = None
     deadline_at: Optional[datetime.datetime] = None
+
 
 class ProjectOut(BaseModel):
     id: int
@@ -53,12 +56,13 @@ class ProjectOut(BaseModel):
     class Config:
         from_attributes = True
 
+
 @router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
 async def create_project(
-    org_id: int,
-    body: ProjectCreate,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        org_id: int,
+        body: ProjectCreate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
     _require_owner(org, current_user)
@@ -97,11 +101,11 @@ async def create_project(
 
 @router.get("", response_model=List[ProjectOut])
 async def list_projects(
-    org_id: int,
-    project_type: Optional[ProjectsType]   = None,
-    proj_status:  Optional[ProjectsStatus] = None,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        org_id: int,
+        project_type: Optional[ProjectsType] = None,
+        proj_status: Optional[ProjectsStatus] = None,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
     _require_owner(org, current_user)
@@ -119,10 +123,10 @@ async def list_projects(
 
 @router.get("/{project_id}", response_model=ProjectOut)
 async def get_project(
-    org_id: int,
-    project_id: int,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        org_id: int,
+        project_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
     _require_owner(org, current_user)
@@ -131,11 +135,11 @@ async def get_project(
 
 @router.patch("/{project_id}", response_model=ProjectOut)
 async def update_project(
-    org_id: int,
-    project_id: int,
-    body: ProjectUpdate,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        org_id: int,
+        project_id: int,
+        body: ProjectUpdate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
     _require_owner(org, current_user)
@@ -170,10 +174,10 @@ async def update_project(
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
-    org_id: int,
-    project_id: int,
-    current_user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
+        org_id: int,
+        project_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
     _require_owner(org, current_user)
@@ -190,11 +194,13 @@ def _get_org_or_404(db: Session, org_id: int) -> Organisation:
         raise HTTPException(status_code=404, detail="Organisation not found")
     return org
 
+
 def _get_emp_or_404(db: Session, emp_id: int) -> Employee:
     emp = db.query(Employee).filter(Employee.id == emp_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     return emp
+
 
 def _get_project_or_404(db: Session, project_id: int, org_id: int) -> Projects:
     project = db.query(Projects).filter(
@@ -204,6 +210,7 @@ def _get_project_or_404(db: Session, project_id: int, org_id: int) -> Projects:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
 
 def _require_owner(org: Organisation, user: UserDB):
     if org.owner_id != user.id:

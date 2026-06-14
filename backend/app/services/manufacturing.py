@@ -1,19 +1,9 @@
-"""
-Pure manufacturing cost/profit calculation.
-
-Extracted from manufacturing_router (``_run_calculation``/``_adj_qty``/
-``_adj_time``). The router resolves the blueprint, prices and facility defaults
-(I/O) then builds a ``CalcInput``; this module turns that into a ``CalcResult``.
-``asdict(result)`` reproduces the exact JSON the API used to return (and that the
-frontend persists as ``calc_snapshot``). math only — no I/O.
-"""
 from __future__ import annotations
-
 import math
 from dataclasses import dataclass
 from typing import Optional
 
-SCC_SURCHARGE = 0.04   # fixed 4% CCP surcharge on EIV
+SCC_SURCHARGE = 0.04  # fixed 4% CCP surcharge on EIV
 
 
 # ── inputs ──────────────────────────────────────────────────────────────────
@@ -38,15 +28,15 @@ class CalcInput:
     output_price: float
     bpc_cost: float
     broker_fee_pct: float
-    system_cost_index: float            # fraction, e.g. 0.0593
+    system_cost_index: float  # fraction, e.g. 0.0593
     facility_tax_pct: float
     structure_bonus_pct: float = 0.0
-    estimated_item_value: Optional[float] = None   # single-job EIV; scaled to batch
-    material_bonus_pct: float = 0.0     # rig ME (security-scaled)
-    time_bonus_pct: float = 0.0         # rig TE
-    material_role_pct: float = 0.0      # structure role ME (e.g. EC −1%)
-    time_role_pct: float = 0.0          # structure role TE
-    windows: int = 1                    # parallel production slots, each `runs` runs
+    estimated_item_value: Optional[float] = None  # single-job EIV; scaled to batch
+    material_bonus_pct: float = 0.0  # rig ME (security-scaled)
+    time_bonus_pct: float = 0.0  # rig TE
+    material_role_pct: float = 0.0  # structure role ME (e.g. EC −1%)
+    time_role_pct: float = 0.0  # structure role TE
+    windows: int = 1  # parallel production slots, each `runs` runs
 
 
 # ── outputs ─────────────────────────────────────────────────────────────────
@@ -163,7 +153,8 @@ def run_calculation(inp: CalcInput) -> CalcResult:
     total_mat_cost = round(total_mat_cost, 2)
 
     # EIV passed in is single-job; scale to the whole batch
-    eiv = inp.estimated_item_value * w if (inp.estimated_item_value and inp.estimated_item_value > 0) else total_mat_cost
+    eiv = inp.estimated_item_value * w if (
+                inp.estimated_item_value and inp.estimated_item_value > 0) else total_mat_cost
     system_cost = round(eiv * inp.system_cost_index, 2)
     structure_bonus = round(system_cost * inp.structure_bonus_pct / 100, 2)
     gross_install = round(system_cost - structure_bonus, 2)
@@ -171,8 +162,8 @@ def run_calculation(inp: CalcInput) -> CalcResult:
     scc_surcharge = round(eiv * SCC_SURCHARGE, 2)
     net_install = round(gross_install + facility_tax_isk + scc_surcharge, 2)
 
-    bpc_total = round(inp.bpc_cost * w, 2)                                # one BPC per window
-    job_time_s = adj_time(inp.base_time_per_run, inp.runs, inp.te, time_mult)   # per-job time
+    bpc_total = round(inp.bpc_cost * w, 2)  # one BPC per window
+    job_time_s = adj_time(inp.base_time_per_run, inp.runs, inp.te, time_mult)  # per-job time
 
     total_costs = round(total_mat_cost + bpc_total + net_install, 2)
     profit = round(net_sell - total_costs, 2)

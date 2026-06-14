@@ -1,13 +1,4 @@
-"""
-Technical indicators over a single price series.
-
-The exact same SMA/BB/RSI/MACD/Ichimoku block was duplicated in
-analysis_router (index_detail) and tracking_router (item_detail). It now lives
-here; both routers call ``compute`` and read the fields they need (analysis uses
-returns/volatility, tracking uses ema). pandas only — no I/O.
-"""
 from __future__ import annotations
-
 from dataclasses import dataclass
 
 import pandas as pd
@@ -17,11 +8,11 @@ import pandas as pd
 class Indicators:
     sma: pd.Series
     std: pd.Series
-    ema: pd.Series             # EMA(window) — used by tracking
+    ema: pd.Series  # EMA(window) — used by tracking
     bb_upper: pd.Series
     bb_lower: pd.Series
-    returns: pd.Series         # pct_change — used by analysis (risk)
-    volatility: pd.Series      # rolling std of returns — used by analysis
+    returns: pd.Series  # pct_change — used by analysis (risk)
+    volatility: pd.Series  # rolling std of returns — used by analysis
     rsi: pd.Series
     macd: pd.Series
     macd_signal: pd.Series
@@ -60,12 +51,15 @@ def compute(price: pd.Series, window: int) -> Indicators:
     macd_signal = macd.ewm(span=9, adjust=False).mean()
     macd_hist = macd - macd_signal
 
-    hi9 = price.rolling(9).max(); lo9 = price.rolling(9).min()
+    hi9 = price.rolling(9).max();
+    lo9 = price.rolling(9).min()
     tenkan = (hi9 + lo9) / 2
-    hi26 = price.rolling(26).max(); lo26 = price.rolling(26).min()
+    hi26 = price.rolling(26).max();
+    lo26 = price.rolling(26).min()
     kijun = (hi26 + lo26) / 2
     senkou_a = ((tenkan + kijun) / 2).shift(26)
-    hi52 = price.rolling(52).max(); lo52 = price.rolling(52).min()
+    hi52 = price.rolling(52).max();
+    lo52 = price.rolling(52).min()
     senkou_b = ((hi52 + lo52) / 2).shift(26)
 
     return Indicators(
