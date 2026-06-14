@@ -247,6 +247,46 @@ class StockMovement(Base):
     job     = relationship("ProductionJob", backref="stock_movements")
 
 
+class TrackedPlace(Base):
+    """A user's favourite system/region for price tracking."""
+    __tablename__ = "tracked_places"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    user_id         = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind            = Column(String(10), nullable=False)              # system | region
+    name            = Column(String(200), nullable=False)
+    region_id       = Column(Integer, nullable=True)                  # used for Fuzzwork fetch
+    solar_system_id = Column(Integer, nullable=True)
+    special_parser  = Column(Boolean, nullable=False, default=False)  # C-J → appraise.gnf.lt
+    created_at      = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class TrackedItem(Base):
+    """A user's tracked item + which favourite places to track it in."""
+    __tablename__ = "tracked_items"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type_id    = Column(Integer, nullable=False)
+    name       = Column(String(200), nullable=False)
+    place_ids  = Column(JSON, nullable=True)        # [tracked_place_id, …]
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class TrackPrice(Base):
+    """Hourly buy/sell/volume snapshot for a tracked (item, place)."""
+    __tablename__ = "track_prices"
+
+    id        = Column(Integer, primary_key=True, index=True)
+    user_id   = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type_id   = Column(Integer, nullable=False, index=True)
+    place_id  = Column(Integer, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, index=True)
+    buy       = Column(Float, nullable=True)
+    sell      = Column(Float, nullable=True)
+    volume    = Column(Float, nullable=True)
+
+
 class MarketIndexSnapshot(Base):
     """Hourly snapshot of a commodity index (price/volume + concentration/liquidity)."""
     __tablename__ = "market_index_snapshots"

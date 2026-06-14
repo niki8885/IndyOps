@@ -4,6 +4,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from app.core.database import SessionLocal
 from app.tasks.update_sde import run_sde_update
 from app.tasks.update_indices import run_index_update
+from app.tasks.update_tracking import run_tracking_update
 
 import logging
 
@@ -31,6 +32,14 @@ def scheduled_index_update():
         run_index_update()
     except Exception as e:
         logger.error(f"Index update failed: {e}")
+
+
+def scheduled_tracking_update():
+    logger.info("Starting hourly price-tracking update...")
+    try:
+        run_tracking_update()
+    except Exception as e:
+        logger.error(f"Tracking update failed: {e}")
 
 
 def scheduled_sde_update():
@@ -70,6 +79,15 @@ scheduler.add_job(
     "cron",
     minute=2,
     id="index_update_job",
+    replace_existing=True,
+)
+
+# Per-user price tracking — every hour
+scheduler.add_job(
+    scheduled_tracking_update,
+    "cron",
+    minute=7,
+    id="tracking_update_job",
     replace_existing=True,
 )
 

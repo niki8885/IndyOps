@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import * as factoryModule from 'react-plotly.js/factory'
 import * as plotlyModule from 'plotly.js-dist-min'
-import { get, post } from '../api/client'
+import { get, post, patch, del } from '../api/client'
+import SystemSearch from '../components/SystemSearch'
+import TypeSearch from '../components/TypeSearch'
 
 // Robust interop: the factory (CJS) and plotly-dist (UMD) can land as the
 // module itself, under `.default`, or double-wrapped depending on the bundler.
@@ -49,6 +51,21 @@ function fmtIsk(v) {
 }
 
 export default function AnalysisPage() {
+  const [tab, setTab] = useState(0)
+  return (
+    <div>
+      <h2 style={{ marginBottom: 14 }}>Analysis</h2>
+      <div className="tabs" style={{ marginBottom: 18 }}>
+        {['Indices', 'Tracking'].map((t, i) => (
+          <button key={i} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
+        ))}
+      </div>
+      {tab === 0 ? <IndicesTab /> : <TrackingTab />}
+    </div>
+  )
+}
+
+function IndicesTab() {
   const [indices, setIndices]   = useState([])
   const [sel, setSel]           = useState('mineral')
   const [detail, setDetail]     = useState(null)
@@ -91,8 +108,7 @@ export default function AnalysisPage() {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18, flexWrap: 'wrap' }}>
-        <h2>Analysis</h2>
-        <span style={{ fontSize: 11, color: 'var(--text)' }}>EVE commodity indices · hourly</span>
+        <span style={{ fontSize: 12, color: 'var(--text)' }}>EVE commodity indices · hourly</span>
         <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={refreshing} style={{ marginLeft: 'auto' }}>
           {refreshing ? 'Collecting…' : '⟳ Collect snapshot now'}
         </button>
@@ -256,6 +272,323 @@ export default function AnalysisPage() {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/* ════════════════════════════ TRACKING ════════════════════════════ */
+
+const PLACE_COLORS = ['#c8a951', '#3a9bd6', '#4caf7d', '#9b6dd6', '#e0884f']
+
+function TrackingTab() {
+  const [places, setPlaces]   = useState([])
+  const [items, setItems]     = useState([])
+  const [selItem, setSelItem] = useState(null)
+  const [detail, setDetail]   = useState(null)
+  const [selPlace, setSelPlace] = useState(null)
+  const [win, setWin]         = useState(10)
+  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError]     = useState('')
+
+  const [placeKind, setPlaceKind] = useState('system')
+  const [pendingSystem, setPendingSystem] = useState(null)
+  const [pendingRegion, setPendingRegion] = useState(null)
+  const [special, setSpecial] = useState(false)
+  const [pendingItem, setPendingItem] = useState(null)
+
+  const loadPlaces = () => get('/tracking/places').then(setPlaces).catch(() => {})
+  const loadItems  = () => get('/tracking/items').then(setItems).catch(() => {})
+  useEffect(() => { loadPlaces(); loadItems() }, [])
+
+  async function loadDetail(id, pid) {
+    if (!id) return
+    setLoading(true)
+    try {
+      const d = await get(`/tracking/item/${id}?window=${win}${pid ? `&place_id=${pid}` : ''}`)
+      setDetail(d); setSelPlace(d.selected_place_id)
+    } catch {} finally { setLoading(false) }
+  }
+  useEffect(() => { if (selItem) loadDetail(selItem, selPlace) }, [selItem, win])
+
+  async function addPlace() {
+    setError('')
+    try {
+      let body
+      if (placeKind === 'system') {
+        const s = pendingSystem?.sys
+        if (!s) return
+        body = { kind: 'system', name: s.solar_system_name, solar_system_id: s.solar_system_id, region_id: s.region_id, special_parser: special }
+      } else {
+        if (!pendingRegion) return
+        body = { kind: 'region', name: pendingRegion.region_name, region_id: pendingRegion.region_id, special_parser: false }
+      }
+      await post('/tracking/places', body)
+      setPendingSystem(null); setPendingRegion(null); setSpecial(false)
+      loadPlaces()
+    } catch (e) { setError(e.message) }
+  }
+  async function delPlace(id) {
+    try { await del(`/tracking/places/${id}`); loadPlaces(); loadItems() } catch (e) { setError(e.message) }
+  }
+  async function addItem() {
+    if (!pendingItem?.type_id) return
+    setError('')
+    try { await post('/tracking/items', { type_id: pendingItem.type_id, name: pendingItem.name, place_ids: [] }); setPendingItem(null); loadItems() }
+    catch (e) { setError(e.message) }
+  }
+  async function delItem(id) {
+    try { await del(`/tracking/items/${id}`); if (selItem === id) { setSelItem(null); setDetail(null) } loadItems() } catch {}
+  }
+  async function toggleItemPlace(item, pid) {
+    const cur = new Set(item.place_ids || [])
+    cur.has(pid) ? cur.delete(pid) : cur.add(pid)
+    try {
+      const updated = await patch(`/tracking/items/${item.id}`, { place_ids: [...cur] })
+      setItems(items.map(i => i.id === item.id ? updated : i))
+      if (selItem === item.id) loadDetail(item.id, selPlace)
+    } catch (e) { setError(e.message) }
+  }
+  async function refresh() {
+    setRefreshing(true)
+    try { await post('/tracking/refresh', {}); if (selItem) await loadDetail(selItem, selPlace) }
+    catch (e) { setError(e.message) } finally { setRefreshing(false) }
+  }
+
+  const placeName = id => places.find(p => p.id === id)?.name || `#${id}`
+
+  return (
+    <div>
+      {error && <div className="error-box">{error}</div>}
+
+      {/* ── management ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 18 }}>
+        {/* places */}
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>FAVOURITE PLACES</span>
+            <span style={{ fontSize: 11, color: 'var(--text)' }}>{places.length}/5</span>
+          </div>
+          {places.map(p => (
+            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '4px 0' }}>
+              <span style={{ color: 'var(--text-white)' }}>{p.name}</span>
+              <span className="badge" style={{ background: 'var(--surface3)', color: 'var(--text)' }}>{p.kind}</span>
+              {p.special_parser && <span className="badge badge-warn">C-J parser</span>}
+              <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => delPlace(p.id)}>✕</button>
+            </div>
+          ))}
+          {places.length < 5 && (
+            <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {['system', 'region'].map(k => (
+                  <button key={k} className={`btn btn-sm ${placeKind === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setPlaceKind(k)}>{k}</button>
+                ))}
+              </div>
+              {placeKind === 'system'
+                ? <>
+                    <SystemSearch value={pendingSystem?.name || ''} onChange={(name, sys) => setPendingSystem(sys ? { name, sys } : null)} placeholder="System (e.g. C-J6MT)…" />
+                    <label style={{ fontSize: 12, color: 'var(--text-bright)', display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={special} onChange={e => setSpecial(e.target.checked)} /> C-J special parser (local market)
+                    </label>
+                  </>
+                : <RegionSearch value={pendingRegion?.region_name || ''} onChange={setPendingRegion} />
+              }
+              <button className="btn btn-primary btn-sm" onClick={addPlace}>+ Add place</button>
+            </div>
+          )}
+        </div>
+
+        {/* items */}
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>TRACKED ITEMS</span>
+            <span style={{ fontSize: 11, color: 'var(--text)' }}>{items.length}/100</span>
+            <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={refreshing} style={{ marginLeft: 'auto' }}>
+              {refreshing ? 'Collecting…' : '⟳ Collect now'}
+            </button>
+          </div>
+          <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+            {items.map(it => (
+              <div key={it.id} style={{ padding: '5px 0', borderBottom: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setSelItem(it.id)}
+                    style={{ color: selItem === it.id ? 'var(--accent)' : 'var(--text-white)', padding: '2px 6px' }}>
+                    {it.name}
+                  </button>
+                  <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => delItem(it.id)}>✕</button>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 3 }}>
+                  {places.map(p => {
+                    const on = (it.place_ids || []).includes(p.id)
+                    return (
+                      <button key={p.id} onClick={() => toggleItemPlace(it, p.id)}
+                        className={`btn btn-sm ${on ? 'btn-primary' : 'btn-ghost'}`} style={{ padding: '1px 7px', fontSize: 10 }}>
+                        {p.name}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <TypeSearch value={pendingItem} onChange={t => setPendingItem(t?.type_id ? t : null)} placeholder="Add item to track…" />
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={addItem}>+ Add</button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── tracking charts ── */}
+      {!selItem && <div className="empty-state">Pick a tracked item above to see its charts.</div>}
+      {loading && <div className="empty-state">Loading…</div>}
+      {selItem && detail && !loading && <TrackingCharts detail={detail} win={win} setWin={setWin} selPlace={selPlace} setSelPlace={pid => { setSelPlace(pid); loadDetail(selItem, pid) }} placeName={placeName} />}
+    </div>
+  )
+}
+
+function TrackingCharts({ detail, win, setWin, selPlace, setSelPlace, placeName }) {
+  const sbp = detail.series_by_place || {}
+  const ind = detail.indicators
+  const placeIds = Object.keys(sbp).map(Number)
+
+  return (
+    <>
+      {/* latest + spread cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 8, marginBottom: 14 }}>
+        {detail.places.map(p => (
+          <div key={p.place_id} style={{ background: 'var(--surface)', border: `1px solid ${selPlace === p.place_id ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '8px 12px', cursor: 'pointer' }}
+            onClick={() => setSelPlace(p.place_id)}>
+            <div style={{ fontSize: 12, color: 'var(--text-white)', fontWeight: 600 }}>{p.name}{p.special ? ' ·CJ' : ''}</div>
+            <div style={{ fontSize: 11, color: '#4caf7d' }}>S {fmtIsk(p.latest_sell)}</div>
+            <div style={{ fontSize: 11, color: '#3a9bd6' }}>B {fmtIsk(p.latest_buy)}</div>
+            <div style={{ fontSize: 10, color: 'var(--text)' }}>{p.points} pts</div>
+          </div>
+        ))}
+      </div>
+
+      {detail.spread && (
+        <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
+          <SmallStat label={`Spread @ ${placeName(selPlace)}`} value={fmtIsk(detail.spread.abs)} />
+          <SmallStat label="Spread %" value={detail.spread.pct != null ? detail.spread.pct + '%' : '—'} />
+          <SmallStat label="Buy" value={fmtIsk(detail.spread.buy)} />
+          <SmallStat label="Sell" value={fmtIsk(detail.spread.sell)} />
+          <label style={{ fontSize: 12, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+            window <b style={{ color: 'var(--accent)' }}>{win}</b>
+            <input type="range" min="3" max="50" value={win} onChange={e => setWin(Number(e.target.value))} style={{ width: 140 }} />
+          </label>
+        </div>
+      )}
+
+      {/* cross-place sell comparison */}
+      <Panel title="Sell price by place">
+        <Plot
+          data={placeIds.map((pid, i) => ({
+            x: sbp[pid].timestamps, y: sbp[pid].sell, name: placeName(pid), mode: 'lines',
+            line: { color: PLACE_COLORS[i % PLACE_COLORS.length], width: 1.6 },
+          }))}
+          layout={baseLayout({ height: 300, yaxis: { gridcolor: C.grid, tickformat: '.3s' } })}
+          config={cfg} style={{ width: '100%' }} useResizeHandler
+        />
+      </Panel>
+
+      {ind ? (
+        <>
+          <Panel title={`Price · SMA · EMA · Bollinger · Ichimoku — ${placeName(selPlace)}`}>
+            <Plot
+              data={[
+                { x: ind.timestamps, y: ind.bb_upper, name: 'BB', mode: 'lines', line: { color: C.grid, width: 1 }, hoverinfo: 'skip' },
+                { x: ind.timestamps, y: ind.bb_lower, name: 'BB', mode: 'lines', line: { color: C.grid, width: 1 }, fill: 'tonexty', fillcolor: 'rgba(58,155,214,0.07)', hoverinfo: 'skip', showlegend: false },
+                { x: ind.timestamps, y: ind.senkou_a, name: 'Senkou A', mode: 'lines', line: { color: C.green, width: 0.7 }, hoverinfo: 'skip' },
+                { x: ind.timestamps, y: ind.senkou_b, name: 'Cloud', mode: 'lines', line: { color: C.red, width: 0.7 }, fill: 'tonexty', fillcolor: 'rgba(155,109,214,0.08)', hoverinfo: 'skip' },
+                { x: ind.timestamps, y: ind.buy, name: 'Buy', mode: 'lines', line: { color: C.blue, width: 1, dash: 'dot' } },
+                { x: ind.timestamps, y: ind.sell, name: 'Sell', mode: 'lines', line: { color: C.green, width: 1, dash: 'dot' } },
+                { x: ind.timestamps, y: ind.sma, name: `SMA${win}`, mode: 'lines', line: { color: C.accent, width: 1.3 } },
+                { x: ind.timestamps, y: ind.ema, name: `EMA${win}`, mode: 'lines', line: { color: '#e0884f', width: 1.2 } },
+                { x: ind.timestamps, y: ind.mid, name: 'Mid', mode: 'lines', line: { color: C.white, width: 1.8 } },
+              ]}
+              layout={baseLayout({ height: 340, yaxis: { gridcolor: C.grid, tickformat: '.3s' } })}
+              config={cfg} style={{ width: '100%' }} useResizeHandler
+            />
+          </Panel>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <Panel title="RSI (14)">
+              <Plot data={[{ x: ind.timestamps, y: ind.rsi, mode: 'lines', line: { color: C.purple, width: 1.4 } }]}
+                layout={baseLayout({ height: 200, showlegend: false, yaxis: { gridcolor: C.grid, range: [0, 100] },
+                  shapes: [
+                    { type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 70, y1: 70, line: { color: C.red, width: 0.7, dash: 'dash' } },
+                    { type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: { color: C.green, width: 0.7, dash: 'dash' } },
+                  ] })}
+                config={cfg} style={{ width: '100%' }} useResizeHandler />
+            </Panel>
+            <Panel title="MACD (12·26·9)">
+              <Plot data={[
+                { x: ind.timestamps, y: ind.macd_hist, type: 'bar', name: 'Hist', marker: { color: (ind.macd_hist || []).map(v => v >= 0 ? 'rgba(76,175,125,0.6)' : 'rgba(224,82,82,0.6)') } },
+                { x: ind.timestamps, y: ind.macd, name: 'MACD', mode: 'lines', line: { color: C.blue, width: 1.2 } },
+                { x: ind.timestamps, y: ind.macd_signal, name: 'Signal', mode: 'lines', line: { color: C.accent, width: 1 } },
+              ]} layout={baseLayout({ height: 200 })} config={cfg} style={{ width: '100%' }} useResizeHandler />
+            </Panel>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <Panel title="Volume">
+              <Plot data={[{ x: sbp[selPlace]?.timestamps, y: sbp[selPlace]?.volume, type: 'bar', marker: { color: 'rgba(155,109,214,0.5)' } }]}
+                layout={baseLayout({ height: 200, showlegend: false, yaxis: { gridcolor: C.grid, tickformat: '.3s' } })}
+                config={cfg} style={{ width: '100%' }} useResizeHandler />
+            </Panel>
+            <Panel title="Price distribution + current spread">
+              {detail.distribution
+                ? <Plot data={[{ type: 'bar', x: detail.distribution.edges.slice(0, -1).map((e, i) => (e + detail.distribution.edges[i + 1]) / 2), y: detail.distribution.counts, marker: { color: 'rgba(139,147,176,0.5)' } }]}
+                    layout={baseLayout({ height: 200, showlegend: false, bargap: 0.02, xaxis: { gridcolor: C.grid, tickformat: '.3s' },
+                      shapes: detail.spread ? [
+                        { type: 'line', x0: detail.spread.buy, x1: detail.spread.buy, yref: 'paper', y0: 0, y1: 1, line: { color: C.blue, width: 1.2, dash: 'dash' } },
+                        { type: 'line', x0: detail.spread.sell, x1: detail.spread.sell, yref: 'paper', y0: 0, y1: 1, line: { color: C.green, width: 1.2, dash: 'dash' } },
+                      ] : [] })}
+                    config={cfg} style={{ width: '100%' }} useResizeHandler />
+                : <Empty msg="Need ≥5 points" />}
+            </Panel>
+          </div>
+        </>
+      ) : <div className="empty-state">No price history yet — click “Collect now”, then it builds hourly.</div>}
+    </>
+  )
+}
+
+function RegionSearch({ value, onChange }) {
+  const [q, setQ] = useState(value || '')
+  const [results, setResults] = useState([])
+  const [open, setOpen] = useState(false)
+  const timer = useRef(null)
+  function onInput(e) {
+    const v = e.target.value; setQ(v)
+    clearTimeout(timer.current)
+    if (v.length < 2) { setResults([]); return }
+    timer.current = setTimeout(async () => {
+      try { setResults(await get(`/eve/regions?q=${encodeURIComponent(v)}`)); setOpen(true) } catch {}
+    }, 250)
+  }
+  return (
+    <div style={{ position: 'relative' }}>
+      <input value={q} onChange={onInput} placeholder="Region (e.g. The Forge)…" />
+      {open && results.length > 0 && (
+        <ul style={{ position: 'absolute', zIndex: 999, width: '100%', background: 'var(--surface2)', border: '1px solid var(--border2)', borderRadius: 4, listStyle: 'none', maxHeight: 180, overflowY: 'auto', marginTop: 2 }}>
+          {results.map(r => (
+            <li key={r.region_id} onMouseDown={() => { onChange(r); setQ(r.region_name); setOpen(false) }}
+              style={{ padding: '6px 12px', cursor: 'pointer', color: 'var(--text-white)', fontSize: 13 }}>
+              {r.region_name}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function SmallStat({ label, value }) {
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 14px' }}>
+      <div style={{ fontSize: 10, color: 'var(--text)' }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-white)' }}>{value}</div>
     </div>
   )
 }

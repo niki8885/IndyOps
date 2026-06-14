@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType
+from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveRegion
 from app.core.database import UserDB
 from app.core.security import get_current_user
 
@@ -79,6 +79,29 @@ async def search_systems(
         eve_db.query(EveSolarSystem)
         .filter(EveSolarSystem.solar_system_name.ilike(f"{q}%"))
         .order_by(EveSolarSystem.solar_system_name)
+        .limit(limit)
+        .all()
+    )
+
+
+class RegionOut(BaseModel):
+    region_id: int
+    region_name: str
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/regions", response_model=list[RegionOut])
+async def search_regions(
+    q: str = Query(..., min_length=2),
+    limit: int = Query(15, le=50),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    return (
+        eve_db.query(EveRegion)
+        .filter(EveRegion.region_name.ilike(f"%{q}%"))
+        .order_by(EveRegion.region_name)
         .limit(limit)
         .all()
     )
