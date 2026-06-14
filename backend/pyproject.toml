@@ -10,7 +10,8 @@ addopts = "-q"
 source = ["app"]
 omit = [
     "app/main.py",
-    "app/tasks/scheduler.py",
+    "app/worker.py",
+    "app/migrate.py",
     "app/tasks/update_sde.py",
 ]
 

@@ -12,15 +12,40 @@ import os
 # must be set before any ``app.core.*`` import (incl. the ones just below).
 os.environ.setdefault("SQLALCHEMY_DATABASE_URL", "sqlite://")
 os.environ.setdefault("SECRET_KEY", "test-secret")
+# don't run create_all/run_migrations against the module-level engine on import
+os.environ.setdefault("RUN_DB_BOOTSTRAP", "0")
 
 import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.database import Base, AnalyticsCache, MarketIndexSnapshot, TrackPrice
 from app.core.database_eve import (
     EveBase, EveType, EveActivityProduct, EveActivityMaterial, EveActivityTime, EveBlueprint,
 )
+
+
+@pytest.fixture
+def app_engine():
+    """Fresh in-memory app database with just the hot/market tables created."""
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[
+        MarketIndexSnapshot.__table__, TrackPrice.__table__, AnalyticsCache.__table__,
+    ])
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def app_session(app_engine) -> Session:
+    session = sessionmaker(bind=app_engine)()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 @pytest.fixture

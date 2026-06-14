@@ -1,7 +1,10 @@
 services:
 
   db:
-    image: postgres:16-alpine
+    # TimescaleDB (Postgres 16 + timescaledb extension). On the first deploy with
+    # this image the API container converts track_prices / market_index_snapshots
+    # into hypertables (migrate_data). ⚠ TAKE A pg_dump BACKUP BEFORE DEPLOYING.
+    image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER:     ${POSTGRES_USER:-indyops}
@@ -26,6 +29,23 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - internal
+
+  # Background collectors (indices / tracking / SDE) — out of the API process.
+  worker:
+    image: ghcr.io/niki8885/indyops-backend:latest
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment:
+      SQLALCHEMY_DATABASE_URL: postgresql://${POSTGRES_USER:-indyops}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-indyops}
+      SECRET_KEY: ${SECRET_KEY}
+      RUN_DB_BOOTSTRAP: "0"        # the API container owns schema bootstrap
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
     networks:
       - internal
 

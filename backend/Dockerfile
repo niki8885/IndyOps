@@ -6,7 +6,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
+COPY alembic.ini .
+COPY migrations/ migrations/
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Apply migrations (best-effort; create_all is the fallback) then serve.
+CMD ["sh", "-c", "python -m app.migrate; uvicorn app.main:app --host 0.0.0.0 --port 8000"]

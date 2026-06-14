@@ -1,8 +1,10 @@
 import datetime
+import os
 from app.core.config import SQLALCHEMY_DATABASE_URL
 from sqlalchemy import (
     create_engine, Column, Integer, Enum,
     ForeignKey, String, DateTime, Boolean, Float, Text, BigInteger, JSON,
+    Index, UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -278,12 +280,18 @@ class TrackPrice(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    type_id = Column(Integer, nullable=False, index=True)
-    place_id = Column(Integer, nullable=False, index=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, index=True)
+    type_id = Column(Integer, nullable=False)
+    place_id = Column(Integer, nullable=False)
+    timestamp = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
     buy = Column(Float, nullable=True)
     sell = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
+
+    # one composite index serves the (type_id[, place_id[, timestamp]]) read path,
+    # replacing the three separate single-column indexes.
+    __table_args__ = (
+        Index("ix_track_prices_type_place_ts", "type_id", "place_id", "timestamp"),
+    )
 
 
 class MarketIndexSnapshot(Base):
@@ -299,6 +307,22 @@ class MarketIndexSnapshot(Base):
     h_index = Column(Float, nullable=True)
     entropy = Column(Float, nullable=True)
     liquidity_index = Column(Float, nullable=True)
+
+
+class AnalyticsCache(Base):
+    """Pre-computed analytics payloads (indicators/risk) keyed by (kind, cache_key, window)."""
+    __tablename__ = "analytics_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(20), nullable=False)         # 'index' | 'tracking'
+    cache_key = Column(String(80), nullable=False)    # index_key, or 'item:{id}:{place}'
+    window = Column(Integer, nullable=False)
+    payload = Column(JSON, nullable=False)
+    computed_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("kind", "cache_key", "window", name="uq_analytics_cache"),
+    )
 
 
 def get_db():
@@ -323,6 +347,11 @@ _MIGRATIONS = [
     "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS sale_price DOUBLE PRECISION",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Athanor'",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Tatara'",
+    # track_prices: one composite index replaces the 3 single-column ones
+    "CREATE INDEX IF NOT EXISTS ix_track_prices_type_place_ts ON track_prices (type_id, place_id, timestamp)",
+    "DROP INDEX IF EXISTS ix_track_prices_type_id",
+    "DROP INDEX IF EXISTS ix_track_prices_place_id",
+    "DROP INDEX IF EXISTS ix_track_prices_timestamp",
 ]
 
 
@@ -337,5 +366,8 @@ def run_migrations():
             print(f"[migration] skipped: {stmt} -> {exc}")
 
 
-Base.metadata.create_all(bind=engine)
-run_migrations()
+# Schema bootstrap runs in the API container; the worker sets RUN_DB_BOOTSTRAP=0
+# so the two containers don't race create_all/run_migrations on startup.
+if os.getenv("RUN_DB_BOOTSTRAP", "1") == "1":
+    Base.metadata.create_all(bind=engine)
+    run_migrations()

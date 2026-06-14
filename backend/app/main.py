@@ -14,8 +14,8 @@ from app.api.eve_router import router as eve_router
 from app.api.analysis_router import router as analysis_router
 from app.api.tracking_router import router as tracking_router
 
-from app.tasks.scheduler import scheduler
-
+# Schema bootstrap for the API container (the worker runs jobs only and sets
+# RUN_DB_BOOTSTRAP=0). Scheduled jobs live in the separate worker (app.worker).
 Base.metadata.create_all(bind=engine)
 EveBase.metadata.create_all(bind=eve_engine)
 
@@ -31,20 +31,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def start_tasks():
-    if not scheduler.running:
-        scheduler.start()
-        print("[INFO] Scheduler started")
-
-
-@app.on_event("shutdown")
-def stop_tasks():
-    if scheduler.running:
-        scheduler.shutdown()
-        print("[INFO] Background scheduler shut down.")
 
 
 app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])

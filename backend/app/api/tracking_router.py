@@ -1,25 +1,22 @@
 from dataclasses import asdict
 from typing import Optional, List
 import numpy as np
-import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.adapters import market
-from app.core.database import get_db, UserDB, TrackedPlace, TrackedItem, TrackPrice
+from app.core.database import get_db, UserDB, TrackedPlace, TrackedItem
 from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
-from app.repositories import eve as eve_repo
-from app.services import allocation
-from app.services._numeric import clean, series
-from app.services.indicators import compute as compute_indicators
-from app.services.risk import histogram
+from app.repositories import cache_repo, eve as eve_repo, market_repo
+from app.services import allocation, tracking_report
 from app.tasks.update_tracking import collect_for_user
 
 router = APIRouter()
 
 MAX_PLACES = 5
 MAX_ITEMS = 100
+_CACHE_TTL = 3600   # serve cached item detail for up to an hour (the collector cadence)
 
 
 def _hist_stats(rows: Optional[list]) -> dict:
@@ -157,6 +154,7 @@ async def item_detail(
         item_id: int,
         place_id: Optional[int] = None,
         window: int = 10,
+        refresh: bool = False,
         current_user: UserDB = Depends(get_current_user),
         db: Session = Depends(get_db),
 ):
@@ -164,79 +162,24 @@ async def item_detail(
     if not it:
         raise HTTPException(404, "Item not found")
 
-    places = {p.id: p for p in db.query(TrackedPlace).filter(TrackedPlace.user_id == current_user.id).all()}
-    rows = (
-        db.query(TrackPrice)
-        .filter(TrackPrice.user_id == current_user.id, TrackPrice.type_id == it.type_id)
-        .order_by(TrackPrice.timestamp.asc())
-        .all()
-    )
+    win = max(2, int(window))
+    cache_key = f"{item_id}:{place_id if place_id is not None else 'auto'}"
+    if not refresh:
+        cached = cache_repo.get_cached(db, "tracking", cache_key, win, max_age_seconds=_CACHE_TTL)
+        if cached is not None:
+            return cached
 
-    # per-place series
-    series_by_place, places_meta = {}, []
-    for pid in (it.place_ids or []):
-        p = places.get(pid)
-        if not p:
-            continue
-        prows = [r for r in rows if r.place_id == pid]
-        series_by_place[pid] = {
-            "timestamps": [r.timestamp.isoformat() for r in prows],
-            "buy": [clean(r.buy) for r in prows],
-            "sell": [clean(r.sell) for r in prows],
-            "volume": [clean(r.volume) for r in prows],
-        }
-        last = prows[-1] if prows else None
-        places_meta.append({
-            "place_id": pid, "name": p.name, "kind": p.kind, "special": p.special_parser,
-            "latest_buy": clean(last.buy) if last else None,
-            "latest_sell": clean(last.sell) if last else None,
-            "latest_volume": clean(last.volume) if last else None,
-            "points": len(prows),
-        })
-
-    # choose place for indicators
-    sel = place_id if place_id in series_by_place else next(
-        (pid for pid in series_by_place if series_by_place[pid]["timestamps"]), None)
-
-    indicators, distribution, spread = None, None, None
-    if sel is not None:
-        s = series_by_place[sel]
-        df = pd.DataFrame({"ts": s["timestamps"], "buy": s["buy"], "sell": s["sell"]})
-        if len(df):
-            buy = pd.to_numeric(df["buy"], errors="coerce")
-            sell = pd.to_numeric(df["sell"], errors="coerce")
-            mid = pd.concat([buy, sell], axis=1).mean(axis=1)
-            ind = compute_indicators(mid, window)
-
-            indicators = {
-                "timestamps": s["timestamps"],
-                "buy": series(buy), "sell": series(sell), "mid": series(mid),
-                "sma": series(ind.sma), "ema": series(ind.ema),
-                "bb_upper": series(ind.bb_upper), "bb_lower": series(ind.bb_lower),
-                "rsi": series(ind.rsi), "macd": series(ind.macd), "macd_signal": series(ind.macd_signal),
-                "macd_hist": series(ind.macd_hist),
-                "tenkan": series(ind.tenkan), "kijun": series(ind.kijun),
-                "senkou_a": series(ind.senkou_a), "senkou_b": series(ind.senkou_b),
-            }
-            counts, edges = histogram(mid, min_bins=8)
-            if counts is not None:
-                distribution = {"counts": counts, "edges": edges}
-            lb = clean(buy.iloc[-1]);
-            ls = clean(sell.iloc[-1])
-            if lb and ls:
-                spread = {"buy": lb, "sell": ls, "abs": round(ls - lb, 2),
-                          "pct": round((ls - lb) / ls * 100, 2) if ls else None}
-
-    return {
-        "item": {"id": it.id, "type_id": it.type_id, "name": it.name},
-        "places": places_meta,
-        "series_by_place": series_by_place,
-        "selected_place_id": sel,
-        "window": max(2, int(window)),
-        "indicators": indicators,
-        "distribution": distribution,
-        "spread": spread,
+    places = {
+        p.id: {"name": p.name, "kind": p.kind, "special": p.special_parser}
+        for p in db.query(TrackedPlace).filter(TrackedPlace.user_id == current_user.id).all()
     }
+    tp = market_repo.track_prices_df(db, current_user.id, it.type_id)   # columnar, not row-ORM
+
+    payload = tracking_report.build_item_detail(
+        {"id": it.id, "type_id": it.type_id, "name": it.name},
+        places, tp, it.place_ids, place_id, window)
+    cache_repo.set_cached(db, "tracking", cache_key, win, payload)
+    return payload
 
 
 # ── Warehouse allocation / sell-decision ──
