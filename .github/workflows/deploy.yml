@@ -47,6 +47,7 @@ jobs:
       - name: Build + test chain-engine
         working-directory: haskell/chain-engine
         run: |
+          mkdir -p bin build
           ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/chain-engine
           ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
           ./build/spec
