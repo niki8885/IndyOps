@@ -3,7 +3,8 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
-from app.core.database import get_db, InventoryItem, Projects, UserDB, StockMovement
+from app.core.database import get_db, InventoryItem, Projects, Organisation, OrganisationMember, UserDB, StockMovement
+from sqlalchemy import or_
 from app.core.database_eve import EveSessionLocal, EveType
 from app.core.security import get_current_user
 
@@ -387,7 +388,22 @@ async def list_inventory(
         db: Session = Depends(get_db),
 ):
     """List inventory. Defaults to in-stock items (sold/used are hidden)."""
-    q = db.query(InventoryItem).filter(InventoryItem.user_id == current_user.id)
+    # Org IDs accessible to this user (owned + member)
+    accessible_org_ids = _accessible_org_ids(db, current_user.id)
+    org_proj_ids = (
+        [pid for (pid,) in db.query(Projects.id).filter(
+            Projects.organisation_id.in_(accessible_org_ids),
+            Projects.deleted_at == None,  # noqa: E711
+        ).all()]
+        if accessible_org_ids else []
+    )
+
+    q = db.query(InventoryItem).filter(
+        or_(
+            InventoryItem.user_id == current_user.id,
+            InventoryItem.project_id.in_(org_proj_ids) if org_proj_ids else False,
+        )
+    )
     if project_id is not None:
         q = q.filter(InventoryItem.project_id == project_id)
     elif organisation_id is not None:
@@ -542,3 +558,10 @@ def _get_item_or_404(db: Session, item_id: int, user_id: int) -> InventoryItem:
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
     return item
+
+
+def _accessible_org_ids(db: Session, user_id: int) -> set[int]:
+    """Org IDs where the user is owner or an accepted member."""
+    owned = {o[0] for o in db.query(Organisation.id).filter(Organisation.owner_id == user_id).all()}
+    joined = {m[0] for m in db.query(OrganisationMember.org_id).filter(OrganisationMember.user_id == user_id).all()}
+    return owned | joined

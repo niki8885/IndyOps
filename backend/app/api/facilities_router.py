@@ -3,7 +3,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.core.database import get_db, Facility, UserDB
+from app.core.database import get_db, Facility, Organisation, OrganisationMember, UserDB
 from app.core.schemas import FacilityType
 from app.core.security import get_current_user
 
@@ -94,7 +94,15 @@ async def list_facilities(
         current_user: UserDB = Depends(get_current_user),
         db: Session = Depends(get_db),
 ):
-    q = db.query(Facility).filter(Facility.user_id == current_user.id)
+    # Own facilities + facilities of orgs the user is a member/owner of
+    accessible_org_ids = _accessible_org_ids(db, current_user.id)
+    from sqlalchemy import or_
+    q = db.query(Facility).filter(
+        or_(
+            Facility.user_id == current_user.id,
+            Facility.organisation_id.in_(accessible_org_ids) if accessible_org_ids else False,
+        )
+    )
     if facility_type:
         q = q.filter(Facility.facility_type == facility_type)
     if organisation_id is not None:
@@ -193,3 +201,10 @@ def _get_or_404(db: Session, facility_id: int, user_id: int) -> Facility:
     if not f:
         raise HTTPException(status_code=404, detail="Facility not found")
     return f
+
+
+def _accessible_org_ids(db: Session, user_id: int) -> set[int]:
+    """Org IDs where the user is owner or an accepted member."""
+    owned = {o[0] for o in db.query(Organisation.id).filter(Organisation.owner_id == user_id).all()}
+    joined = {m[0] for m in db.query(OrganisationMember.org_id).filter(OrganisationMember.user_id == user_id).all()}
+    return owned | joined

@@ -37,6 +37,7 @@ class JobAssignment:
     type_id: int
     name: str
     place_id: int
+    place_name: str
     slot_kind: str
     in_house: bool
     time_s: int
@@ -118,7 +119,7 @@ def assign_jobs(jobs: list[PlannedJob], cfg: SlotConfig) -> AssignmentResult:
     for i, j in enumerate(jobs):
         run = solver.Value(x[i]) == 1
         cost = j.make_cost if run else (j.buy_fallback_total or 0.0)
-        ja = JobAssignment(i, j.type_id, j.name, j.place_id, j.slot_kind, run, j.time_s, round(cost, 2))
+        ja = JobAssignment(i, j.type_id, j.name, j.place_id, j.place_name, j.slot_kind, run, j.time_s, round(cost, 2))
         if run:
             in_house.append(ja)
             used[(j.place_id, j.slot_kind)].append(i)
@@ -253,14 +254,14 @@ def assign_multi(jobs: list[MultiJob], cfg: SlotConfig) -> AssignmentResult:
         if solver.Value(x[j.index]) == 1:
             pi = next(p for p in range(len(j.placements)) if solver.Value(y[(j.index, p)]) == 1)
             pl = j.placements[pi]
-            in_house.append(JobAssignment(j.index, j.type_id, j.name, pl.place_id, pl.slot_kind,
+            in_house.append(JobAssignment(j.index, j.type_id, j.name, pl.place_id, pl.place_name, pl.slot_kind,
                                           True, pl.time_s, round(pl.cost, 2)))
             used[(pl.place_id, pl.slot_kind)].append(pl.time_s)
             if j.buy_fallback_total is not None:
                 captured += j.buy_fallback_total - pl.cost
         else:
             fb = j.buy_fallback_total or 0.0
-            bought.append(JobAssignment(j.index, j.type_id, j.name, 0, j.slot_kind, False, 0, round(fb, 2)))
+            bought.append(JobAssignment(j.index, j.type_id, j.name, 0, "", j.slot_kind, False, 0, round(fb, 2)))
             if j.buy_fallback_total is not None and j.placements:
                 forfeited += j.buy_fallback_total - min(pl.cost for pl in j.placements)
 

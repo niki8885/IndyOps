@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveRegion
+from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveRegion, EveGroup
 from app.core.database import UserDB
 from app.core.security import get_current_user
 
@@ -38,6 +38,7 @@ class TypeOut(BaseModel):
     volume: Optional[float]
     portion_size: Optional[int]
     market_group_id: Optional[int]
+    group_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -120,13 +121,23 @@ async def search_types(
         limit: int = Query(10, le=30),
         eve_db: Session = Depends(_get_eve_db),
 ):
-    return (
-        eve_db.query(EveType)
+    rows = (
+        eve_db.query(EveType, EveGroup.group_name)
+        .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
         .filter(EveType.type_name.ilike(f"%{q}%"))
         .order_by(EveType.type_name)
         .limit(limit)
         .all()
     )
+    return [
+        TypeOut(
+            type_id=t.type_id, type_name=t.type_name,
+            volume=t.volume, portion_size=t.portion_size,
+            market_group_id=t.market_group_id,
+            group_name=gn,
+        )
+        for t, gn in rows
+    ]
 
 
 _ESI_SYSTEMS_URL = "https://esi.evetech.net/latest/industry/systems/?datasource=tranquility"

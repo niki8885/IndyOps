@@ -3,9 +3,11 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.core.database import get_db, Projects, Organisation, Employee, UserDB
+from app.core.database import get_db, Projects, Organisation, OrganisationMember, Employee, UserDB
 from app.core.schemas import ProjectsType, ProjectsStatus, ProjectPriority
 from app.core.security import get_current_user
+
+_WRITE_ROLES = {"OWNER", "ADMIN", "SENIOR"}
 
 router = APIRouter()
 
@@ -65,7 +67,7 @@ async def create_project(
         db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
-    _require_owner(org, current_user)
+    _require_write_access(db, org, current_user)
 
     creator = _get_emp_or_404(db, body.created_by)
     if creator.user_id != current_user.id:
@@ -108,7 +110,7 @@ async def list_projects(
         db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
-    _require_owner(org, current_user)
+    _require_read_access(db, org, current_user)
 
     q = db.query(Projects).filter(
         Projects.organisation_id == org_id,
@@ -129,7 +131,7 @@ async def get_project(
         db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
-    _require_owner(org, current_user)
+    _require_read_access(db, org, current_user)
     return _get_project_or_404(db, project_id, org_id)
 
 
@@ -142,7 +144,7 @@ async def update_project(
         db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
-    _require_owner(org, current_user)
+    _require_write_access(db, org, current_user)
     project = _get_project_or_404(db, project_id, org_id)
 
     if body.name is not None:
@@ -180,7 +182,7 @@ async def delete_project(
         db: Session = Depends(get_db),
 ):
     org = _get_org_or_404(db, org_id)
-    _require_owner(org, current_user)
+    _require_write_access(db, org, current_user)
     project = _get_project_or_404(db, project_id, org_id)
 
     project.status = ProjectsStatus.DELETED
@@ -215,3 +217,26 @@ def _get_project_or_404(db: Session, project_id: int, org_id: int) -> Projects:
 def _require_owner(org: Organisation, user: UserDB):
     if org.owner_id != user.id:
         raise HTTPException(status_code=403, detail="You are not the owner of this organisation")
+
+
+def _member_role(db: Session, org: Organisation, user_id: int) -> Optional[str]:
+    if org.owner_id == user_id:
+        return "OWNER"
+    m = db.query(OrganisationMember).filter(
+        OrganisationMember.org_id == org.id,
+        OrganisationMember.user_id == user_id,
+    ).first()
+    return m.role if m else None
+
+
+def _require_read_access(db: Session, org: Organisation, user: UserDB):
+    """Any member (any role) can read. Non-members are denied."""
+    if _member_role(db, org, user.id) is None:
+        raise HTTPException(status_code=403, detail="You are not a member of this organisation")
+
+
+def _require_write_access(db: Session, org: Organisation, user: UserDB):
+    """SENIOR and above can write (create/update/delete)."""
+    role = _member_role(db, org, user.id)
+    if role not in _WRITE_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient role — SENIOR or above required")

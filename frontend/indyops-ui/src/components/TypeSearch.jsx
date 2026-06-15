@@ -68,11 +68,14 @@ export default function TypeSearch({ value, onChange, placeholder = 'Search item
             <li
               key={t.type_id}
               onMouseDown={() => pick(t)}
-              style={{ padding: '6px 12px', cursor: 'pointer', color: 'var(--text-white)', fontSize: 13 }}
+              style={{ padding: '6px 12px', cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 8 }}
               onMouseEnter={e => e.currentTarget.style.background = 'var(--surface3)'}
               onMouseLeave={e => e.currentTarget.style.background = ''}
             >
-              {t.type_name}
+              <span style={{ color: 'var(--text-white)', fontSize: 13 }}>{t.type_name}</span>
+              {t.group_name && (
+                <span style={{ color: 'var(--border2)', fontSize: 11, flexShrink: 0 }}>{t.group_name}</span>
+              )}
             </li>
           ))}
         </ul>
