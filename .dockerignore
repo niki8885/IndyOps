@@ -1,0 +1,26 @@
+.git
+.github
+.idea
+docs
+ref
+frontend
+*.md
+LICENSE*
+
+# python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.venv
+**/venv
+.env
+
+haskell/chain-engine/bin
+haskell/chain-engine/build
+haskell/chain-engine/dist-newstyle
+fortran/analytics-engine/bin
+fortran/analytics-engine/build
+**/*.o
+**/*.hi
+**/*.mod

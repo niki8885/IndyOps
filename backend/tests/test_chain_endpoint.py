@@ -1,0 +1,118 @@
+"""
+Glue around the /calculate-chain endpoint: Fuzzwork price parsing, plan
+serialisation, and one end-to-end run of the whole left arm
+(bom_tree → from_bom → solve_chain → assign_jobs) without HTTP/DB session.
+"""
+from app.adapters import market
+from app.api import manufacturing_router as mr
+from app.core.database_eve import (
+    EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint, EveType,
+)
+from app.repositories import eve as eve_repo
+from app.services.assignment import Line, SlotConfig, assign_jobs, assign_multi
+from app.services.chain import LocationParams, Node, Recipe, RecipeLocation, ChainRequest, from_bom, solve_chain
+
+
+def _seed(s):
+    s.add_all([
+        EveActivityProduct(type_id=1000, activity_id=1, product_type_id=2000, quantity=1),
+        EveActivityProduct(type_id=1001, activity_id=11, product_type_id=3000, quantity=10),
+        EveActivityMaterial(type_id=1000, activity_id=1, material_type_id=3000, quantity=4),
+        EveActivityMaterial(type_id=1000, activity_id=1, material_type_id=34, quantity=100),
+        EveActivityMaterial(type_id=1001, activity_id=11, material_type_id=4000, quantity=2),
+        EveActivityTime(type_id=1000, activity_id=1, time=600),
+        EveActivityTime(type_id=1001, activity_id=11, time=3600),
+        EveBlueprint(type_id=1000, max_production_limit=10),
+        EveBlueprint(type_id=1001, max_production_limit=100),
+        EveType(type_id=2000, type_name="T2 Hull"), EveType(type_id=3000, type_name="Comp"),
+        EveType(type_id=34, type_name="Trit"), EveType(type_id=4000, type_name="Moon"),
+    ])
+    s.commit()
+
+
+def test_market_buy_prices_parses_both_sides(monkeypatch):
+    agg = {
+        "34": {"buy": {"percentile": 5.5, "max": 6.0}, "sell": {"percentile": 7.5, "min": 7.0}},
+        "99": {"buy": {}, "sell": {}},
+    }
+    monkeypatch.setattr(market, "fuzzwork_aggregates_or_empty", lambda region, ids: agg)
+    buy = mr._market_buy_prices(10000002, [34, 99], "buy")
+    assert buy[34] == 5.5 and buy[99] is None        # percentile preferred, missing → None
+    sell = mr._market_buy_prices(10000002, [34, 99], "sell")
+    assert sell[34] == 7.5
+
+
+def test_plan_dict_serialises_computed_job_fields():
+    loc = RecipeLocation(1, "P", "manufacturing")
+    nodes = {
+        1: Node(1, "W", 9999.0, (Recipe(1, 100, 1, 600, ((2, 3),), (loc,), 10),)),
+        2: Node(2, "M", 10.0),
+    }
+    plan = solve_chain(ChainRequest(1, 2, nodes))
+    d = mr._plan_dict(plan)
+    assert set(d) == {"target_type_id", "target_qty", "unit_cost", "total_cost",
+                      "decisions", "jobs", "shopping_list"}
+    assert all(k.isdigit() or k.startswith("-") for k in d["decisions"])   # keys stringified
+    job = d["jobs"][0]
+    assert "make_cost" in job and "buy_fallback_total" in job              # properties included
+
+
+def test_to_jsonable_floats_fractions_for_api():
+    import json
+    loc = RecipeLocation(1, "P", "manufacturing")
+    nodes = {
+        1: Node(1, "W", 9999.0, (Recipe(1, 100, 1, 600, ((2, 3),), (loc,), 10),)),
+        2: Node(2, "M", 10.0),
+    }
+    plan = solve_chain(ChainRequest(1, 2, nodes))           # exact core → Fraction fields
+    payload = mr._to_jsonable({"plan": mr._plan_dict(plan)})
+    json.dumps(payload)                                     # must not raise (no Fraction leaks)
+    assert isinstance(payload["plan"]["total_cost"], float)
+
+
+def test_multi_location_placement_prefers_cheaper_structure():
+    loc = RecipeLocation(1, "ref", "manufacturing", eiv_unit=100.0, sci=0.05, tax=0.01, scc=0.04)
+    nodes = {
+        1: Node(1, "W", 1e12, (Recipe(1, 100, 1, 600, ((2, 4),), (loc,), 100),)),
+        2: Node(2, "A", 1e9, (Recipe(1, 101, 1, 300, ((3, 2),), (loc,), 100),)),
+        3: Node(3, "RAW", 5.0),
+    }
+    plan = solve_chain(ChainRequest(1, 3, nodes))
+    ref = LocationParams(1, "ref", sci=0.05, tax=0.01, scc=0.04)
+    structs = [
+        mr.ChainStructure(place_id=10, name="Sotiyo", system_cost_index=0.05, facility_tax_pct=1.0, man_lines=5),
+        mr.ChainStructure(place_id=20, name="Raitaru", system_cost_index=0.05, facility_tax_pct=1.0,
+                          structure_discount_pct=3.0, man_lines=5),  # 3% cost discount → cheaper install
+    ]
+    mjobs = mr._multi_jobs(plan, structs, ref)
+    assert mjobs and all(len(mj.placements) == 2 for mj in mjobs)       # both structures eligible
+
+    res = assign_multi(mjobs, mr._multi_slotconfig(structs, 24))
+    assert res.status in ("optimal", "feasible")
+    assert res.in_house and not res.bought                              # plenty of slots
+    assert all(a.place_id == 20 for a in res.in_house)                  # cheaper structure chosen
+
+
+def test_full_left_arm_pipeline(eve_session, monkeypatch):
+    _seed(eve_session)
+    tree = eve_repo.bom_tree(eve_session, 2000)
+
+    prices = {"2000": {"buy": {"percentile": 9_000_000.0}}, "3000": {"buy": {"percentile": 5000.0}},
+              "34": {"buy": {"percentile": 5.0}}, "4000": {"buy": {"percentile": 100.0}}}
+    monkeypatch.setattr(market, "fuzzwork_aggregates_or_empty", lambda region, ids: prices)
+    buy = mr._market_buy_prices(10000002, list(tree), "buy")
+
+    loc = LocationParams(1, "Sotiyo", me_mult=0.95, sci=0.04, tax=0.01, scc=0.04,
+                         struct_discount=0.03, man_lines=10, react_lines=5)
+    req = from_bom(2000, 5, tree, buy, {3000: 4000.0, 34: 4.0, 4000: 90.0}, loc)
+    plan = solve_chain(req)
+
+    # cheap reaction comp + ME-reduced hull both beat buying → both made
+    assert plan.decisions[3000].decision == "make"
+    assert plan.decisions[2000].decision == "make"
+
+    cfg = SlotConfig(86_400, [Line(1, "manufacturing", 10), Line(1, "reaction", 5)])
+    res = assign_jobs(plan.jobs, cfg)
+    assert res.status in ("optimal", "feasible")
+    # plenty of slots over 24h → nothing bounced
+    assert not res.bought

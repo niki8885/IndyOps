@@ -52,3 +52,65 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: backend/coverage.xml
           flags: backend
+
+  # -------------------------------------------------------------------------
+  # Fortran analytics-engine parity — build the native engine and check it
+  # still matches the Python oracle. The default `test` job runs with the
+  # binary absent (parity auto-skips); this one exercises the native path.
+  # -------------------------------------------------------------------------
+  fortran-parity:
+    name: Fortran engine parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Install gfortran
+        run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Build analytics-engine
+        run: sh build.sh
+        working-directory: fortran/analytics-engine
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run parity test
+        run: pytest tests/test_analytics_fortran_parity.py
+        env:
+          ANALYTICS_ENGINE_BIN: ${{ github.workspace }}/fortran/analytics-engine/bin/analytics-engine
+
+  # -------------------------------------------------------------------------
+  # Haskell chain-engine — build, unit tests, and cross-language parity
+  # against the Python oracle (the make-vs-buy core, haskell/chain-engine)
+  # -------------------------------------------------------------------------
+  chain-engine:
+    name: Chain engine (Haskell) + parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GHC
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.6"
+
+      - name: Build engine + run Haskell tests
+        working-directory: haskell/chain-engine
+        run: |
+          ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/chain-engine
+          ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
+          ./build/spec
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cross-language parity (Python oracle vs native binary)
+        working-directory: backend
+        env:
+          CHAIN_ENGINE_BIN: ${{ github.workspace }}/haskell/chain-engine/bin/chain-engine
+        run: |
+          pip install pytest
+          pytest tests/test_chain_haskell_parity.py --noconftest -q

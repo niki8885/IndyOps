@@ -1,0 +1,5 @@
+{"target_type_id":1,"target_qty":3,"nodes":{
+"1":{"type_id":1,"name":"WIDGET","buy_price":100000.0,"recipes":[{"activity":1,"blueprint_type_id":101,"qty_per_run":1,"base_time":600,"max_runs":10,"inputs":[[2,10],[3,5]],"locations":[{"place_id":10,"place_name":"P10","slot_kind":"manufacturing","me_mult":1.0,"te_mult":1.0,"sci":0.0,"tax":0.0,"scc":0.0,"struct_discount":0.0,"eiv_unit":0.0,"bpc_unit":0.0}]}]},
+"2":{"type_id":2,"name":"A","buy_price":1000.0,"recipes":[{"activity":1,"blueprint_type_id":102,"qty_per_run":1,"base_time":300,"max_runs":10,"inputs":[[3,20]],"locations":[{"place_id":10,"place_name":"P10","slot_kind":"manufacturing","me_mult":1.0,"te_mult":1.0,"sci":0.0,"tax":0.0,"scc":0.0,"struct_discount":0.0,"eiv_unit":0.0,"bpc_unit":0.0}]}]},
+"3":{"type_id":3,"name":"RAW","buy_price":10.0,"recipes":[]}
+}}

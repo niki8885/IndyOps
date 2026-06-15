@@ -2,7 +2,16 @@ import { useState, useEffect, useCallback } from 'react'
 import { get, post, patch, del } from '../api/client'
 import TypeSearch from '../components/TypeSearch'
 
-const TABS = ['Calculator', 'PAK Jobs', 'Inventory Analysis']
+const TABS = ['Calculator', 'Chain', 'PAK Jobs', 'Inventory Analysis']
+
+// Major trade-hub regions for chain buy/sell pricing (Fuzzwork aggregates).
+const REGIONS = [
+  { id: 10000002, name: 'Jita (The Forge)' },
+  { id: 10000043, name: 'Amarr (Domain)' },
+  { id: 10000032, name: 'Dodixie (Sinq Laison)' },
+  { id: 10000030, name: 'Rens (Heimatar)' },
+  { id: 10000042, name: 'Hek (Metropolis)' },
+]
 
 const STATUS_COLOR = {
   Planning:    '#8b93b0',
@@ -52,8 +61,9 @@ export default function ManufacturingPage() {
         ))}
       </div>
       {tab === 0 && <CalculatorTab />}
-      {tab === 1 && <PakJobsTab />}
-      {tab === 2 && <InventoryAnalysisTab />}
+      {tab === 1 && <ChainTab />}
+      {tab === 2 && <PakJobsTab />}
+      {tab === 3 && <InventoryAnalysisTab />}
     </div>
   )
 }
@@ -830,6 +840,300 @@ function CalculatorTab() {
       )}
     </div>
   )
+}
+
+/* ═══════════════════════════ CHAIN (MAKE-VS-BUY) ═══════════════════════════ */
+
+function ChainTab() {
+  const [product, setProduct]       = useState(null)
+  const [facilities, setFacilities] = useState([])
+  const [params, setParams] = useState({
+    qty: 1, region_id: 10000002, price_basis: 'buy',
+    facility_id: '', me_pct: 0, te_pct: 0,
+    system_cost_index: 0, facility_tax_pct: 0, structure_discount_pct: 0,
+    man_lines: 10, react_lines: 0, window_hours: 24, max_depth: 12,
+  })
+  const [result, setResult]   = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState('')
+  const [structures, setStructures] = useState([])   // multi-location (optional)
+
+  const addStruct = () => setStructures(s => [...s, { place_id: '', name: '', sci: '', tax: '', disc: '', man: 5, react: 0 }])
+  const updateStruct = (i, k) => e => setStructures(s => s.map((st, j) => j === i ? { ...st, [k]: e.target.value } : st))
+  const removeStruct = i => setStructures(s => s.filter((_, j) => j !== i))
+
+  useEffect(() => { get('/facilities').then(setFacilities).catch(() => {}) }, [])
+
+  useEffect(() => {
+    if (!params.facility_id) return
+    const f = facilities.find(f => f.id === Number(params.facility_id))
+    if (!f) return
+    setParams(p => ({
+      ...p,
+      system_cost_index: f.system_cost_index != null ? +(f.system_cost_index * 100).toFixed(4) : p.system_cost_index,
+      facility_tax_pct: f.tax != null ? f.tax : p.facility_tax_pct,
+      structure_discount_pct: f.cost_bonus != null ? f.cost_bonus : p.structure_discount_pct,
+    }))
+  }, [params.facility_id, facilities])
+
+  async function calculate() {
+    if (!product?.type_id) return
+    setLoading(true); setError(''); setResult(null)
+    try {
+      const res = await post('/manufacturing/calculate-chain', {
+        product_type_id: product.type_id,
+        qty: Number(params.qty) || 1,
+        region_id: Number(params.region_id),
+        price_basis: params.price_basis,
+        facility_id: params.facility_id ? Number(params.facility_id) : null,
+        me_pct: Number(params.me_pct),
+        te_pct: Number(params.te_pct),
+        system_cost_index: Number(params.system_cost_index) / 100,
+        facility_tax_pct: Number(params.facility_tax_pct),
+        structure_discount_pct: Number(params.structure_discount_pct),
+        man_lines: Number(params.man_lines),
+        react_lines: Number(params.react_lines),
+        window_hours: Number(params.window_hours),
+        max_depth: Number(params.max_depth),
+        ...(structures.length ? {
+          structures: structures.map(s => ({
+            place_id: Number(s.place_id) || 0,
+            name: s.name || '',
+            system_cost_index: Number(s.sci) / 100,
+            facility_tax_pct: Number(s.tax),
+            structure_discount_pct: Number(s.disc),
+            man_lines: Number(s.man) || 0,
+            react_lines: Number(s.react) || 0,
+          })),
+        } : {}),
+      })
+      setResult(res)
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  const setP = k => e => setParams(p => ({ ...p, [k]: e.target.value }))
+
+  const plan = result?.plan
+  const asg  = result?.assignment
+  const boughtIdx = new Set((asg?.bought || []).map(a => a.job_index))
+  const hasAssign = asg && (asg.status === 'optimal' || asg.status === 'feasible')
+  const decisions = plan ? Object.values(plan.decisions) : []
+  const makeCount = decisions.filter(d => d.decision === 'make').length
+  const buyCount  = decisions.filter(d => d.decision === 'buy').length
+  const shopping  = plan?.shopping_list || []
+  const shopText  = shopping.map(s => `${s.name}\t${s.qty}`).join('\n')
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {error && <div className="error-box">{error}</div>}
+
+      {/* Controls */}
+      <div className="card">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px,1fr))', gap: 14 }}>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <CLabel>Product to build (full chain)</CLabel>
+            <TypeSearch value={product} onChange={t => setProduct(t?.type_id ? t : null)} placeholder="Search product…" />
+            <span style={{ fontSize: 11, color: 'var(--text)' }}>
+              The whole build tree is priced and each item is decided make-vs-buy recursively.
+            </span>
+          </div>
+          <NumField label="Quantity" value={params.qty} onChange={setP('qty')} min={1} />
+          <div>
+            <CLabel>Buy-price region</CLabel>
+            <select value={params.region_id} onChange={setP('region_id')}>
+              {REGIONS.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <CLabel>Price basis</CLabel>
+            <select value={params.price_basis} onChange={setP('price_basis')}>
+              <option value="buy">Buy orders (place buy)</option>
+              <option value="sell">Sell orders (instant)</option>
+            </select>
+          </div>
+          <div>
+            <CLabel>Facility</CLabel>
+            <select value={params.facility_id} onChange={setP('facility_id')}>
+              <option value="">— none —</option>
+              {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <NumField label="ME % (manuf.)" value={params.me_pct} onChange={setP('me_pct')} step={0.1} />
+          <NumField label="TE %" value={params.te_pct} onChange={setP('te_pct')} step={0.1} />
+          <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
+          <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
+          <NumField label="Structure Discount %" value={params.structure_discount_pct} onChange={setP('structure_discount_pct')} step={0.1} />
+          <NumField label="Manufacturing slots" value={params.man_lines} onChange={setP('man_lines')} min={0} />
+          <NumField label="Reaction slots" value={params.react_lines} onChange={setP('react_lines')} min={0} />
+          <NumField label="Window (hours)" value={params.window_hours} onChange={setP('window_hours')} min={1} />
+          <NumField label="Max depth" value={params.max_depth} onChange={setP('max_depth')} min={1} max={20} />
+        </div>
+      </div>
+
+      {/* Multi-location (optional): OR-Tools chooses the structure per job */}
+      <div className="card" style={{ padding: 0 }}>
+        <div style={{ padding: '10px 16px', borderBottom: structures.length ? '1px solid var(--border)' : 'none', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Structures (multi-location, optional)</span>
+          <Hint>empty → single facility above; add 2+ → OR-Tools spreads jobs under each structure's slots</Hint>
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={addStruct}>+ Add structure</button>
+        </div>
+        {structures.length > 0 && (
+          <table>
+            <thead><tr><th>Place ID</th><th>Name</th><th>SCI %</th><th>Tax %</th><th>Disc %</th><th>Manuf slots</th><th>React slots</th><th></th></tr></thead>
+            <tbody>
+              {structures.map((s, i) => (
+                <tr key={i}>
+                  <td><input style={{ width: 90 }} value={s.place_id} onChange={updateStruct(i, 'place_id')} placeholder="id" /></td>
+                  <td><input style={{ width: 120 }} value={s.name} onChange={updateStruct(i, 'name')} placeholder="Sotiyo" /></td>
+                  <td><input type="number" style={{ width: 70 }} step="0.001" value={s.sci} onChange={updateStruct(i, 'sci')} /></td>
+                  <td><input type="number" style={{ width: 60 }} step="0.1" value={s.tax} onChange={updateStruct(i, 'tax')} /></td>
+                  <td><input type="number" style={{ width: 60 }} step="0.1" value={s.disc} onChange={updateStruct(i, 'disc')} /></td>
+                  <td><input type="number" style={{ width: 60 }} value={s.man} onChange={updateStruct(i, 'man')} /></td>
+                  <td><input type="number" style={{ width: 60 }} value={s.react} onChange={updateStruct(i, 'react')} /></td>
+                  <td><button className="btn btn-danger btn-sm" onClick={() => removeStruct(i)}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button className="btn btn-primary" onClick={calculate} disabled={!product?.type_id || loading}>
+          {loading ? 'Solving chain…' : '⚙ Calculate chain'}
+        </button>
+        <span style={{ fontSize: 11, color: 'var(--text)' }}>
+          {structures.length
+            ? `Multi-location: OR-Tools places jobs across ${structures.length} structure${structures.length > 1 ? 's' : ''}.`
+            : 'Make-vs-buy across the whole tree + slot assignment under the current window.'}
+        </span>
+      </div>
+
+      {result && plan && (
+        <>
+          {/* Summary */}
+          <Section title="Chain summary">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, padding: 12 }}>
+              <IskStat label="Unit cost" value={plan.unit_cost} color="var(--accent)" bold />
+              <IskStat label="Total (all in-house)" value={plan.total_cost} bold />
+              <IskStat label="Final (after slots)" value={result.final_cost} color="var(--text-white)" bold />
+              <div>
+                <div style={statLabel}>Engine</div>
+                <span style={{
+                  fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+                  background: result.engine === 'haskell' ? '#0e2a1a' : 'var(--surface3)',
+                  color: result.engine === 'haskell' ? '#4caf7d' : 'var(--text)',
+                }}>{result.engine === 'haskell' ? '⬢ Haskell' : '🐍 Python'}</span>
+              </div>
+              <div>
+                <div style={statLabel}>Decisions</div>
+                <div style={{ color: 'var(--text-white)' }}>
+                  <span style={{ color: '#4caf7d' }}>{makeCount} make</span> · <span>{buyCount} buy</span>
+                </div>
+              </div>
+            </div>
+            {asg && (
+              <div style={{ padding: '0 12px 12px', fontSize: 12, color: 'var(--text)' }}>
+                {hasAssign
+                  ? <>Assignment <b style={{ color: 'var(--accent)' }}>{asg.status}</b> · in-house {asg.in_house?.length || 0}, bounced to buy {asg.bought?.length || 0} · savings captured <span style={{ color: '#4caf7d' }}>{fmtIsk(asg.savings_captured)}</span>{asg.savings_forfeited > 0 && <> · forfeited <span style={{ color: '#e05252' }}>{fmtIsk(asg.savings_forfeited)}</span></>}</>
+                  : <>Slot assignment: <b style={{ color: '#e0884f' }}>{asg.status}</b>{asg.note ? ` — ${asg.note}` : ''}</>}
+              </div>
+            )}
+          </Section>
+
+          {/* Decisions */}
+          <Section title={`Make vs Buy — ${decisions.length} nodes`}>
+            <table>
+              <thead><tr><th>Item</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th></tr></thead>
+              <tbody>
+                {[...decisions].sort((a, b) => (b.saved_per_unit || 0) - (a.saved_per_unit || 0)).map(d => (
+                  <tr key={d.type_id}>
+                    <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{d.name}</td>
+                    <td><DecisionBadge decision={d.decision} /></td>
+                    <td>{d.unit_make != null ? fmtIsk(d.unit_make) : '—'}</td>
+                    <td>{d.unit_buy != null ? fmtIsk(d.unit_buy) : '—'}</td>
+                    <td style={{ color: 'var(--accent)' }}>{d.unit_cost != null ? fmtIsk(d.unit_cost) : '—'}</td>
+                    <td style={{ color: d.saved_per_unit > 0 ? '#4caf7d' : 'var(--text)' }}>
+                      {d.saved_per_unit > 0 ? fmtIsk(d.saved_per_unit) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Section>
+
+          {/* Jobs */}
+          {plan.jobs.length > 0 && (
+            <Section title={`Production jobs — ${plan.jobs.length}`}>
+              <table>
+                <thead><tr><th>Item</th><th>Type</th><th>Runs</th><th>Output</th><th>Time</th><th>Place</th><th>Slot</th></tr></thead>
+                <tbody>
+                  {plan.jobs.map((j, i) => {
+                    const bounced = hasAssign && boughtIdx.has(i)
+                    return (
+                      <tr key={i} style={{ opacity: bounced ? 0.55 : 1 }}>
+                        <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{j.name}</td>
+                        <td style={{ fontSize: 12 }}>{j.activity === 11 ? 'Reaction' : 'Manuf.'}</td>
+                        <td>{j.runs.toLocaleString()}</td>
+                        <td>{j.qty_out.toLocaleString()}</td>
+                        <td style={{ fontSize: 12, color: 'var(--text)' }}>{fmtTime(j.time_s)}</td>
+                        <td style={{ fontSize: 12, color: 'var(--text)' }}>{j.place_name || j.place_id}</td>
+                        <td>
+                          {hasAssign
+                            ? (bounced
+                              ? <span style={{ color: '#e0884f', fontSize: 11 }}>↩ bought</span>
+                              : <span style={{ color: '#4caf7d', fontSize: 11 }}>● in-house</span>)
+                            : <span style={{ fontSize: 11, color: 'var(--text)' }}>{j.slot_kind}</span>}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </Section>
+          )}
+
+          {/* Shopping list */}
+          {shopping.length > 0 && (
+            <Section title={`Shopping list — ${shopping.length} items`}>
+              <table>
+                <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead>
+                <tbody>
+                  {shopping.map(s => (
+                    <tr key={s.type_id}>
+                      <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{s.name}</td>
+                      <td>{s.qty.toLocaleString()}</td>
+                      <td>{fmtIsk(s.unit)}</td>
+                      <td style={{ color: 'var(--accent)' }}>{fmtIsk(s.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>🛒 Multibuy (paste into EVE)</span>
+                  <button className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard.writeText(shopText)}>Copy</button>
+                </div>
+                <textarea readOnly value={shopText} rows={Math.min(shopping.length, 10)}
+                  style={{ fontFamily: 'monospace', fontSize: 12, width: '100%' }} />
+              </div>
+            </Section>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function DecisionBadge({ decision }) {
+  const map = {
+    make: { c: '#4caf7d', bg: '#0e2a1a', t: 'MAKE' },
+    buy:  { c: '#3a9bd6', bg: '#0e1f2a', t: 'BUY' },
+    unobtainable: { c: '#e05252', bg: '#2a0e0e', t: 'N/A' },
+  }
+  const s = map[decision] || map.unobtainable
+  return <span style={{ fontSize: 11, fontWeight: 700, color: s.c, background: s.bg, padding: '2px 7px', borderRadius: 4 }}>{s.t}</span>
 }
 
 /* ═══════════════════════════ PAK JOBS TABLE ═══════════════════════════ */

@@ -13,8 +13,8 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal, engine
 from app.core.indices_data import INDEX_META, INDEX_ORDER
+from app.adapters import analytics_engine
 from app.repositories import cache_repo, market_repo
-from app.services import index_report
 from app.tasks.update_indices import run_index_update
 from app.tasks.update_sde import run_sde_update
 from app.tasks.update_tracking import run_tracking_update
@@ -73,8 +73,9 @@ def warm_index_cache(db, window: int = _DEFAULT_WINDOW) -> int:
         df = market_repo.index_snapshots_df(db, key)
         if df.empty:
             continue
-        payload = index_report.compute_index_payload(
+        payload, engine = analytics_engine.compute(
             df, key, INDEX_META[key]["label"], INDEX_META[key]["kind"], window)
+        payload["engine"] = engine
         cache_repo.set_cached(db, "index", key, window, payload)
         warmed += 1
     return warmed

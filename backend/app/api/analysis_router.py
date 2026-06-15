@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db, MarketIndexSnapshot, UserDB
 from app.core.indices_data import INDEX_META, INDEX_ORDER
 from app.core.security import get_current_user
+from app.adapters import analytics_engine
 from app.repositories import cache_repo, market_repo
-from app.services import index_report
 from app.services._numeric import clean
 from app.tasks.update_indices import run_index_update
 
@@ -83,7 +83,8 @@ async def index_detail(
     if df.empty:
         return {"key": key, "label": INDEX_META[key]["label"], "empty": True}
 
-    payload = index_report.compute_index_payload(
+    payload, engine = analytics_engine.compute(
         df, key, INDEX_META[key]["label"], INDEX_META[key]["kind"], win)
+    payload["engine"] = engine
     cache_repo.set_cached(db, "index", key, win, payload)
     return payload

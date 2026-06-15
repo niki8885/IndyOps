@@ -37,6 +37,36 @@ jobs:
         working-directory: backend
         run: pytest -q
 
+      # The Docker build compiles the engine, but only catches compile errors —
+      # run the Haskell unit tests so a logic regression also blocks the deploy.
+      - name: Set up GHC
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.6"
+
+      - name: Build + test chain-engine
+        working-directory: haskell/chain-engine
+        run: |
+          ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/chain-engine
+          ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
+          ./build/spec
+
+      # Likewise build the Fortran analytics-engine and run its cross-language
+      # parity test, so a logic regression (not just a compile error) blocks the
+      # deploy before the engine ships in the image.
+      - name: Install gfortran
+        run: sudo apt-get update && sudo apt-get install -y gfortran
+
+      - name: Build analytics-engine
+        working-directory: fortran/analytics-engine
+        run: sh build.sh
+
+      - name: Run analytics-engine parity test
+        working-directory: backend
+        run: pytest tests/test_analytics_fortran_parity.py
+        env:
+          ANALYTICS_ENGINE_BIN: ${{ github.workspace }}/fortran/analytics-engine/bin/analytics-engine
+
   # -------------------------------------------------------------------------
   # 1. Build Docker images and push to GHCR
   # -------------------------------------------------------------------------
@@ -65,7 +95,8 @@ jobs:
       - name: Build & push backend
         uses: docker/build-push-action@v6
         with:
-          context: ./backend
+          context: .                       # repo root: image compiles the sibling haskell/ engine
+          file: ./backend/Dockerfile
           push: true
           tags: ${{ env.BACKEND_IMAGE }}:latest
           cache-from: type=gha

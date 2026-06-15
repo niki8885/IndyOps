@@ -1,10 +1,15 @@
 from __future__ import annotations
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
 from app.core.database_eve import (
     EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint,
 )
+
+MANUFACTURING = 1
+REACTION = 11
+INDUSTRY_ACTIVITIES = (MANUFACTURING, REACTION)
 
 
 @dataclass
@@ -91,3 +96,108 @@ def volumes(eve_db, type_ids: list[int]) -> dict[int, Optional[float]]:
     rows = eve_db.query(EveType.type_id, EveType.volume).filter(
         EveType.type_id.in_(type_ids or [-1])).all()
     return {tid: vol for tid, vol in rows}
+
+
+def recipes_for_product(eve_db, product_type_id: int) -> list[dict]:
+    """
+    Every recipe that yields this product, across manufacturing (1) and
+    reactions (11). A product may have more than one (alternative paths).
+    """
+    rows = (
+        eve_db.query(EveActivityProduct)
+        .filter(
+            EveActivityProduct.product_type_id == product_type_id,
+            EveActivityProduct.activity_id.in_(INDUSTRY_ACTIVITIES),
+        )
+        .all()
+    )
+    return [
+        {"blueprint_type_id": r.type_id, "activity_id": r.activity_id, "qty_per_run": r.quantity}
+        for r in rows
+    ]
+
+
+def bom_tree(eve_db, root_type_id: int, max_depth: int = 12) -> dict[int, dict]:
+    """
+    Walk the build-of-materials DAG from ``root_type_id`` down to raw leaves,
+    spanning manufacturing (activity 1) and reactions (activity 11). Returns a
+    flat ``{type_id: node}`` map where each node is::
+
+        {"name": str,
+         "recipes": [{"activity", "blueprint_type_id", "qty_per_run",
+                      "base_time", "max_runs", "inputs": [{"type_id","qty"}]}]}
+
+    Leaves (minerals, moon goo, PI, fuel blocks…) have ``recipes == []``. The
+    walk is batched per depth level — a constant handful of queries per level
+    regardless of how many materials a tier has (no N+1). Prices and facility
+    bonuses are *not* read here; the adapter/router layer adds those to build a
+    ``chain.ChainRequest``.
+    """
+    nodes: dict[int, dict] = {}
+    frontier = {root_type_id}
+    expanded: set[int] = set()
+    depth = 0
+
+    while frontier and depth < max_depth:
+        depth += 1
+        ids = list(frontier)
+
+        prod_rows = (
+            eve_db.query(EveActivityProduct)
+            .filter(
+                EveActivityProduct.product_type_id.in_(ids),
+                EveActivityProduct.activity_id.in_(INDUSTRY_ACTIVITIES),
+            )
+            .all()
+        )
+        bp_index: dict[int, list] = defaultdict(list)  # product_type_id -> [(bp, act, qpr)]
+        bp_ids: list[int] = []
+        for r in prod_rows:
+            bp_index[r.product_type_id].append((r.type_id, r.activity_id, r.quantity))
+            bp_ids.append(r.type_id)
+
+        mats_by_bp: dict[tuple[int, int], list] = defaultdict(list)
+        time_by_bp: dict[tuple[int, int], int] = {}
+        limit_by_bp: dict[int, Optional[int]] = {}
+        if bp_ids:
+            for r in (eve_db.query(EveActivityMaterial)
+                    .filter(EveActivityMaterial.type_id.in_(bp_ids),
+                            EveActivityMaterial.activity_id.in_(INDUSTRY_ACTIVITIES)).all()):
+                mats_by_bp[(r.type_id, r.activity_id)].append((r.material_type_id, r.quantity))
+            for r in (eve_db.query(EveActivityTime)
+                    .filter(EveActivityTime.type_id.in_(bp_ids),
+                            EveActivityTime.activity_id.in_(INDUSTRY_ACTIVITIES)).all()):
+                time_by_bp[(r.type_id, r.activity_id)] = r.time
+            for r in (eve_db.query(EveBlueprint)
+                    .filter(EveBlueprint.type_id.in_(bp_ids)).all()):
+                limit_by_bp[r.type_id] = r.max_production_limit
+
+        next_frontier: set[int] = set()
+        for tid in frontier:
+            recipes = []
+            for bp, act, qpr in bp_index.get(tid, []):
+                inputs = mats_by_bp.get((bp, act), [])
+                recipes.append({
+                    "activity": act,
+                    "blueprint_type_id": bp,
+                    "qty_per_run": qpr or 1,
+                    "base_time": time_by_bp.get((bp, act), 0),
+                    "max_runs": limit_by_bp.get(bp),
+                    "inputs": [{"type_id": m, "qty": q} for m, q in inputs],
+                })
+                for m, _ in inputs:
+                    if m not in expanded:
+                        next_frontier.add(m)
+            nodes[tid] = {"name": None, "recipes": recipes}
+            expanded.add(tid)
+        frontier = {t for t in next_frontier if t not in expanded}
+
+    for n in list(nodes.values()):
+        for rc in n["recipes"]:
+            for inp in rc["inputs"]:
+                nodes.setdefault(inp["type_id"], {"name": None, "recipes": []})
+
+    names = type_names(eve_db, list(nodes.keys()))
+    for tid, n in nodes.items():
+        n["name"] = names.get(tid, str(tid))
+    return nodes

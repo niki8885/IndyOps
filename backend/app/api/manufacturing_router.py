@@ -1,5 +1,6 @@
 import datetime
 from dataclasses import asdict
+from fractions import Fraction
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -11,21 +12,19 @@ from app.core.database_eve import (
 )
 from app.core.schemas import ProductionStatus, ProductionTarget, FacilityType
 from app.core.security import get_current_user
+from app.adapters import chain_engine
 from app.repositories import eve as eve_repo
+from app.services.assignment import Line, MultiJob, Placement, SlotConfig, assign_jobs, assign_multi
+from app.services.chain import LocationParams, PlannedJob, from_bom
 from app.services.costing import plan_fifo
-from app.services.manufacturing import CalcInput, Material, run_calculation
+from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_calculation
 
 router = APIRouter()
 
-# Engineering Complex (Raitaru/Azbel/Sotiyo) manufacturing role bonuses
-EC_MATERIAL_ROLE = 1.0  # −1% material
-EC_COST_ROLE = 3.0  # −3% job cost
+EC_MATERIAL_ROLE = 1.0
+EC_COST_ROLE = 3.0
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Schemas
-# ─────────────────────────────────────────────────────────────────────────────
 
 class BlueprintInfoOut(BaseModel):
     blueprint_type_id: int
@@ -47,19 +46,19 @@ class CalcRequest(BaseModel):
     product_type_id: int
     facility_id: Optional[int] = None
     runs: int = 1
-    windows: int = 1  # parallel production slots
+    windows: int = 1
     me: int = 0
     te: int = 0
     bpc_cost: float = 0.0
     output_price: float = 0.0
     broker_fee_pct: float = 3.6
-    system_cost_index: float = 0.0  # fraction
+    system_cost_index: float = 0.0
     facility_tax_pct: float = 0.0
     structure_bonus_pct: float = 0.0
-    material_bonus_pct: float = 0.0  # rig ME (security-scaled)
-    time_bonus_pct: float = 0.0  # rig TE
-    material_role_pct: float = 0.0  # structure role ME (auto from EC if 0)
-    time_role_pct: float = 0.0  # structure role TE
+    material_bonus_pct: float = 0.0
+    time_bonus_pct: float = 0.0
+    material_role_pct: float = 0.0
+    time_role_pct: float = 0.0
     estimated_item_value: Optional[float] = None
     material_prices: List[MaterialPrice] = []
 
@@ -230,14 +229,12 @@ async def calculate(
     finally:
         eve_db.close()
 
-    # merge user prices into base materials
     price_map = {p.type_id: p.unit_cost for p in body.material_prices}
     materials = [
         {**m, "unit_cost": price_map.get(m["type_id"], 0.0)}
         for m in base_mats
     ]
 
-    # Estimated Item Value (EVE-accurate): Σ base_qty × ESI adjusted price
     eiv = body.estimated_item_value
     if not eiv or eiv <= 0:
         try:
@@ -245,9 +242,8 @@ async def calculate(
             computed = sum((m["base_qty"] * body.runs) * adj.get(m["type_id"], 0.0) for m in base_mats)
             eiv = computed if computed > 0 else None
         except Exception:
-            eiv = None  # run_calculation will fall back to material cost
+            eiv = None
 
-    # pull facility defaults if provided
     sci = body.system_cost_index
     tax = body.facility_tax_pct
     s_bonus = body.structure_bonus_pct
@@ -260,7 +256,6 @@ async def calculate(
                 sci = f.system_cost_index
             if tax == 0.0 and f.tax:
                 tax = f.tax
-            # Engineering Complex role bonuses (auto unless caller set them)
             if f.facility_type in EC_TYPES:
                 if mat_role == 0.0:
                     mat_role = EC_MATERIAL_ROLE
@@ -297,11 +292,207 @@ async def calculate(
     return asdict(run_calculation(inp))
 
 
-# ─── Facility rig bonuses (dogma-based) ──────────────────────────────────────
+# Recursive make-vs-buy chain + slot assignment
 
-# EVE category IDs. Affected sets are taken from the rig multiplier attribute
-# descriptions in dgmAttributeTypes (e.g. attr 2561 "Structure" explicitly lists
-# Structure Components/Modules, Upwell & Starbase Structures, *Fuel Blocks*).
+class ChainStructure(BaseModel):
+    """One production structure for multi-location placement (OR-Tools picks where)."""
+    place_id: int
+    name: str = ""
+    system_cost_index: float = 0.0      # fraction, e.g. 0.0593
+    facility_tax_pct: float = 0.0
+    structure_discount_pct: float = 0.0
+    man_lines: int = 0                   # 0 = can't run manufacturing here
+    react_lines: int = 0                 # 0 = can't run reactions here
+
+
+class ChainCalcRequest(BaseModel):
+    product_type_id: int
+    qty: int = 1
+    region_id: int = 10000002
+    price_basis: str = "buy"
+    facility_id: Optional[int] = None
+    place_id: int = 0
+    place_name: str = ""
+    me_pct: float = 0.0
+    te_pct: float = 0.0
+    system_cost_index: float = 0.0
+    facility_tax_pct: float = 0.0
+    structure_discount_pct: float = 0.0
+    man_lines: int = 0
+    react_lines: int = 0
+    window_hours: float = 24.0
+    max_depth: int = 12
+    price_overrides: dict[int, float] = {}
+    # When given, OR-Tools chooses a structure per job across these (multi-location);
+    # otherwise the single reference location (above) is used.
+    structures: List[ChainStructure] = []
+
+
+def _market_buy_prices(region_id: int, type_ids: list[int], basis: str) -> dict[int, Optional[float]]:
+    """Per-type acquire cost from Fuzzwork aggregates (5% percentile, side by basis)."""
+    agg = market.fuzzwork_aggregates_or_empty(region_id, type_ids)
+    side = "buy" if basis == "buy" else "sell"
+    fallback = "max" if side == "buy" else "min"
+    out: dict[int, Optional[float]] = {}
+    for tid in type_ids:
+        s = (agg.get(str(tid)) or {}).get(side) or {}
+        val = s.get("percentile") or s.get(fallback)
+        out[tid] = float(val) if val else None
+    return out
+
+
+def _job_dict(j: PlannedJob) -> dict:
+    d = asdict(j)
+    d["make_cost"] = j.make_cost
+    d["buy_fallback_total"] = j.buy_fallback_total
+    return d
+
+
+def _plan_dict(plan) -> dict:
+    return {
+        "target_type_id": plan.target_type_id,
+        "target_qty": plan.target_qty,
+        "unit_cost": plan.unit_cost,
+        "total_cost": plan.total_cost,
+        "decisions": {str(t): asdict(d) for t, d in plan.decisions.items()},
+        "jobs": [_job_dict(j) for j in plan.jobs],
+        "shopping_list": [asdict(s) for s in plan.shopping_list],
+    }
+
+
+def _to_jsonable(x):
+    """The exact core returns Fractions; collapse them to float at the API edge."""
+    if isinstance(x, Fraction):
+        return float(x)
+    if isinstance(x, dict):
+        return {k: _to_jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_to_jsonable(v) for v in x]
+    return x
+
+
+def _multi_jobs(plan, structures: List[ChainStructure], loc: LocationParams) -> list[MultiJob]:
+    """
+    Per-job placement options across ``structures`` for the multi-location solver.
+    Material quantities (and the BOM flow) stay as the core computed them at the
+    reference location; only install cost varies by structure (job time is held
+    at the reference — inter-structure TE differences are minor). EIV per job is
+    recovered from the reference install cost and rate.
+    """
+    rate_ref = loc.sci * (1 - loc.struct_discount) + loc.tax + loc.scc
+    mjobs: list[MultiJob] = []
+    for i, j in enumerate(plan.jobs):
+        eiv_job = float(j.install_cost) / rate_ref if rate_ref else 0.0
+        base = float(j.bpc_cost) + float(j.leaf_material_cost)
+        opts = []
+        for s in structures:
+            lines = s.man_lines if j.slot_kind == "manufacturing" else s.react_lines
+            if lines <= 0:
+                continue  # this structure can't run this job's activity
+            rate_s = (s.system_cost_index * (1 - s.structure_discount_pct / 100)
+                      + s.facility_tax_pct / 100 + SCC_SURCHARGE)
+            opts.append(Placement(s.place_id, s.name or f"struct {s.place_id}",
+                                  j.slot_kind, eiv_job * rate_s + base, j.time_s))
+        fb = j.buy_fallback_total
+        mjobs.append(MultiJob(i, j.type_id, j.name, j.slot_kind, j.bounceable,
+                              float(fb) if fb is not None else None, opts))
+    return mjobs
+
+
+def _multi_slotconfig(structures: List[ChainStructure], window_hours: float) -> SlotConfig:
+    lines = []
+    for s in structures:
+        if s.man_lines > 0:
+            lines.append(Line(s.place_id, "manufacturing", s.man_lines))
+        if s.react_lines > 0:
+            lines.append(Line(s.place_id, "reaction", s.react_lines))
+    return SlotConfig(horizon_s=int(window_hours * 3600), lines=lines)
+
+
+@router.post("/calculate-chain")
+async def calculate_chain(
+        body: ChainCalcRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """
+    Full recursive make-vs-buy over the product's whole build tree (manufacturing
+    + reactions), then a slot assignment that fits the chosen jobs into the
+    current window — bouncing overflow tip-jobs back to "buy". One pass through
+    the two engines; see app.services.chain / app.services.assignment.
+    """
+    eve_db = EveSessionLocal()
+    try:
+        tree = eve_repo.bom_tree(eve_db, body.product_type_id, body.max_depth)
+    finally:
+        eve_db.close()
+    if not tree or body.product_type_id not in tree:
+        raise HTTPException(404, f"No build tree for type_id {body.product_type_id}")
+    if not tree[body.product_type_id]["recipes"]:
+        raise HTTPException(400, "Target product has no manufacturing/reaction recipe")
+
+    type_ids = list(tree)
+    buy_prices = _market_buy_prices(body.region_id, type_ids, body.price_basis)
+    buy_prices.update({int(k): float(v) for k, v in body.price_overrides.items()})
+    try:
+        adj = market.esi_adjusted_prices()
+    except Exception:
+        adj = {}
+
+    sci, tax_pct, disc_pct = body.system_cost_index, body.facility_tax_pct, body.structure_discount_pct
+    place_id, place_name = body.place_id, body.place_name
+    if body.facility_id:
+        f = db.query(Facility).filter(Facility.id == body.facility_id,
+                                      Facility.user_id == current_user.id).first()
+        if f:
+            place_id = place_id or f.id
+            place_name = place_name or getattr(f, "name", None) or f.facility_type.value
+            if sci == 0.0 and f.system_cost_index:
+                sci = f.system_cost_index
+            if tax_pct == 0.0 and f.tax:
+                tax_pct = f.tax
+            if disc_pct == 0.0 and f.cost_bonus:
+                disc_pct = f.cost_bonus
+
+    loc = LocationParams(
+        place_id=place_id or 1, place_name=place_name or "facility",
+        me_mult=1 - body.me_pct / 100, te_mult=1 - body.te_pct / 100,
+        sci=sci, tax=tax_pct / 100, scc=SCC_SURCHARGE, struct_discount=disc_pct / 100,
+        man_lines=body.man_lines, react_lines=body.react_lines,
+    )
+
+    req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, loc)
+    plan, engine = chain_engine.solve(req)   # native Haskell core, falls back to Python
+
+    try:
+        if body.structures:                      # multi-location: OR-Tools picks where
+            assignment = assign_multi(_multi_jobs(plan, body.structures, loc),
+                                      _multi_slotconfig(body.structures, body.window_hours))
+        else:                                    # single reference location
+            cfg = SlotConfig(horizon_s=int(body.window_hours * 3600), lines=[
+                Line(loc.place_id, "manufacturing", body.man_lines),
+                Line(loc.place_id, "reaction", body.react_lines),
+            ])
+            assignment = assign_jobs(plan.jobs, cfg)
+        assignment_out = asdict(assignment)
+        final_cost = (round(plan.total_cost + assignment.savings_forfeited, 2)
+                      if assignment.status != "infeasible" else None)
+    except RuntimeError as exc:        # ortools unavailable — still return the plan
+        assignment_out = {"status": "unavailable", "note": str(exc)}
+        final_cost = None
+
+    return _to_jsonable({
+        "plan": _plan_dict(plan),
+        "assignment": assignment_out,
+        "final_cost": final_cost,
+        "engine": engine,
+        "multi_location": bool(body.structures),
+        "price_basis": body.price_basis,
+    })
+
+
+# Facility rig bonuses
+
 _CAT_SHIP, _CAT_MODULE, _CAT_CHARGE, _CAT_DRONE = 6, 7, 8, 18
 _CAT_IMPLANT, _CAT_FIGHTER, _CAT_POS_STRUCT = 20, 87, 23
 _CAT_UPWELL, _CAT_STRUCT_MODULE = 65, 66
@@ -327,7 +518,6 @@ def _rig_applies(rig_name: str, cat_id: Optional[int], group_name: str) -> bool:
     n = (rig_name or "").lower()
     gn = (group_name or "").lower()
     if "equipment" in n:
-        # Ship Modules, Ship Rigs, Personal Deployables, Implants, Cargo Containers
         return cat_id in (_CAT_MODULE, _CAT_IMPLANT) or "cargo container" in gn or "deployable" in gn
     if "ammunition" in n:
         return cat_id == _CAT_CHARGE
@@ -335,10 +525,9 @@ def _rig_applies(rig_name: str, cat_id: Optional[int], group_name: str) -> bool:
         return cat_id in (_CAT_DRONE, _CAT_FIGHTER)
     if "capital component" in n:
         return "component" in gn
-    if "component" in n:  # Advanced/T2/T3 Components, Tools, Data Interfaces
+    if "component" in n:
         return "component" in gn or "tool" in gn or "data interface" in gn
     if "structure" in n:
-        # Structure Components/Modules, Upwell & Starbase Structures, Fuel Blocks
         return (cat_id in (_CAT_UPWELL, _CAT_STRUCT_MODULE, _CAT_POS_STRUCT)
                 or "fuel block" in gn or "structure" in gn or "component" in gn)
     if "ship" in n:
@@ -385,7 +574,6 @@ async def facility_bonuses(
         cat_id = grp.category_id if grp else None
         group_name = grp.group_name if grp else None
 
-        # batch the per-rig SDE lookups (was a query per rig — N+1)
         rig_types = {t.type_id: t for t in
                      eve_db.query(EveType).filter(EveType.type_id.in_(rig_ids or [-1])).all()}
         rig_bonuses = {rb.type_id: rb for rb in
@@ -435,7 +623,7 @@ async def facility_bonuses(
         eve_db.close()
 
 
-# ─── Production Job CRUD ────────────────────────────────────────────────────
+# Production Job CRUD
 
 @router.get("/jobs", response_model=List[JobOut])
 async def list_jobs(
@@ -499,7 +687,7 @@ async def delete_job(
     db.commit()
 
 
-# ─── Inventory LIFO/FIFO analysis ───────────────────────────────────────────
+# Inventory LIFO/FIFO analysis
 
 @router.get("/inventory-analysis")
 async def inventory_analysis(
@@ -567,7 +755,7 @@ async def inventory_analysis(
     return {"method": method.upper(), "items": result}
 
 
-# ─── Warehouse availability + material write-off ────────────────────────────
+# Warehouse availability + material write-off
 
 class MatNeed(BaseModel):
     type_id: Optional[int] = None

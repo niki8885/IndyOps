@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
+import logoSrc from '../assets/logo.png'
 import { useAuth } from '../store/AuthContext'
 import { get, post } from '../api/client'
 
@@ -41,7 +42,7 @@ export default function Layout() {
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       {/* top bar */}
       <header style={s.header}>
-        <span style={s.logo}>INDY<span style={{ color: 'var(--accent)' }}>OPS</span></span>
+        <img src={logoSrc} alt="IndyOps" style={s.logo} />
         <nav style={s.nav}>
           {NAV.map(n => (
             <NavLink
@@ -100,8 +101,7 @@ const s = {
     flexShrink: 0,
   },
   logo: {
-    fontSize: 18, fontWeight: 700, letterSpacing: 3,
-    color: 'var(--text-white)', whiteSpace: 'nowrap',
+    height: 32, width: 'auto', display: 'block', flexShrink: 0,
   },
   nav: { display: 'flex', gap: 4, flex: 1 },
   navLink: {

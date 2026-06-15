@@ -1,0 +1,33 @@
+cabal-version:      2.4
+name:               chain-engine
+version:            0.1.0
+synopsis:           Recursive make-vs-buy chain solver (Haskell port of services/chain.py)
+build-type:         Simple
+
+
+common warnings
+    ghc-options: -Wall -O2
+
+library
+    import:           warnings
+    hs-source-dirs:   src
+    exposed-modules:  Json
+                      Chain.Types
+                      Chain.Solver
+    build-depends:    base >=4.14, containers, mtl
+    default-language: Haskell2010
+
+executable chain-engine
+    import:           warnings
+    main-is:          Main.hs
+    hs-source-dirs:   app
+    build-depends:    base, containers, mtl, chain-engine
+    default-language: Haskell2010
+
+test-suite chain-engine-tests
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    hs-source-dirs:   tests
+    build-depends:    base, containers, mtl, chain-engine
+    default-language: Haskell2010

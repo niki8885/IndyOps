@@ -5,6 +5,8 @@
       <sourceFolder url="file://$MODULE_DIR$/backend" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/ref" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/backend/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/backend/backend/.venv" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.12 (IndyOps)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

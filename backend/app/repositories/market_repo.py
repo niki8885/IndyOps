@@ -1,14 +1,5 @@
-"""
-Columnar access to the ever-growing market tables.
-
-Returns pandas DataFrames, never row-ORM objects, so the service layer consumes
-columnar data (0.5). These are the hot, unbounded tables (track_prices,
-market_index_snapshots).
-"""
 from __future__ import annotations
-
 import pandas as pd
-
 from app.core.database import MarketIndexSnapshot, TrackPrice
 
 _INDEX_COLS = ["timestamp", "price", "volume", "top3_share", "h_index", "entropy", "liquidity"]
