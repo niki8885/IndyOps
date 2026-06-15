@@ -48,12 +48,29 @@ class Organisation(Base):
     org_type = Column(String(20), nullable=False, default=OrganisationType.PERSONAL.value)
     corporation_id = Column(Integer, nullable=True)  # real in-game corp ID
     corporation_name = Column(String(200), nullable=True)
+    is_public = Column(Boolean, nullable=False, default=False, server_default="false")
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     owner_user = relationship("UserDB", back_populates="organisations")
     employees = relationship("Employee", back_populates="organisation")
     projects = relationship("Projects", back_populates="organisation")
+    members = relationship("OrganisationMember", back_populates="organisation", cascade="all, delete-orphan")
+
+
+class OrganisationMember(Base):
+    """Links an IndyOps user to an org they have joined (distinct from EVE characters / employees)."""
+    __tablename__ = "organisation_members"
+    __table_args__ = (UniqueConstraint("org_id", "user_id"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String(20), nullable=False, default="JUNIOR")
+    joined_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    organisation = relationship("Organisation", back_populates="members")
+    member_user = relationship("UserDB")
 
 
 class Employee(Base):
@@ -350,6 +367,16 @@ _MIGRATIONS = [
     # SQLAlchemy stores enum .name (uppercase); add those variants too
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'ATHANOR'",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'TATARA'",
+    # org public flag + user membership table
+    "ALTER TABLE organisations ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE",
+    """CREATE TABLE IF NOT EXISTS organisation_members (
+        id SERIAL PRIMARY KEY,
+        org_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role VARCHAR(20) NOT NULL DEFAULT 'JUNIOR',
+        joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(org_id, user_id)
+    )""",
     # track_prices: one composite index replaces the 3 single-column ones
     "CREATE INDEX IF NOT EXISTS ix_track_prices_type_place_ts ON track_prices (type_id, place_id, timestamp)",
     "DROP INDEX IF EXISTS ix_track_prices_type_id",
