@@ -4,6 +4,7 @@ import SystemSearch from '../components/SystemSearch'
 import TypeSearch from '../components/TypeSearch'
 
 const TYPES = ['Raitaru', 'Azbel', 'Sotiyo', 'Athanor', 'Tatara', 'Other']
+const REACTION_TYPES = new Set(['Athanor', 'Tatara'])
 
 const TYPE_COLOR = {
   Raitaru: '#4caf7d',
@@ -32,6 +33,7 @@ export default function FacilitiesPage() {
   const [filter, setFilter]         = useState('')
   const [sciLoading, setSciLoading] = useState(false)
   const [sciInfo, setSciInfo]       = useState('')
+  const [sciRaw, setSciRaw]         = useState(null)   // {manufacturing, reaction} from ESI
   const [orgs, setOrgs]             = useState([])
 
   async function load() {
@@ -52,6 +54,7 @@ export default function FacilitiesPage() {
     setForm(EMPTY_FORM)
     setError('')
     setSciInfo('')
+    setSciRaw(null)
     setShowForm(true)
   }
 
@@ -71,6 +74,7 @@ export default function FacilitiesPage() {
     })
     setError('')
     setSciInfo('')
+    setSciRaw(null)
     setShowForm(true)
   }
 
@@ -116,17 +120,27 @@ export default function FacilitiesPage() {
   const set = k => v => setForm(f => ({ ...f, [k]: v }))
   const setInput = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
 
-  async function fetchSci(systemName) {
+  function applySci(raw, facilityType) {
+    if (!raw) return
+    const isReaction = REACTION_TYPES.has(facilityType)
+    const sci = isReaction ? raw.reaction : raw.manufacturing
+    if (sci != null) {
+      setForm(f => ({ ...f, system_cost_index: sci }))
+    }
+    const mLabel = raw.manufacturing != null ? `${(raw.manufacturing * 100).toFixed(2)}% manufacturing` : null
+    const rLabel = raw.reaction != null ? `${(raw.reaction * 100).toFixed(2)}% reaction` : null
+    setSciInfo(sci != null
+      ? `✓ ${[mLabel, rLabel].filter(Boolean).join(' · ')}`
+      : 'No cost index for this system/type')
+  }
+
+  async function fetchSci(systemName, facilityType) {
     if (!systemName) return
     setSciLoading(true); setSciInfo('')
     try {
       const r = await get(`/eve/industry/cost-index?system_name=${encodeURIComponent(systemName)}`)
-      if (r.manufacturing != null) {
-        setForm(f => ({ ...f, system_cost_index: r.manufacturing }))
-        setSciInfo(`✓ ${(r.manufacturing * 100).toFixed(2)}% manufacturing${r.reaction != null ? ` · ${(r.reaction * 100).toFixed(2)}% reaction` : ''}`)
-      } else {
-        setSciInfo('No manufacturing index for this system')
-      }
+      setSciRaw(r)
+      applySci(r, facilityType)
     } catch (e) {
       setSciInfo('⚠ ' + e.message)
     } finally {
@@ -138,7 +152,15 @@ export default function FacilitiesPage() {
   function onSystemChange(name) {
     setForm(f => ({ ...f, system_name: name }))
     setSciInfo('')
-    if (name) fetchSci(name)
+    setSciRaw(null)
+    if (name) fetchSci(name, form.facility_type)
+  }
+
+  // when facility type changes, re-apply the cached SCI (reaction vs manufacturing)
+  function onTypeChange(e) {
+    const t = e.target.value
+    setForm(f => ({ ...f, facility_type: t }))
+    if (sciRaw) applySci(sciRaw, t)
   }
 
   return (
@@ -169,7 +191,7 @@ export default function FacilitiesPage() {
               </div>
               <div>
                 <Label>Type</Label>
-                <select value={form.facility_type} onChange={setInput('facility_type')}>
+                <select value={form.facility_type} onChange={onTypeChange}>
                   {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>

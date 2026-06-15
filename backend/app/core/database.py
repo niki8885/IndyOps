@@ -347,6 +347,9 @@ _MIGRATIONS = [
     "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS sale_price DOUBLE PRECISION",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Athanor'",
     "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'Tatara'",
+    # SQLAlchemy stores enum .name (uppercase); add those variants too
+    "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'ATHANOR'",
+    "ALTER TYPE facilitytype ADD VALUE IF NOT EXISTS 'TATARA'",
     # track_prices: one composite index replaces the 3 single-column ones
     "CREATE INDEX IF NOT EXISTS ix_track_prices_type_place_ts ON track_prices (type_id, place_id, timestamp)",
     "DROP INDEX IF EXISTS ix_track_prices_type_id",

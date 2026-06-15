@@ -1274,61 +1274,97 @@ function ChainTab() {
           </Section>
 
           {/* ── Production plan ── */}
-          {plan.jobs.length > 0 && (
-            <Section title={`Production plan — ${plan.jobs.length} jobs`}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Item</th><th>Type</th><th>Runs</th>
-                    <th>Qty to produce</th><th>Time</th><th>Produce at</th><th>Slot</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {plan.jobs.map((j, i) => {
-                    const bounced = hasAssign && boughtIdx.has(i)
-                    return (
-                      <tr key={i} style={{ opacity: bounced ? 0.55 : 1 }}>
-                        <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{j.name}</td>
-                        <td style={{ fontSize: 12 }}>{j.activity === 11 ? 'Reaction' : 'Manuf.'}</td>
-                        <td>{j.runs.toLocaleString()}</td>
-                        <td style={{ color: bounced ? 'var(--text)' : 'var(--accent)', fontWeight: bounced ? 400 : 600 }}>
-                          {j.qty_out.toLocaleString()}
-                        </td>
-                        <td style={{ fontSize: 12, color: 'var(--text)' }}>{fmtTime(j.time_s)}</td>
-                        <td style={{ fontSize: 12, color: bounced ? '#e0884f' : 'var(--text-white)' }}>
-                          {bounced ? '↩ buy instead' : (j.place_name || j.place_id || '—')}
-                        </td>
-                        <td>
-                          {hasAssign
-                            ? (bounced
-                              ? <span style={{ color: '#e0884f', fontSize: 11 }}>↩ bought</span>
-                              : <span style={{ color: '#4caf7d', fontSize: 11 }}>● in-house</span>)
-                            : <span style={{ fontSize: 11, color: 'var(--text)' }}>{j.slot_kind}</span>}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </Section>
-          )}
+          {plan.jobs.length > 0 && (() => {
+            // build deliver-to map: shopping item → which factories need it
+            const shopTo = {}
+            plan.jobs.forEach((j, i) => {
+              if (hasAssign && boughtIdx.has(i)) return
+              const factory = j.place_name || String(j.place_id) || '?'
+              ;(j.inputs || []).forEach(inp => {
+                if (!inp.is_make) {
+                  if (!shopTo[inp.type_id]) shopTo[inp.type_id] = new Set()
+                  shopTo[inp.type_id].add(factory)
+                }
+              })
+            })
+            const distinctFactories = new Set(
+              plan.jobs.filter((_, i) => !(hasAssign && boughtIdx.has(i))).map(j => j.place_name || j.place_id)
+            )
+            const multiFactory = distinctFactories.size > 1
 
-          {/* ── Shopping list ── */}
-          {shopping.length > 0 && (
-            <Section title={`Shopping list — ${shopping.length} items`}>
-              <table>
-                <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead>
-                <tbody>
-                  {shopping.map(s => (
-                    <tr key={s.type_id}>
-                      <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{s.name}</td>
-                      <td>{s.qty.toLocaleString()}</td>
-                      <td>{fmtIsk(s.unit)}</td>
-                      <td style={{ color: 'var(--accent)' }}>{fmtIsk(s.total)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            return (
+              <>
+                <Section title={`Production plan — ${plan.jobs.length} jobs`}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Item</th><th>Runs</th><th>Qty to produce</th><th>Time</th>
+                        <th>Factory</th><th>Slot</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {plan.jobs.map((j, i) => {
+                        const bounced = hasAssign && boughtIdx.has(i)
+                        const factoryLabel = j.place_name || (j.place_id ? `#${j.place_id}` : null)
+                        const typeTag = j.activity === 11 ? 'R' : 'M'
+                        return (
+                          <tr key={i} style={{ opacity: bounced ? 0.55 : 1 }}>
+                            <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{j.name}</td>
+                            <td>{j.runs.toLocaleString()}</td>
+                            <td style={{ color: bounced ? 'var(--text)' : 'var(--accent)', fontWeight: bounced ? 400 : 600 }}>
+                              {j.qty_out.toLocaleString()}
+                            </td>
+                            <td style={{ fontSize: 12, color: 'var(--text)' }}>{fmtTime(j.time_s)}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>
+                              {bounced
+                                ? <span style={{ color: '#e0884f', fontSize: 12 }}>↩ buy instead</span>
+                                : factoryLabel
+                                  ? <><span style={{ color: 'var(--text-white)', fontSize: 12 }}>{factoryLabel}</span>
+                                      <span style={{ fontSize: 10, color: 'var(--text)', marginLeft: 5,
+                                        background: 'var(--surface3)', padding: '1px 4px', borderRadius: 3 }}>{typeTag}</span>
+                                    </>
+                                  : <span style={{ fontSize: 12, color: 'var(--text)' }}>{j.activity === 11 ? 'Reaction' : 'Manufacturing'}</span>}
+                            </td>
+                            <td>
+                              {hasAssign
+                                ? (bounced
+                                  ? <span style={{ color: '#e0884f', fontSize: 11 }}>↩ bought</span>
+                                  : <span style={{ color: '#4caf7d', fontSize: 11 }}>● in-house</span>)
+                                : <span style={{ fontSize: 11, color: 'var(--text)' }}>{j.slot_kind}</span>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </Section>
+
+                {/* ── Shopping list ── */}
+                {shopping.length > 0 && (
+                  <Section title={`Shopping list — ${shopping.length} items`}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Item</th><th>Qty</th><th>Unit</th><th>Total</th>
+                          {multiFactory && <th>Deliver to</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shopping.map(s => (
+                          <tr key={s.type_id}>
+                            <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{s.name}</td>
+                            <td>{s.qty.toLocaleString()}</td>
+                            <td>{fmtIsk(s.unit)}</td>
+                            <td style={{ color: 'var(--accent)' }}>{fmtIsk(s.total)}</td>
+                            {multiFactory && (
+                              <td style={{ fontSize: 11, color: 'var(--text)', whiteSpace: 'nowrap' }}>
+                                {[...(shopTo[s.type_id] || [])].join(', ') || '—'}
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
               <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                   <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>🛒 Multibuy (paste into EVE)</span>
@@ -1337,10 +1373,13 @@ function ChainTab() {
                 <textarea readOnly value={shopText} rows={Math.min(shopping.length, 10)}
                   style={{ fontFamily: 'monospace', fontSize: 12, width: '100%' }} />
               </div>
-            </Section>
-          )}
-        </>
-      )}
+                </Section>
+              )}
+            </>
+          )
+        })()}
+      </>
+    )}
     </div>
   )
 }
@@ -1364,12 +1403,26 @@ function _chainPdfHtml(product, plan, result, totalCost, sellPrice, totalSell, p
     return h ? `${h}h ${m}m` : `${m}m`
   }
 
-  // group jobs by facility
+  // group jobs by facility (exclude bounced-to-buy)
   const byFacility = {}
   jobs.forEach(j => {
-    const key = j.place_name || String(j.place_id) || 'Unassigned'
+    const key = j.place_name || (j.place_id ? `#${j.place_id}` : 'Unassigned')
     ;(byFacility[key] = byFacility[key] || []).push(j)
   })
+
+  // deliver-to map for shopping list
+  const shopTo = {}
+  jobs.forEach(j => {
+    const factory = j.place_name || (j.place_id ? `#${j.place_id}` : null)
+    if (!factory) return
+    ;(j.inputs || []).forEach(inp => {
+      if (!inp.is_make) {
+        if (!shopTo[inp.type_id]) shopTo[inp.type_id] = new Set()
+        shopTo[inp.type_id].add(factory)
+      }
+    })
+  })
+  const multiFactory = new Set(jobs.map(j => j.place_name || j.place_id)).size > 1
 
   const profitColor = profit >= 0 ? '#1a7a3c' : '#9b1c1c'
 
@@ -1380,16 +1433,17 @@ function _chainPdfHtml(product, plan, result, totalCost, sellPrice, totalSell, p
   body{font-family:Arial,sans-serif;font-size:12px;color:#222;margin:20px;max-width:960px}
   h1{font-size:20px;margin-bottom:2px}
   h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #ccc;padding-bottom:3px;color:#333}
-  h3{font-size:12px;margin:12px 0 4px;color:#555}
+  h3{font-size:12px;margin:12px 0 4px;color:#555;background:#f9f9f9;padding:4px 8px;border-left:3px solid #c8a951}
   table{width:100%;border-collapse:collapse;margin-bottom:10px}
   th{background:#f4f4f4;text-align:left;padding:5px 8px;font-size:11px;border-bottom:2px solid #ddd}
   td{padding:4px 8px;border-bottom:1px solid #eee}
+  .tag{display:inline-block;font-size:9px;padding:1px 4px;border-radius:2px;background:#e8e8e8;color:#555;margin-left:4px}
   .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}
   .stat{padding:10px;border:1px solid #ddd;border-radius:5px}
   .stat-label{font-size:10px;color:#666;margin-bottom:2px}
   .stat-value{font-weight:700;font-size:15px}
   .make{color:#1a7a3c}.buy{color:#1a5c9b}.na{color:#9b1c1c}
-  @media print{@page{margin:12mm}button{display:none}}
+  @media print{@page{margin:12mm}}
 </style>
 </head>
 <body>
@@ -1409,11 +1463,10 @@ function _chainPdfHtml(product, plan, result, totalCost, sellPrice, totalSell, p
 ${Object.entries(byFacility).map(([place, pjobs]) => `
 <h3>@ ${place}</h3>
 <table>
-<thead><tr><th>Item</th><th>Activity</th><th>Runs</th><th>Qty to produce</th><th>Time</th></tr></thead>
+<thead><tr><th>Item</th><th>Runs</th><th>Qty to produce</th><th>Time</th></tr></thead>
 <tbody>
 ${pjobs.map(j => `<tr>
-  <td>${j.name}</td>
-  <td>${j.activity === 11 ? 'Reaction' : 'Manufacturing'}</td>
+  <td>${j.name}<span class="tag">${j.activity === 11 ? 'R' : 'M'}</span></td>
   <td>${j.runs.toLocaleString()}</td>
   <td><b>${j.qty_out.toLocaleString()}</b></td>
   <td>${fmtT(j.time_s)}</td>
@@ -1424,13 +1477,14 @@ ${pjobs.map(j => `<tr>
 ${shopping.length ? `
 <h2>Shopping List — Items to Buy</h2>
 <table>
-<thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead>
+<thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th>${multiFactory ? '<th>Deliver to</th>' : ''}</tr></thead>
 <tbody>
 ${shopping.map(s => `<tr>
   <td>${s.name}</td>
   <td>${s.qty.toLocaleString()}</td>
   <td>${isk(s.unit)}</td>
   <td><b>${isk(s.total)}</b></td>
+  ${multiFactory ? `<td style="font-size:11px;color:#555">${[...(shopTo[s.type_id] || [])].join(', ') || '—'}</td>` : ''}
 </tr>`).join('')}
 </tbody>
 </table>` : ''}
