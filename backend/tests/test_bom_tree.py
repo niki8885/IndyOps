@@ -55,9 +55,9 @@ def test_bom_tree_is_batched_per_level(eve_session, query_counter):
     _seed_two_tier(eve_session)
     query_counter.reset()
     eve_repo.bom_tree(eve_session, 2000)
-    # 3 levels (hull / comp+min / moon) + one batched name lookup. Constant in the
-    # number of materials per tier — adding a 4th input would NOT add a query.
-    assert query_counter.count == 10
+    # 3 levels (hull / comp+min / moon) + batched name + group lookups. Constant in
+    # the number of materials per tier — adding a 4th input would NOT add a query.
+    assert query_counter.count == 11
 
 
 def test_recipes_for_product_lists_both_activities(eve_session):

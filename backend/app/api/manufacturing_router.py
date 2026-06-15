@@ -1,5 +1,6 @@
 import datetime
-from dataclasses import asdict
+from collections import defaultdict
+from dataclasses import asdict, replace
 from fractions import Fraction
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,15 +15,15 @@ from app.core.schemas import ProductionStatus, ProductionTarget, FacilityType
 from app.core.security import get_current_user
 from app.adapters import chain_engine
 from app.repositories import eve as eve_repo
-from app.services.assignment import Line, MultiJob, Placement, SlotConfig, assign_jobs, assign_multi
 from app.services.chain import LocationParams, PlannedJob, from_bom
 from app.services.costing import plan_fifo
+from app.services.facility_bonus import (
+    EC_COST_ROLE, EC_MATERIAL_ROLE, RigBonus, band_of, effective_bonuses,
+)
 from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_calculation
 
 router = APIRouter()
 
-EC_MATERIAL_ROLE = 1.0
-EC_COST_ROLE = 3.0
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
 
 
@@ -295,7 +296,8 @@ async def calculate(
 # Recursive make-vs-buy chain + slot assignment
 
 class ChainStructure(BaseModel):
-    """One production structure for multi-location placement (OR-Tools picks where)."""
+    """One of the user's facilities for multi-location building. ``place_id`` is the
+    Facility id, so the backend can load its rigs for per-node ME/TE/cost."""
     place_id: int
     name: str = ""
     system_cost_index: float = 0.0      # fraction, e.g. 0.0593
@@ -322,11 +324,14 @@ class ChainCalcRequest(BaseModel):
     structure_discount_pct: float = 0.0
     man_lines: int = 0
     react_lines: int = 0
-    window_hours: float = 24.0
+    window_hours: float = 24.0     # deprecated/ignored — kept for old clients
     max_depth: int = 12
     price_overrides: dict[int, float] = {}
-    # When given, OR-Tools chooses a structure per job across these (multi-location);
-    # otherwise the single reference location (above) is used.
+    # Nodes the user chose to skip making (force buy): their recipes are dropped so
+    # the core can only buy them. Lets the chain be re-shaped from the graph.
+    force_buy: List[int] = []
+    # The user's facilities. When given, each makeable node is built at the cheapest
+    # eligible one (the core picks per node, using that facility's rigs).
     structures: List[ChainStructure] = []
 
 
@@ -343,15 +348,19 @@ def _market_buy_prices(region_id: int, type_ids: list[int], basis: str) -> dict[
     return out
 
 
-def _market_buy_prices_multi(region_ids: list[int], type_ids: list[int], basis: str) -> dict[int, Optional[float]]:
-    """Take the minimum acquire price across all given Fuzzwork regions."""
+def _market_buy_prices_multi(region_ids: list[int], type_ids: list[int], basis: str):
+    """Minimum acquire price across all given Fuzzwork regions, plus the *winning*
+    region per type so the shopping list can say where to buy each item."""
     merged: dict[int, Optional[float]] = {}
+    source: dict[int, object] = {}     # type_id -> region_id (or "C-J6MT"/"override")
     for rid in region_ids:
         for tid, price in _market_buy_prices(rid, type_ids, basis).items():
             if price is not None:
                 cur = merged.get(tid)
-                merged[tid] = min(cur, price) if cur is not None else price
-    return merged
+                if cur is None or price < cur:
+                    merged[tid] = price
+                    source[tid] = rid
+    return merged, source
 
 
 def _job_dict(j: PlannedJob) -> dict:
@@ -384,42 +393,115 @@ def _to_jsonable(x):
     return x
 
 
-def _multi_jobs(plan, structures: List[ChainStructure], loc: LocationParams) -> list[MultiJob]:
+def _facility_location(s: ChainStructure, f, rigs, band: str,
+                       me_pct: float, te_pct: float) -> LocationParams:
+    """Turn one of the user's facilities into a chain LocationParams.
+
+    Costs/SCI/tax come from the structure payload; ME/TE/cost *rigs* come from the
+    facility's fitted rigs (``rigs``) and are applied per node by the core. The
+    global me_pct/te_pct are the manual base the rigs multiply onto.
     """
-    Per-job placement options across ``structures`` for the multi-location solver.
-    Material quantities (and the BOM flow) stay as the core computed them at the
-    reference location; only install cost varies by structure (job time is held
-    at the reference — inter-structure TE differences are minor). EIV per job is
-    recovered from the reference install cost and rate.
+    is_ec = bool(f and f.facility_type in EC_TYPES)
+    return LocationParams(
+        place_id=s.place_id,
+        place_name=s.name or (getattr(f, "name", None) if f else None) or f"struct {s.place_id}",
+        me_mult=1 - me_pct / 100, te_mult=1 - te_pct / 100,
+        sci=s.system_cost_index, tax=s.facility_tax_pct / 100, scc=SCC_SURCHARGE,
+        struct_discount=s.structure_discount_pct / 100,
+        man_lines=s.man_lines, react_lines=s.react_lines,
+        rigs=tuple(rigs), band=band, is_ec=is_ec,
+        can_man=s.man_lines > 0, can_react=s.react_lines > 0,
+    )
+
+
+def _chain_assignment(plan, facilities: list[LocationParams]) -> dict:
+    """In-house/factory summary derived straight from the core's per-job facility
+    choice — no window, no bounce (make-vs-buy was already decided by cost, and each
+    job already carries its cheapest facility's place_id/place_name).
+
+    Shape matches the old AssignmentResult the UI consumes (in_house/bought/usage…),
+    so the Chain tab needs no special-casing.
     """
-    rate_ref = loc.sci * (1 - loc.struct_discount) + loc.tax + loc.scc
-    mjobs: list[MultiJob] = []
+    man_lines = {f.place_id: f.man_lines for f in facilities}
+    react_lines = {f.place_id: f.react_lines for f in facilities}
+    in_house: list[dict] = []
+    by_line: dict[tuple, dict] = defaultdict(lambda: {"jobs": 0, "used_s": 0})
+    captured = 0.0
     for i, j in enumerate(plan.jobs):
-        eiv_job = float(j.install_cost) / rate_ref if rate_ref else 0.0
-        base = float(j.bpc_cost) + float(j.leaf_material_cost)
-        opts = []
-        for s in structures:
-            lines = s.man_lines if j.slot_kind == "manufacturing" else s.react_lines
-            if lines <= 0:
-                continue  # this structure can't run this job's activity
-            rate_s = (s.system_cost_index * (1 - s.structure_discount_pct / 100)
-                      + s.facility_tax_pct / 100 + SCC_SURCHARGE)
-            opts.append(Placement(s.place_id, s.name or f"struct {s.place_id}",
-                                  j.slot_kind, eiv_job * rate_s + base, j.time_s))
+        in_house.append({
+            "job_index": i, "type_id": j.type_id, "name": j.name,
+            "place_id": j.place_id, "place_name": j.place_name, "slot_kind": j.slot_kind,
+            "in_house": True, "time_s": j.time_s, "cost": round(float(j.make_cost), 2),
+        })
         fb = j.buy_fallback_total
-        mjobs.append(MultiJob(i, j.type_id, j.name, j.slot_kind, j.bounceable,
-                              float(fb) if fb is not None else None, opts))
-    return mjobs
+        if fb is not None:
+            captured += max(0.0, float(fb) - float(j.make_cost))
+        g = by_line[(j.place_id, j.slot_kind)]
+        g["jobs"] += 1
+        g["used_s"] += j.time_s
+    usage = [
+        {"place_id": pid, "slot_kind": kind,
+         "lines": (man_lines if kind == "manufacturing" else react_lines).get(pid, 0),
+         "capacity_s": 0, "used_s": g["used_s"], "jobs": g["jobs"], "forced_s": 0}
+        for (pid, kind), g in by_line.items()
+    ]
+    return {
+        "status": "optimal", "in_house": in_house, "bought": [],
+        "total_cost": round(float(plan.total_cost), 2),
+        "savings_captured": round(captured, 2), "savings_forfeited": 0.0,
+        "usage": usage, "note": "",
+    }
 
 
-def _multi_slotconfig(structures: List[ChainStructure], window_hours: float) -> SlotConfig:
-    lines = []
-    for s in structures:
-        if s.man_lines > 0:
-            lines.append(Line(s.place_id, "manufacturing", s.man_lines))
-        if s.react_lines > 0:
-            lines.append(Line(s.place_id, "reaction", s.react_lines))
-    return SlotConfig(horizon_s=int(window_hours * 3600), lines=lines)
+def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> list[LocationParams]:
+    """Locations the chain may build at: the user's selected facilities (each loaded
+    with its rigs for per-node ME/TE/cost), or a single manual/default location when
+    none are chosen. The default location stays rig-free so its behaviour is unchanged.
+    """
+    if body.structures:
+        fac_ids = [s.place_id for s in body.structures]
+        facs = {f.id: f for f in db.query(Facility).filter(
+            Facility.id.in_(fac_ids or [-1]), Facility.user_id == user_id).all()}
+        eve_db = EveSessionLocal()
+        try:
+            out = []
+            for s in body.structures:
+                f = facs.get(s.place_id)
+                rigs, band, _sec = _facility_rig_context(eve_db, f) if f else ([], "null", None)
+                out.append(_facility_location(s, f, rigs, band, body.me_pct, body.te_pct))
+            return out
+        finally:
+            eve_db.close()
+
+    # single facility (facility_id) or pure-manual default — one location, both activities
+    sci, tax_pct, disc_pct = body.system_cost_index, body.facility_tax_pct, body.structure_discount_pct
+    place_id, place_name = body.place_id, body.place_name
+    rigs, band, is_ec = [], "null", False
+    if body.facility_id:
+        f = db.query(Facility).filter(Facility.id == body.facility_id,
+                                      Facility.user_id == user_id).first()
+        if f:
+            place_id = place_id or f.id
+            place_name = place_name or getattr(f, "name", None) or f.facility_type.value
+            if sci == 0.0 and f.system_cost_index:
+                sci = f.system_cost_index
+            if tax_pct == 0.0 and f.tax:
+                tax_pct = f.tax
+            if disc_pct == 0.0 and f.cost_bonus:
+                disc_pct = f.cost_bonus
+            is_ec = f.facility_type in EC_TYPES
+            eve_db = EveSessionLocal()
+            try:
+                rigs, band, _sec = _facility_rig_context(eve_db, f)
+            finally:
+                eve_db.close()
+    return [LocationParams(
+        place_id=place_id or 1, place_name=place_name or "facility",
+        me_mult=1 - body.me_pct / 100, te_mult=1 - body.te_pct / 100,
+        sci=sci, tax=tax_pct / 100, scc=SCC_SURCHARGE, struct_discount=disc_pct / 100,
+        man_lines=body.man_lines, react_lines=body.react_lines,
+        rigs=tuple(rigs), band=band, is_ec=is_ec,
+    )]
 
 
 @router.post("/calculate-chain")
@@ -430,9 +512,11 @@ async def calculate_chain(
 ):
     """
     Full recursive make-vs-buy over the product's whole build tree (manufacturing
-    + reactions), then a slot assignment that fits the chosen jobs into the
-    current window — bouncing overflow tip-jobs back to "buy". One pass through
-    the two engines; see app.services.chain / app.services.assignment.
+    + reactions). With facilities selected, every makeable node is assigned to the
+    *cheapest* eligible facility by the core itself (each facility's rigs/ME/TE/cost
+    applied per node); no time window — make-vs-buy is decided purely on cost.
+    ``force_buy`` drops a node's recipes so the user can skip making it. One pass
+    through the two engines; see app.services.chain.
     """
     eve_db = EveSessionLocal()
     try:
@@ -446,7 +530,7 @@ async def calculate_chain(
 
     type_ids = list(tree)
     eff_region_ids = body.region_ids if body.region_ids else [body.region_id]
-    buy_prices = _market_buy_prices_multi(eff_region_ids, type_ids, body.price_basis)
+    buy_prices, price_source = _market_buy_prices_multi(eff_region_ids, type_ids, body.price_basis)
 
     if body.include_cj:
         import asyncio
@@ -463,113 +547,77 @@ async def calculate_chain(
                     cur = buy_prices.get(tid)
                     if cur is None or cj_acquire < cur:
                         buy_prices[tid] = cj_acquire
+                        price_source[tid] = "C-J6MT"
 
-    buy_prices.update({int(k): float(v) for k, v in body.price_overrides.items()})
+    for k, v in body.price_overrides.items():
+        buy_prices[int(k)] = float(v)
+        price_source[int(k)] = "override"
+
     try:
         adj = market.esi_adjusted_prices()
     except Exception:
         adj = {}
 
-    sci, tax_pct, disc_pct = body.system_cost_index, body.facility_tax_pct, body.structure_discount_pct
-    place_id, place_name = body.place_id, body.place_name
-    if body.facility_id:
-        f = db.query(Facility).filter(Facility.id == body.facility_id,
-                                      Facility.user_id == current_user.id).first()
-        if f:
-            place_id = place_id or f.id
-            place_name = place_name or getattr(f, "name", None) or f.facility_type.value
-            if sci == 0.0 and f.system_cost_index:
-                sci = f.system_cost_index
-            if tax_pct == 0.0 and f.tax:
-                tax_pct = f.tax
-            if disc_pct == 0.0 and f.cost_bonus:
-                disc_pct = f.cost_bonus
+    facilities = _build_facilities(body, db, current_user.id)
+    req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, facilities)
 
-    loc = LocationParams(
-        place_id=place_id or 1, place_name=place_name or "facility",
-        me_mult=1 - body.me_pct / 100, te_mult=1 - body.te_pct / 100,
-        sci=sci, tax=tax_pct / 100, scc=SCC_SURCHARGE, struct_discount=disc_pct / 100,
-        man_lines=body.man_lines, react_lines=body.react_lines,
-    )
+    # Skip-making (force buy): drop those nodes' recipes so the core can only buy
+    # them. Guard nodes that have nothing to buy — leave them makeable.
+    forced_skipped: list[int] = []
+    for tid in set(body.force_buy):
+        n = req.nodes.get(tid)
+        if not n or not n.recipes:
+            continue
+        if n.buy_price is None:
+            forced_skipped.append(tid)
+            continue
+        req.nodes[tid] = replace(n, recipes=())
 
-    req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, loc)
     plan, engine = chain_engine.solve(req)   # native Haskell core, falls back to Python
-
-    try:
-        if body.structures:                      # multi-location: OR-Tools picks where
-            assignment = assign_multi(_multi_jobs(plan, body.structures, loc),
-                                      _multi_slotconfig(body.structures, body.window_hours))
-        else:                                    # single reference location
-            cfg = SlotConfig(horizon_s=int(body.window_hours * 3600), lines=[
-                Line(loc.place_id, "manufacturing", body.man_lines),
-                Line(loc.place_id, "reaction", body.react_lines),
-            ])
-            assignment = assign_jobs(plan.jobs, cfg)
-        assignment_out = asdict(assignment)
-        final_cost = (round(plan.total_cost + assignment.savings_forfeited, 2)
-                      if assignment.status != "infeasible" else None)
-    except RuntimeError as exc:        # ortools unavailable — still return the plan
-        assignment_out = {"status": "unavailable", "note": str(exc)}
-        final_cost = None
 
     return _to_jsonable({
         "plan": _plan_dict(plan),
-        "assignment": assignment_out,
-        "final_cost": final_cost,
+        "assignment": _chain_assignment(plan, facilities),
+        "final_cost": round(float(plan.total_cost), 2),
         "engine": engine,
-        "multi_location": bool(body.structures),
+        "multi_location": len(facilities) > 1,
         "price_basis": body.price_basis,
+        "price_source": {str(t): src for t, src in price_source.items()},
+        "force_buy_skipped": forced_skipped,
     })
 
 
 # Facility rig bonuses
 
-_CAT_SHIP, _CAT_MODULE, _CAT_CHARGE, _CAT_DRONE = 6, 7, 8, 18
-_CAT_IMPLANT, _CAT_FIGHTER, _CAT_POS_STRUCT = 20, 87, 23
-_CAT_UPWELL, _CAT_STRUCT_MODULE = 65, 66
+def _facility_rig_context(eve_db, f) -> tuple[list[RigBonus], str, Optional[float]]:
+    """A facility's fitted rigs (as RigBonus) + its system security band + security.
 
-
-def _ship_size(group_name: str) -> Optional[str]:
-    g = (group_name or "").lower()
-    if any(k in g for k in ("frigate", "destroyer", "shuttle", "corvette", "capsule")):
-        return "small"
-    if any(k in g for k in ("cruiser", "battlecruiser")):
-        return "medium"
-    if any(k in g for k in ("battleship", "freighter", "dreadnought", "carrier",
-                            "capital", "titan", "supercarrier", "industrial ship")):
-        return "large"
-    return None
-
-
-def _rig_applies(rig_name: str, cat_id: Optional[int], group_name: str) -> bool:
+    One SDE round-trip; reused by the /facility-bonuses endpoint and the chain
+    wiring so a facility's rigs are read the same way everywhere.
     """
-    Match an engineering rig to a product, based on the official affected-category
-    lists from the SDE rig multiplier attribute descriptions.
-    """
-    n = (rig_name or "").lower()
-    gn = (group_name or "").lower()
-    if "equipment" in n:
-        return cat_id in (_CAT_MODULE, _CAT_IMPLANT) or "cargo container" in gn or "deployable" in gn
-    if "ammunition" in n:
-        return cat_id == _CAT_CHARGE
-    if "drone" in n or "fighter" in n:
-        return cat_id in (_CAT_DRONE, _CAT_FIGHTER)
-    if "capital component" in n:
-        return "component" in gn
-    if "component" in n:
-        return "component" in gn or "tool" in gn or "data interface" in gn
-    if "structure" in n:
-        return (cat_id in (_CAT_UPWELL, _CAT_STRUCT_MODULE, _CAT_POS_STRUCT)
-                or "fuel block" in gn or "structure" in gn or "component" in gn)
-    if "ship" in n:
-        if cat_id != _CAT_SHIP:
-            return False
-        size = _ship_size(group_name)
-        if "small" in n:  return size == "small"
-        if "medium" in n: return size == "medium"
-        if "large" in n:  return size == "large"
-        return True
-    return False
+    rig_ids = [r for r in (f.rig1_type_id, f.rig2_type_id, f.rig3_type_id) if r]
+    sec = None
+    if f.system_name:
+        sysrow = eve_db.query(EveSolarSystem).filter(
+            EveSolarSystem.solar_system_name.ilike(f.system_name.strip())
+        ).first()
+        sec = sysrow.security if sysrow else None
+
+    rig_types = {t.type_id: t for t in
+                 eve_db.query(EveType).filter(EveType.type_id.in_(rig_ids or [-1])).all()}
+    rig_bonuses = {rb.type_id: rb for rb in
+                   eve_db.query(EveRigBonus).filter(EveRigBonus.type_id.in_(rig_ids or [-1])).all()}
+    rigs: list[RigBonus] = []
+    for rid in rig_ids:
+        t = rig_types.get(rid)
+        name = t.type_name if t else str(rid)
+        rb = rig_bonuses.get(rid)
+        if rb:
+            rigs.append(RigBonus(rid, name, rb.me_bonus, rb.te_bonus, rb.cost_bonus,
+                                 rb.hisec_mod, rb.lowsec_mod, rb.nullsec_mod))
+        else:
+            rigs.append(RigBonus(rid, name, has_industry_bonus=False))
+    return rigs, band_of(sec), sec
 
 
 @router.get("/facility-bonuses")
@@ -588,48 +636,16 @@ async def facility_bonuses(
     if not f:
         raise HTTPException(404, "Facility not found")
 
-    rig_ids = [r for r in (f.rig1_type_id, f.rig2_type_id, f.rig3_type_id) if r]
-
     eve_db = EveSessionLocal()
     try:
-        sec = None
-        if f.system_name:
-            sysrow = eve_db.query(EveSolarSystem).filter(
-                EveSolarSystem.solar_system_name.ilike(f.system_name.strip())
-            ).first()
-            sec = sysrow.security if sysrow else None
-        band = "hi" if (sec is not None and sec >= 0.45) else "low" if (sec is not None and sec > 0.0) else "null"
+        rigs, band, sec = _facility_rig_context(eve_db, f)
 
         prod = eve_db.query(EveType).filter(EveType.type_id == product_type_id).first()
         grp = eve_db.query(EveGroup).filter(EveGroup.group_id == prod.group_id).first() if prod else None
         cat_id = grp.category_id if grp else None
         group_name = grp.group_name if grp else None
 
-        rig_types = {t.type_id: t for t in
-                     eve_db.query(EveType).filter(EveType.type_id.in_(rig_ids or [-1])).all()}
-        rig_bonuses = {rb.type_id: rb for rb in
-                       eve_db.query(EveRigBonus).filter(EveRigBonus.type_id.in_(rig_ids or [-1])).all()}
-
-        rigs_out, tot_me, tot_te, tot_cost = [], 0.0, 0.0, 0.0
-        for rid in rig_ids:
-            t = rig_types.get(rid)
-            rb = rig_bonuses.get(rid)
-            name = t.type_name if t else str(rid)
-            if not rb:
-                rigs_out.append({"type_id": rid, "name": name, "applies": False, "reason": "no industry bonus"})
-                continue
-            mod = {"hi": rb.hisec_mod, "low": rb.lowsec_mod, "null": rb.nullsec_mod}[band] or 1.0
-            applies = _rig_applies(name, cat_id, group_name)
-            eff_me, eff_te, eff_cost = abs(rb.me_bonus or 0) * mod, abs(rb.te_bonus or 0) * mod, abs(
-                rb.cost_bonus or 0) * mod
-            if applies:
-                tot_me += eff_me;
-                tot_te += eff_te;
-                tot_cost += eff_cost
-            rigs_out.append({
-                "type_id": rid, "name": name, "applies": applies,
-                "me_pct": round(eff_me, 2), "te_pct": round(eff_te, 2), "cost_pct": round(eff_cost, 2),
-            })
+        eff = effective_bonuses(rigs, band, cat_id, group_name)
 
         is_ec = f.facility_type in EC_TYPES
         structure_role = {
@@ -644,11 +660,11 @@ async def facility_bonuses(
             "facility_type": f.facility_type.value,
             "security": sec, "band": band,
             "product_category_id": cat_id, "product_group": group_name,
-            "total_me_pct": round(tot_me, 2),
-            "total_te_pct": round(tot_te, 2),
-            "total_cost_pct": round(tot_cost, 2),
+            "total_me_pct": round(eff.me_pct, 2),
+            "total_te_pct": round(eff.te_pct, 2),
+            "total_cost_pct": round(eff.cost_pct, 2),
             "structure_role": structure_role,
-            "rigs": rigs_out,
+            "rigs": eff.rigs,
         }
     finally:
         eve_db.close()

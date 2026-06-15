@@ -6,6 +6,7 @@ import requests as _requests
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveRegion, EveGroup
 from app.core.database import UserDB
@@ -118,14 +119,24 @@ async def get_volumes(
 @router.get("/types/search", response_model=list[TypeOut])
 async def search_types(
         q: str = Query(..., min_length=2),
-        limit: int = Query(10, le=30),
+        limit: int = Query(25, le=50),
         eve_db: Session = Depends(_get_eve_db),
 ):
+    # Relevance ranking: exact name → prefix → substring, then published items
+    # first. Plain "Raven" must beat its blueprint / Navy-Issue / SKIN variants,
+    # which a flat alphabetical order + small LIMIT used to bury.
+    q_lower = q.strip().lower()
+    name_rank = case(
+        (func.lower(EveType.type_name) == q_lower, 0),
+        (EveType.type_name.ilike(f"{q}%"), 1),
+        else_=2,
+    )
+    pub_rank = case((EveType.published.is_(True), 0), else_=1)
     rows = (
         eve_db.query(EveType, EveGroup.group_name)
         .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
         .filter(EveType.type_name.ilike(f"%{q}%"))
-        .order_by(EveType.type_name)
+        .order_by(name_rank, pub_rank, func.length(EveType.type_name), EveType.type_name)
         .limit(limit)
         .all()
     )

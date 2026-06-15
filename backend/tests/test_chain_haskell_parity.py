@@ -84,6 +84,18 @@ def _req_messy_rationals():
     })
 
 
+def _req_multi_location():
+    # One recipe offered at two structures; the cheaper (place 20, 3% discount) must
+    # win in BOTH engines — proves multi-location place_id selection stays in parity.
+    loc1 = _loc(10, sci=0.05, tax=0.01, scc=0.04, eiv_unit=1000.0)
+    loc2 = _loc(20, sci=0.05, tax=0.01, scc=0.04, struct_discount=0.03, eiv_unit=1000.0)
+    rec = Recipe(1, 9000, 1, 600, ((3, 100),), (loc1, loc2), 100)
+    return ChainRequest(1, 4, {
+        1: Node(1, "W", 1e9, (rec,)),
+        3: Node(3, "RAW", 5.0),
+    })
+
+
 REQUESTS = {
     "two_tier": _req_two_tier,
     "install_me_scc": _req_install_me_scc,
@@ -91,6 +103,7 @@ REQUESTS = {
     "shared_dag": _req_shared_dag,
     "buy_beats_make": _req_buy_beats_make,
     "messy_rationals": _req_messy_rationals,
+    "multi_location": _req_multi_location,
 }
 
 

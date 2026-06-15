@@ -9,7 +9,7 @@ from app.core.database_eve import (
     EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint, EveType,
 )
 from app.repositories import eve as eve_repo
-from app.services.assignment import Line, SlotConfig, assign_jobs, assign_multi
+from app.services.assignment import Line, SlotConfig, assign_jobs
 from app.services.chain import LocationParams, Node, Recipe, RecipeLocation, ChainRequest, from_bom, solve_chain
 
 
@@ -70,27 +70,45 @@ def test_to_jsonable_floats_fractions_for_api():
     assert isinstance(payload["plan"]["total_cost"], float)
 
 
-def test_multi_location_placement_prefers_cheaper_structure():
-    loc = RecipeLocation(1, "ref", "manufacturing", eiv_unit=100.0, sci=0.05, tax=0.01, scc=0.04)
+def test_market_buy_prices_multi_tracks_winning_region(monkeypatch):
+    # Amarr is cheaper than Jita → its region id is recorded as the buy source.
+    def fake(region, ids):
+        return {"34": {"buy": {"percentile": 6.0 if region == 10000002 else 5.0}}}
+    monkeypatch.setattr(market, "fuzzwork_aggregates_or_empty", fake)
+    prices, source = mr._market_buy_prices_multi([10000002, 10000043], [34], "buy")
+    assert prices[34] == 5.0 and source[34] == 10000043
+
+
+def test_chain_assignment_summarises_plan_by_facility():
+    # The assignment summary now comes straight from the core's per-job facility
+    # choice — every job is in-house at its place, nothing bounced.
+    loc = RecipeLocation(10, "Sotiyo", "manufacturing", eiv_unit=100.0, sci=0.05, tax=0.01, scc=0.04)
     nodes = {
         1: Node(1, "W", 1e12, (Recipe(1, 100, 1, 600, ((2, 4),), (loc,), 100),)),
-        2: Node(2, "A", 1e9, (Recipe(1, 101, 1, 300, ((3, 2),), (loc,), 100),)),
-        3: Node(3, "RAW", 5.0),
+        2: Node(2, "RAW", 5.0),
     }
     plan = solve_chain(ChainRequest(1, 3, nodes))
-    ref = LocationParams(1, "ref", sci=0.05, tax=0.01, scc=0.04)
-    structs = [
-        mr.ChainStructure(place_id=10, name="Sotiyo", system_cost_index=0.05, facility_tax_pct=1.0, man_lines=5),
-        mr.ChainStructure(place_id=20, name="Raitaru", system_cost_index=0.05, facility_tax_pct=1.0,
-                          structure_discount_pct=3.0, man_lines=5),  # 3% cost discount → cheaper install
-    ]
-    mjobs = mr._multi_jobs(plan, structs, ref)
-    assert mjobs and all(len(mj.placements) == 2 for mj in mjobs)       # both structures eligible
+    fac = LocationParams(10, "Sotiyo", man_lines=5, sci=0.05, tax=0.01, scc=0.04)
+    asg = mr._chain_assignment(plan, [fac])
+    assert asg["status"] == "optimal" and asg["bought"] == []
+    assert asg["in_house"] and all(a["place_name"] == "Sotiyo" for a in asg["in_house"])
+    assert asg["savings_captured"] >= 0
 
-    res = assign_multi(mjobs, mr._multi_slotconfig(structs, 24))
-    assert res.status in ("optimal", "feasible")
-    assert res.in_house and not res.bought                              # plenty of slots
-    assert all(a.place_id == 20 for a in res.in_house)                  # cheaper structure chosen
+
+def test_force_buy_drops_recipe_in_request():
+    # Dropping a node's recipes (the force-buy path) leaves it buy-only.
+    tree = {
+        1: {"name": "W", "category_id": None, "group_name": None,
+            "recipes": [{"activity": 1, "blueprint_type_id": 100, "qty_per_run": 1,
+                         "base_time": 600, "max_runs": 10, "inputs": [{"type_id": 2, "qty": 4}]}]},
+        2: {"name": "RAW", "category_id": None, "group_name": None, "recipes": []},
+    }
+    from dataclasses import replace
+    req = from_bom(1, 2, tree, {1: 9999.0, 2: 10.0}, {2: 0.0}, LocationParams(1, "P"))
+    req.nodes[1] = replace(req.nodes[1], recipes=())     # what calculate_chain does for force_buy
+    plan = solve_chain(req)
+    assert plan.decisions[1].decision == "buy"
+    assert not plan.jobs
 
 
 def test_full_left_arm_pipeline(eve_session, monkeypatch):

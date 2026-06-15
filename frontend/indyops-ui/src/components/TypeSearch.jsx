@@ -5,6 +5,7 @@ export default function TypeSearch({ value, onChange, placeholder = 'Search item
   const [query, setQuery]   = useState(value?.name || '')
   const [results, setResults] = useState([])
   const [open, setOpen]     = useState(false)
+  const [err, setErr]       = useState('')
   const timer  = useRef(null)
   const wrapRef = useRef(null)
 
@@ -19,15 +20,20 @@ export default function TypeSearch({ value, onChange, placeholder = 'Search item
   function handleInput(e) {
     const q = e.target.value
     setQuery(q)
-    if (!q) { onChange({ type_id: null, name: null }); setResults([]); setOpen(false); return }
+    if (!q) { onChange({ type_id: null, name: null }); setResults([]); setOpen(false); setErr(''); return }
     clearTimeout(timer.current)
     if (q.length < 2) return
     timer.current = setTimeout(async () => {
       try {
         const data = await get(`/eve/types/search?q=${encodeURIComponent(q)}`)
         setResults(data)
+        setErr('')
         setOpen(true)
-      } catch {}
+      } catch (e) {
+        setResults([])
+        setErr(e.message || 'search failed')
+        setOpen(true)
+      }
     }, 250)
   }
 
@@ -36,6 +42,7 @@ export default function TypeSearch({ value, onChange, placeholder = 'Search item
     onChange({ type_id: t.type_id, name: t.type_name })
     setOpen(false)
     setResults([])
+    setErr('')
   }
 
   function clear() {
@@ -43,6 +50,7 @@ export default function TypeSearch({ value, onChange, placeholder = 'Search item
     onChange({ type_id: null, name: null })
     setResults([])
     setOpen(false)
+    setErr('')
   }
 
   return (
@@ -57,6 +65,16 @@ export default function TypeSearch({ value, onChange, placeholder = 'Search item
           >✕</button>
         )}
       </div>
+      {open && results.length === 0 && (err || query.length >= 2) && (
+        <div style={{
+          position: 'absolute', zIndex: 999, width: '100%',
+          background: 'var(--surface2)', border: '1px solid var(--border2)',
+          borderRadius: 4, marginTop: 2, padding: '6px 12px', fontSize: 12,
+          color: err ? '#e05252' : 'var(--text)',
+        }}>
+          {err ? `Search failed: ${err}` : `No items match “${query}”`}
+        </div>
+      )}
       {open && results.length > 0 && (
         <ul style={{
           position: 'absolute', zIndex: 999, width: '100%',

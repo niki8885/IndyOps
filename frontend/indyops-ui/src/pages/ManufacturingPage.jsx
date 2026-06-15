@@ -1,6 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { get, post, patch, del } from '../api/client'
 import TypeSearch from '../components/TypeSearch'
+
+// Plotly (~4MB) only loads when the chain graph actually renders — keeps it out
+// of the eagerly-imported Manufacturing bundle.
+const ChainGraph = lazy(() => import('../components/ChainGraph'))
 
 const TABS = ['Calculator', 'Chain', 'PAK Jobs', 'Inventory Analysis']
 
@@ -853,7 +857,7 @@ function ChainTab() {
     qty: 1, price_basis: 'buy',
     me_pct: 0, te_pct: 0,
     system_cost_index: 0, facility_tax_pct: 0, structure_discount_pct: 0,
-    man_lines: 10, react_lines: 0, window_hours: 24, max_depth: 12,
+    man_lines: 10, react_lines: 0, max_depth: 12,
   })
 
   // ── (1) Buy-price region multi-select ──
@@ -878,12 +882,13 @@ function ChainTab() {
   const [result, setResult]   = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
+  const [forceBuy, setForceBuy] = useState(new Set())   // nodes the user chose to skip making
 
   useEffect(() => {
     get('/facilities').then(fs => {
       setFacilities(fs)
       const checks = {}
-      fs.forEach(f => { checks[f.id] = { checked: false, man: 5, react: 0 } })
+      fs.forEach(f => { checks[f.id] = { checked: false, man: 5, react: 5 } })
       setFacilityChecks(checks)
     }).catch(() => {})
   }, [])
@@ -929,20 +934,33 @@ function ChainTab() {
   }
 
   function toggleFacility(fid, checked) {
-    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { man: 5, react: 0 }), checked } }))
+    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { man: 5, react: 5 }), checked } }))
   }
   function setFacilitySlot(fid, key, val) {
-    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { checked: false, man: 5, react: 0 }), [key]: val } }))
+    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { checked: false, man: 5, react: 5 }), [key]: val } }))
+  }
+  function setAllFacilities(checked) {
+    setFacilityChecks(prev => {
+      const next = { ...prev }
+      facilities.forEach(f => { next[f.id] = { ...(prev[f.id] || { man: 5, react: 5 }), checked } })
+      return next
+    })
+  }
+  // switching to "use my facilities" auto-includes them all (no 20 clicks)
+  function pickFacilityMode(mode) {
+    setFacilityMode(mode)
+    if (mode === 'multi' && !Object.values(facilityChecks).some(c => c?.checked)) setAllFacilities(true)
   }
 
   // manual structures (advanced)
-  const addStruct    = () => setStructures(s => [...s, { place_id: '', name: '', sci: '', tax: '', disc: '', man: 5, react: 0 }])
+  const addStruct    = () => setStructures(s => [...s, { place_id: '', name: '', sci: '', tax: '', disc: '', man: 5, react: 5 }])
   const updateStruct = (i, k) => e => setStructures(s => s.map((st, j) => j === i ? { ...st, [k]: e.target.value } : st))
   const removeStruct = i => setStructures(s => s.filter((_, j) => j !== i))
 
-  async function calculate() {
+  async function calculate(fbSet) {
     if (!product?.type_id) return
-    setLoading(true); setError(''); setResult(null); setSellPrice(null)
+    const fb = fbSet instanceof Set ? fbSet : forceBuy
+    setLoading(true); setError('')
     try {
       const activeStructures = facilityMode === 'multi' ? multiStructures : structures
       const res = await post('/manufacturing/calculate-chain', {
@@ -960,8 +978,8 @@ function ChainTab() {
         structure_discount_pct: Number(params.structure_discount_pct),
         man_lines: Number(params.man_lines),
         react_lines: Number(params.react_lines),
-        window_hours: Number(params.window_hours),
         max_depth: Number(params.max_depth),
+        force_buy: [...fb],
         ...(activeStructures.length ? {
           structures: facilityMode === 'multi'
             ? activeStructures   // already in API format (fractions)
@@ -992,6 +1010,14 @@ function ChainTab() {
 
   const setP = k => e => setParams(p => ({ ...p, [k]: e.target.value }))
 
+  // Toggle skip-make on a node and immediately re-solve the chain with it forced-buy.
+  function toggleSkip(tid) {
+    const next = new Set(forceBuy)
+    next.has(tid) ? next.delete(tid) : next.add(tid)
+    setForceBuy(next)
+    calculate(next)
+  }
+
   const plan      = result?.plan
   const asg       = result?.assignment
   const boughtIdx = new Set((asg?.bought || []).map(a => a.job_index))
@@ -1002,10 +1028,26 @@ function ChainTab() {
   const shopping  = plan?.shopping_list || []
   const shopText  = shopping.map(s => `${s.name}\t${s.qty}`).join('\n')
 
+  // where to buy each shopping item — winning region/source the backend reported
+  const priceSource = result?.price_source || {}
+  const buyAtLabel = tid => {
+    const src = priceSource[tid] ?? priceSource[String(tid)]
+    if (src == null) return '—'
+    if (src === 'C-J6MT') return 'C-J6MT'
+    if (src === 'override') return 'manual'
+    const r = REGIONS.find(r => r.id === Number(src))
+    return r ? r.name.replace(/\s*\(.*\)$/, '') : `region ${src}`
+  }
+
   const totalCost = result?.final_cost ?? plan?.total_cost ?? null
   const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null
   const profit    = totalSell != null && totalCost != null ? totalSell - totalCost : null
   const margin    = profit != null && totalSell ? profit / totalSell * 100 : null
+
+  // estimated wall-clock build time: the busiest (facility, slot) line drives it
+  const buildSeconds = (asg?.usage || []).reduce(
+    (mx, u) => Math.max(mx, (u.used_s || 0) / Math.max(u.lines || 1, 1)), 0)
+  const buildHours = buildSeconds / 3600
 
   function downloadPDF() {
     if (!plan) return
@@ -1026,7 +1068,7 @@ function ChainTab() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px,1fr))', gap: 14 }}>
           <div style={{ gridColumn: '1 / -1' }}>
             <CLabel>Product to build (full chain)</CLabel>
-            <TypeSearch value={product} onChange={t => setProduct(t?.type_id ? t : null)} placeholder="Search product…" />
+            <TypeSearch value={product} onChange={t => { setProduct(t?.type_id ? t : null); setForceBuy(new Set()) }} placeholder="Search product…" />
             <span style={{ fontSize: 11, color: 'var(--text)' }}>
               Whole build tree priced; each node decided make-vs-buy recursively.
             </span>
@@ -1077,7 +1119,6 @@ function ChainTab() {
 
           <NumField label="ME % (manuf.)" value={params.me_pct} onChange={setP('me_pct')} step={0.1} />
           <NumField label="TE %" value={params.te_pct} onChange={setP('te_pct')} step={0.1} />
-          <NumField label="Window (hours)" value={params.window_hours} onChange={setP('window_hours')} min={1} />
           <NumField label="Max depth" value={params.max_depth} onChange={setP('max_depth')} min={1} max={20} />
         </div>
       </div>
@@ -1087,12 +1128,12 @@ function ChainTab() {
         <div style={{ padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Facilities</span>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
-            <input type="radio" name="facilityMode" value="none" checked={facilityMode === 'none'} onChange={() => setFacilityMode('none')} />
+            <input type="radio" name="facilityMode" value="none" checked={facilityMode === 'none'} onChange={() => pickFacilityMode('none')} />
             Default / no buffs
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
-            <input type="radio" name="facilityMode" value="multi" checked={facilityMode === 'multi'} onChange={() => setFacilityMode('multi')} />
-            Use my facilities <Hint>OR-Tools picks best per job</Hint>
+            <input type="radio" name="facilityMode" value="multi" checked={facilityMode === 'multi'} onChange={() => pickFacilityMode('multi')} />
+            Use my facilities <Hint>all selected — each job built at its cheapest</Hint>
           </label>
         </div>
 
@@ -1117,6 +1158,13 @@ function ChainTab() {
         {/* ── multi-facility checklist ── */}
         {facilityMode === 'multi' && (
           <div>
+            {facilities.length > 0 && (
+              <div style={{ padding: '8px 16px', display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid var(--border)' }}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAllFacilities(true)}>Select all</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAllFacilities(false)}>None</button>
+                <span style={{ fontSize: 11, color: 'var(--text)' }}>each job is built at whichever selected facility is cheapest</span>
+              </div>
+            )}
             {facilities.length === 0
               ? <div style={{ padding: 16, color: 'var(--text)', fontSize: 12 }}>No facilities saved yet.</div>
               : (
@@ -1126,7 +1174,7 @@ function ChainTab() {
                   </thead>
                   <tbody>
                     {facilities.map(f => {
-                      const fc = facilityChecks[f.id] || { checked: false, man: 5, react: 0 }
+                      const fc = facilityChecks[f.id] || { checked: false, man: 5, react: 5 }
                       return (
                         <tr key={f.id} style={{ opacity: fc.checked ? 1 : 0.5 }}>
                           <td>
@@ -1155,7 +1203,7 @@ function ChainTab() {
             }
             <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--text)', borderTop: facilities.length ? '1px solid var(--border)' : 'none' }}>
               {multiStructures.length
-                ? `${multiStructures.length} structure${multiStructures.length !== 1 ? 's' : ''} selected — OR-Tools assigns each job to the cheapest available slot`
+                ? `${multiStructures.length} structure${multiStructures.length !== 1 ? 's' : ''} selected — each job is built at whichever is cheapest`
                 : 'Select at least one facility above'}
             </div>
           </div>
@@ -1167,7 +1215,7 @@ function ChainTab() {
         <div className="card" style={{ padding: 0 }}>
           <div style={{ padding: '10px 16px', borderBottom: structures.length ? '1px solid var(--border)' : 'none', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500 }}>Advanced: multi-location structures</span>
-            <Hint>add 2+ → OR-Tools spreads jobs under each structure's slots</Hint>
+            <Hint>add 2+ → each job is built at whichever structure is cheapest</Hint>
             <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={addStruct}>+ Add</button>
           </div>
           {structures.length > 0 && (
@@ -1202,7 +1250,7 @@ function ChainTab() {
         <span style={{ fontSize: 11, color: 'var(--text)' }}>
           {includeCJ ? 'C-J prices take ~5–15 s extra.' : ''}
           {facilityMode === 'multi' && multiStructures.length > 1
-            ? `Multi-location: OR-Tools across ${multiStructures.length} structures.` : ''}
+            ? `Multi-location: each job built at the cheapest of ${multiStructures.length} facilities.` : ''}
         </span>
       </div>
 
@@ -1243,21 +1291,57 @@ function ChainTab() {
                 </div>
               </div>
             </div>
-            {asg && (
+            {asg && hasAssign && (
               <div style={{ padding: '0 12px 12px', fontSize: 12, color: 'var(--text)' }}>
-                {hasAssign
-                  ? <>Assignment <b style={{ color: 'var(--accent)' }}>{asg.status}</b> · in-house {asg.in_house?.length || 0}, bounced {asg.bought?.length || 0} · saved <span style={{ color: '#4caf7d' }}>{fmtIsk(asg.savings_captured)}</span>{asg.savings_forfeited > 0 && <> · forfeited <span style={{ color: '#e05252' }}>{fmtIsk(asg.savings_forfeited)}</span></>}</>
-                  : <>Slot assignment: <b style={{ color: '#e0884f' }}>{asg.status}</b>{asg.note ? ` — ${asg.note}` : ''}</>}
+                Built in-house: <b style={{ color: 'var(--accent)' }}>{asg.in_house?.length || 0}</b> job{(asg.in_house?.length || 0) !== 1 ? 's' : ''}
+                {' · '}saved vs buying <span style={{ color: '#4caf7d' }}>{fmtIsk(asg.savings_captured)}</span>
               </div>
             )}
+          </Section>
+
+          {/* ── Build graph + skip controls ── */}
+          <Section title="Build graph">
+            <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text)', display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+              <LegendDot color="#4caf7d" label="make" />
+              <LegendDot color="#3a9bd6" label="buy (has recipe)" />
+              <LegendDot color="#5a6178" label="raw / leaf" />
+              <LegendDot color="#e0884f" label="skipped" />
+              <span>Click a node to skip making it — the chain re-solves.</span>
+            </div>
+            {forceBuy.size > 0 && (
+              <div style={{ padding: '0 12px 8px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--text)' }}>Skipped:</span>
+                {[...forceBuy].map(tid => (
+                  <button key={tid} type="button" onClick={() => toggleSkip(tid)} className="btn btn-sm"
+                    style={{ background: '#2a1d10', color: '#e0884f', border: '1px solid #5a3d1a', fontSize: 11, padding: '2px 8px' }}>
+                    {plan.decisions[tid]?.name || tid} ✕
+                  </button>
+                ))}
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setForceBuy(new Set()); calculate(new Set()) }}>Reset all</button>
+              </div>
+            )}
+            <Suspense fallback={<div style={{ padding: 16, fontSize: 12, color: 'var(--text)' }}>Loading graph…</div>}>
+              <ChainGraph plan={plan} forceBuy={forceBuy} onSkip={toggleSkip} />
+            </Suspense>
+          </Section>
+
+          {/* ── Analytics: ROI / profit-per-hour / cost pie ── */}
+          <Section title="Analytics">
+            <ChainMetrics plan={plan} totalCost={totalCost} profit={profit} buildHours={buildHours} />
+            <div style={{ borderTop: '1px solid var(--border)' }}>
+              <ChainCostPie plan={plan} />
+            </div>
           </Section>
 
           {/* ── Make vs Buy ── */}
           <Section title={`Make vs Buy — ${decisions.length} nodes`}>
             <table>
-              <thead><tr><th>Item</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th></tr></thead>
+              <thead><tr><th>Item</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th><th>Build?</th></tr></thead>
               <tbody>
-                {[...decisions].sort((a, b) => (b.saved_per_unit || 0) - (a.saved_per_unit || 0)).map(d => (
+                {[...decisions].sort((a, b) => (b.saved_per_unit || 0) - (a.saved_per_unit || 0)).map(d => {
+                  const skipped = forceBuy.has(d.type_id)
+                  const makeable = d.unit_make != null || skipped   // has a recipe we could run
+                  return (
                   <tr key={d.type_id}>
                     <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{d.name}</td>
                     <td><DecisionBadge decision={d.decision} /></td>
@@ -1267,46 +1351,24 @@ function ChainTab() {
                     <td style={{ color: d.saved_per_unit > 0 ? '#4caf7d' : 'var(--text)' }}>
                       {d.saved_per_unit > 0 ? fmtIsk(d.saved_per_unit) : '—'}
                     </td>
+                    <td>
+                      {makeable
+                        ? <input type="checkbox" checked={!skipped} title="uncheck to skip making this (force buy)"
+                            onChange={() => toggleSkip(d.type_id)} />
+                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>}
+                    </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </Section>
 
           {/* ── Production plan ── */}
           {plan.jobs.length > 0 && (() => {
-            // Build job_index → assigned place_name from OR-Tools result (multi-location)
-            const assignedFactory = {}
-            if (hasAssign && result?.multi_location) {
-              ;(asg.in_house || []).forEach(a => {
-                if (a.place_name) assignedFactory[a.job_index] = a.place_name
-              })
-            }
-
-            // Effective factory label for job i
-            const jobFactory = (j, i) => {
-              if (assignedFactory[i]) return assignedFactory[i]
-              if (j.place_name && j.place_name !== 'facility') return j.place_name
-              if (j.place_id && j.place_id !== 1) return `#${j.place_id}`
-              return null
-            }
-
-            // build deliver-to map: shopping item → which factories need it
-            const shopTo = {}
-            plan.jobs.forEach((j, i) => {
-              if (hasAssign && boughtIdx.has(i)) return
-              const factory = jobFactory(j, i) || '?'
-              ;(j.inputs || []).forEach(inp => {
-                if (!inp.is_make) {
-                  if (!shopTo[inp.type_id]) shopTo[inp.type_id] = new Set()
-                  shopTo[inp.type_id].add(factory)
-                }
-              })
-            })
-            const distinctFactories = new Set(
-              plan.jobs.filter((_, i) => !(hasAssign && boughtIdx.has(i))).map((j, i) => jobFactory(j, i) || j.activity)
-            )
-            const multiFactory = distinctFactories.size > 1
+            // Every job already carries its concrete factory (the core assigned the
+            // cheapest). 'facility' is the placeholder used when no facility is set.
+            const jobFactory = (j) => (j.place_name && j.place_name !== 'facility') ? j.place_name : null
 
             return (
               <>
@@ -1316,7 +1378,7 @@ function ChainTab() {
                   const seen = {} // key → merged index
                   plan.jobs.forEach((j, i) => {
                     const bounced = hasAssign && boughtIdx.has(i)
-                    const fl = jobFactory(j, i)
+                    const fl = jobFactory(j)
                     const key = `${j.type_id}|${fl || j.activity}|${bounced ? 'b' : 'i'}`
                     if (seen[key] !== undefined) {
                       const m = merged[seen[key]]
@@ -1386,8 +1448,7 @@ function ChainTab() {
                     <table>
                       <thead>
                         <tr>
-                          <th>Item</th><th>Qty</th><th>Unit</th><th>Total</th>
-                          {multiFactory && <th>Deliver to</th>}
+                          <th>Item</th><th>Qty</th><th>Unit</th><th>Total</th><th>Buy at</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1397,11 +1458,9 @@ function ChainTab() {
                             <td>{s.qty.toLocaleString()}</td>
                             <td>{fmtIsk(s.unit)}</td>
                             <td style={{ color: 'var(--accent)' }}>{fmtIsk(s.total)}</td>
-                            {multiFactory && (
-                              <td style={{ fontSize: 11, color: 'var(--text)', whiteSpace: 'nowrap' }}>
-                                {[...(shopTo[s.type_id] || [])].join(', ') || '—'}
-                              </td>
-                            )}
+                            <td style={{ fontSize: 11, color: 'var(--text)', whiteSpace: 'nowrap' }}>
+                              {buyAtLabel(s.type_id)}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -2406,6 +2465,73 @@ function ProductionMetrics({ result }) {
           <div style={{ fontWeight: 600, color: s.color || 'var(--text-white)' }}>{s.value}</div>
         </div>
       ))}
+    </div>
+  )
+}
+
+function LegendDot({ color, label }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <span style={{ width: 10, height: 10, borderRadius: 2, background: color, flexShrink: 0 }} />
+      {label}
+    </span>
+  )
+}
+
+// Chain analytics — mirrors the Calculator tab's ProductionMetrics, fed from the plan.
+function ChainMetrics({ plan, totalCost, profit, buildHours }) {
+  const units = plan.target_qty || 0
+  const pos = c => (c == null ? undefined : c >= 0 ? '#4caf7d' : '#e05252')
+  const roi = (profit != null && totalCost) ? profit / totalCost * 100 : null
+  const profitPerHour = (profit != null && buildHours) ? profit / buildHours : null
+  const profitPerUnit = (profit != null && units) ? profit / units : null
+  const unitsPerHour = buildHours ? units / buildHours : null
+  const stats = [
+    { label: 'Profit', value: profit != null ? fmtIsk(profit) : '—', color: pos(profit) },
+    { label: 'ROI', value: roi != null ? roi.toFixed(1) + '%' : '—', color: pos(roi) },
+    { label: 'Profit / hour', value: profitPerHour != null ? fmtIsk(profitPerHour) : '—', color: pos(profitPerHour) },
+    { label: 'Profit / unit', value: profitPerUnit != null ? fmtIsk(profitPerUnit) : '—', color: pos(profitPerUnit) },
+    { label: 'Units / hour', value: unitsPerHour ? Math.round(unitsPerHour).toLocaleString() : '—' },
+    { label: 'Est. build time', value: buildHours ? buildHours.toFixed(1) + ' h' : '—' },
+    { label: 'Output', value: units.toLocaleString() },
+    { label: 'Total cost', value: totalCost != null ? fmtIsk(totalCost) : '—' },
+  ]
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(120px,1fr))', gap: 12, padding: 8 }}>
+      {stats.map((s, i) => (
+        <div key={i}>
+          <div style={statLabel}>{s.label}</div>
+          <div style={{ fontWeight: 600, color: s.color || 'var(--text-white)' }}>{s.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Cost breakdown pie for the whole chain: every bought line + total install + BPC.
+function ChainCostPie({ plan }) {
+  const jobs = plan.jobs || []
+  const install = jobs.reduce((s, j) => s + (j.install_cost || 0), 0)
+  const bpc = jobs.reduce((s, j) => s + (j.bpc_cost || 0), 0)
+  const data = [
+    ...(plan.shopping_list || []).map((s, i) => ({ label: s.name, value: s.total, color: PIE_COLORS[i % PIE_COLORS.length] })),
+    { label: 'Job install', value: install, color: '#e05252' },
+    ...(bpc ? [{ label: 'BPC', value: bpc, color: '#777' }] : []),
+  ].filter(d => d.value > 0).sort((a, b) => b.value - a.value)
+  const total = data.reduce((s, d) => s + d.value, 0) || 1
+  if (!data.length) return null
+  return (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'center', padding: 8, flexWrap: 'wrap' }}>
+      <Donut data={data} />
+      <div style={{ flex: 1, minWidth: 160, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {data.slice(0, 12).map((d, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: d.color, flexShrink: 0 }} />
+            <span style={{ color: 'var(--text-white)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.label}</span>
+            <span style={{ color: 'var(--text)' }}>{(d.value / total * 100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

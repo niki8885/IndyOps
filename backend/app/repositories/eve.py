@@ -5,6 +5,7 @@ from typing import Optional
 
 from app.core.database_eve import (
     EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint,
+    EveGroup,
 )
 
 MANUFACTURING = 1
@@ -81,6 +82,20 @@ def type_names(eve_db, type_ids: list[int]) -> dict[int, str]:
     return {tid: name for tid, name in rows}
 
 
+def type_groups(eve_db, type_ids: list[int]) -> dict[int, dict]:
+    """{type_id: {"category_id", "group_name"}} for the given ids (single query).
+
+    Used to decide which engineering rigs apply to each node of a build tree.
+    """
+    rows = (
+        eve_db.query(EveType.type_id, EveGroup.category_id, EveGroup.group_name)
+        .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
+        .filter(EveType.type_id.in_(type_ids or [-1]))
+        .all()
+    )
+    return {tid: {"category_id": cid, "group_name": gname} for tid, cid, gname in rows}
+
+
 def max_production_limit(eve_db, blueprint_type_id: int) -> Optional[int]:
     row = eve_db.query(EveBlueprint).filter(EveBlueprint.type_id == blueprint_type_id).first()
     return row.max_production_limit if row else None
@@ -123,7 +138,7 @@ def bom_tree(eve_db, root_type_id: int, max_depth: int = 12) -> dict[int, dict]:
     spanning manufacturing (activity 1) and reactions (activity 11). Returns a
     flat ``{type_id: node}`` map where each node is::
 
-        {"name": str,
+        {"name": str, "category_id": int|None, "group_name": str|None,
          "recipes": [{"activity", "blueprint_type_id", "qty_per_run",
                       "base_time", "max_runs", "inputs": [{"type_id","qty"}]}]}
 
@@ -197,7 +212,12 @@ def bom_tree(eve_db, root_type_id: int, max_depth: int = 12) -> dict[int, dict]:
             for inp in rc["inputs"]:
                 nodes.setdefault(inp["type_id"], {"name": None, "recipes": []})
 
-    names = type_names(eve_db, list(nodes.keys()))
+    ids = list(nodes.keys())
+    names = type_names(eve_db, ids)
+    groups = type_groups(eve_db, ids)
     for tid, n in nodes.items():
         n["name"] = names.get(tid, str(tid))
+        g = groups.get(tid) or {}
+        n["category_id"] = g.get("category_id")
+        n["group_name"] = g.get("group_name")
     return nodes

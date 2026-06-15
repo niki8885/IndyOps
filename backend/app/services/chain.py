@@ -5,6 +5,8 @@ from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import Optional
 
+from app.services.facility_bonus import EC_COST_ROLE, EC_MATERIAL_ROLE, RigBonus, effective_bonuses
+
 MANUFACTURING = 1
 REACTION = 11
 
@@ -197,11 +199,18 @@ def _adj_time(base: int, runs: int, te_mult: Fraction) -> int:
 
 @dataclass(frozen=True)
 class LocationParams:
-    """A single production location applied to every makeable node (v1 wiring).
+    """One production location (facility) the chain may build at.
 
-    ME/TE multipliers are combined fractions (blueprint ME × rig × role). They
-    apply to manufacturing only; reactions ignore ME. ``man_lines``/``react_lines``
-    feed the slot assignment for this place.
+    ``me_mult``/``te_mult`` are the *manual* multipliers (blueprint ME/TE the user
+    types in, plus implants/skills) — facility **rig** ME/TE/cost is layered on top
+    per node via ``rigs``/``is_ec`` (rigs only apply to the products they cover, so
+    each node sees a different effective bonus). ``struct_discount`` is the manual
+    structure cost discount fraction. With several LocationParams the core picks the
+    cheapest per node and carries its ``place_id`` into the plan.
+
+    ``can_man``/``can_react`` gate which activities run here; they default True so
+    the single-location/default path is unchanged. ``man_lines``/``react_lines``
+    are kept for slot display.
     """
     place_id: int
     place_name: str = ""
@@ -213,6 +222,46 @@ class LocationParams:
     struct_discount: float = 0.0
     man_lines: int = 0
     react_lines: int = 0
+    rigs: tuple[RigBonus, ...] = ()
+    band: str = "null"
+    is_ec: bool = False
+    can_man: bool = True
+    can_react: bool = True
+
+
+def _node_location(
+        loc: LocationParams, is_reaction: bool,
+        cat_id: Optional[int], group_name: Optional[str],
+        eiv_unit: float, bpc_unit: float,
+) -> RecipeLocation:
+    """Resolve one facility's effective ME/TE/cost for one node.
+
+    Rigs + EC role combine with the manual multipliers exactly like the single-job
+    ``run_calculation``: ME/TE multiply ``(1−rig)(1−role)``; cost is a single
+    percentage (max(manual, EC role) + rig cost) subtracted from the SCI portion.
+    Reactions ignore ME. A facility with no rig context (default path) reduces to
+    the old flat behaviour.
+    """
+    if loc.rigs or loc.is_ec:
+        eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name)
+        if is_reaction:
+            me_mult = 1.0
+        else:
+            role = EC_MATERIAL_ROLE if loc.is_ec else 0.0
+            me_mult = loc.me_mult * (1 - eff.me_pct / 100) * (1 - role / 100)
+        te_mult = loc.te_mult * (1 - eff.te_pct / 100)
+        base_cost_pct = max(loc.struct_discount * 100, EC_COST_ROLE if loc.is_ec else 0.0)
+        struct_discount = min(0.9, (base_cost_pct + eff.cost_pct) / 100)
+    else:
+        me_mult = 1.0 if is_reaction else loc.me_mult
+        te_mult = loc.te_mult
+        struct_discount = loc.struct_discount
+    return RecipeLocation(
+        place_id=loc.place_id, place_name=loc.place_name,
+        slot_kind="reaction" if is_reaction else "manufacturing",
+        me_mult=me_mult, te_mult=te_mult, sci=loc.sci, tax=loc.tax, scc=loc.scc,
+        struct_discount=struct_discount, eiv_unit=eiv_unit, bpc_unit=bpc_unit,
+    )
 
 
 def from_bom(
@@ -221,18 +270,28 @@ def from_bom(
         tree: dict[int, dict],
         buy_prices: dict[int, Optional[float]],
         adj_prices: dict[int, float],
-        loc: LocationParams,
+        facilities,
         bpc_unit: Optional[dict[int, float]] = None,
 ) -> ChainRequest:
     """Turn a repositories.eve.bom_tree + market prices into a ``ChainRequest``.
+
+    ``facilities`` is a list of :class:`LocationParams` (a single instance is also
+    accepted). Each makeable node gets one ``RecipeLocation`` per *eligible* facility
+    — manufacturing recipes only at places with ``can_man``, reactions only at places
+    with ``can_react`` — each carrying that facility's per-node ME/TE/cost. The core
+    then assigns every node to its cheapest facility.
 
     ``buy_prices`` is the market acquire cost per type (None = can't buy);
     ``adj_prices`` are ESI adjusted prices used for EIV (Σ base_qty·adj / qty_per_run).
     Pure — no I/O — so it is unit-testable on its own.
     """
     bpc_unit = bpc_unit or {}
+    if isinstance(facilities, LocationParams):
+        facilities = [facilities]
     nodes: dict[int, Node] = {}
     for tid, nd in tree.items():
+        cat_id = nd.get("category_id")
+        group_name = nd.get("group_name")
         recipes = []
         for rc in nd["recipes"]:
             activity = rc["activity"]
@@ -241,19 +300,18 @@ def from_bom(
             eiv_unit = sum(
                 inp["qty"] * adj_prices.get(inp["type_id"], 0.0) for inp in rc["inputs"]
             ) / qpr
-            location = RecipeLocation(
-                place_id=loc.place_id, place_name=loc.place_name,
-                slot_kind="reaction" if is_reaction else "manufacturing",
-                me_mult=1.0 if is_reaction else loc.me_mult,
-                te_mult=loc.te_mult, sci=loc.sci, tax=loc.tax, scc=loc.scc,
-                struct_discount=loc.struct_discount, eiv_unit=eiv_unit,
-                bpc_unit=bpc_unit.get(tid, 0.0),
-            )
+            locs = [
+                _node_location(fac, is_reaction, cat_id, group_name, eiv_unit, bpc_unit.get(tid, 0.0))
+                for fac in facilities
+                if (fac.can_react if is_reaction else fac.can_man)
+            ]
+            if not locs:
+                continue  # no eligible facility for this activity → not makeable here
             recipes.append(Recipe(
                 activity=activity, blueprint_type_id=rc["blueprint_type_id"],
                 qty_per_run=qpr, base_time=rc["base_time"],
                 inputs=tuple((inp["type_id"], inp["qty"]) for inp in rc["inputs"]),
-                locations=(location,), max_runs=rc["max_runs"],
+                locations=tuple(locs), max_runs=rc["max_runs"],
             ))
         nodes[tid] = Node(tid, nd["name"], buy_price=buy_prices.get(tid), recipes=tuple(recipes))
     return ChainRequest(target_type_id, target_qty, nodes)

@@ -6,6 +6,7 @@ test_manufacturing_golden.py. Plus structural properties over the DAG.
 from app.services.chain import (
     ChainRequest, LocationParams, Node, Recipe, RecipeLocation, from_bom, solve_chain,
 )
+from app.services.facility_bonus import RigBonus
 
 
 def _loc(place_id=10, **kw):
@@ -178,3 +179,63 @@ def test_unobtainable_when_no_buy_no_recipe():
     plan = solve_chain(ChainRequest(1, 1, nodes))
     assert plan.decisions[2].decision == "unobtainable"
     assert plan.decisions[1].decision == "unobtainable"
+
+
+# ── multi-facility (per-facility location) ─────────────────────────────────────
+
+def _tree_one_tier(cat_id=None, group_name=None, qty=1000):
+    return {
+        1: {"name": "Hull", "category_id": cat_id, "group_name": group_name,
+            "recipes": [{"activity": 1, "blueprint_type_id": 100, "qty_per_run": 1,
+                         "base_time": 600, "max_runs": 100,
+                         "inputs": [{"type_id": 2, "qty": qty}]}]},
+        2: {"name": "Trit", "category_id": None, "group_name": None, "recipes": []},
+    }
+
+
+def test_multi_facility_core_picks_cheapest():
+    # Two manufacturing facilities; Raitaru's 3% structure discount makes its install
+    # cheaper → the core assigns the job there and carries its place_id end to end.
+    tree = _tree_one_tier()
+    buy, adj = {1: 1e12, 2: 1.0}, {2: 100.0}      # eiv_unit = 1000×100
+    sotiyo = LocationParams(10, "Sotiyo", sci=0.05, tax=0.01, scc=0.04)
+    raitaru = LocationParams(20, "Raitaru", sci=0.05, tax=0.01, scc=0.04, struct_discount=0.03)
+    req = from_bom(1, 1, tree, buy, adj, [sotiyo, raitaru])
+    assert len(req.nodes[1].recipes[0].locations) == 2          # one location per facility
+    plan = solve_chain(req)
+    assert plan.decisions[1].decision == "make"
+    assert plan.decisions[1].place_id == 20                     # cheaper structure chosen
+    assert all(j.place_id == 20 and j.place_name == "Raitaru" for j in plan.jobs)
+
+
+def test_reaction_only_facility_skipped_for_manufacturing():
+    # A facility that can only run reactions contributes no location to a manufacturing
+    # recipe → the node has no maker here and must be bought.
+    tree = _tree_one_tier()
+    react_only = LocationParams(30, "Tatara", can_man=False, can_react=True)
+    req = from_bom(1, 1, tree, {1: 500.0, 2: 1.0}, {2: 0.0}, [react_only])
+    assert req.nodes[1].recipes == ()
+    assert solve_chain(req).decisions[1].decision == "buy"
+
+
+def test_facility_rig_and_ec_role_reduce_materials():
+    # Large-ship rig (−2% ME) on an EC (−1% material role) for a battleship hull:
+    # combined multiplicatively like run_calculation → 1000 × 0.98 × 0.99 = 970.2 → 971.
+    tree = _tree_one_tier(cat_id=6, group_name="Battleship", qty=1000)
+    rig = RigBonus(type_id=500, name="Standup L-Set Ship Manufacturing Efficiency",
+                   me_bonus=-2.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
+    fac = LocationParams(10, "Sotiyo", rigs=(rig,), band="hi", is_ec=True)
+    req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [fac])
+    job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
+    assert job.inputs[0].qty == 971
+
+
+def test_rig_does_not_apply_to_wrong_category():
+    # The same ship rig must NOT touch a non-ship product (category 7) → full 1000.
+    tree = _tree_one_tier(cat_id=7, group_name="Hybrid Weapon", qty=1000)
+    rig = RigBonus(type_id=500, name="Standup L-Set Ship Manufacturing Efficiency",
+                   me_bonus=-2.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
+    fac = LocationParams(10, "Sotiyo", rigs=(rig,), band="hi", is_ec=False)
+    req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [fac])
+    job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
+    assert job.inputs[0].qty == 1000
