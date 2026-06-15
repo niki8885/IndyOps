@@ -845,47 +845,114 @@ function CalculatorTab() {
 /* ═══════════════════════════ CHAIN (MAKE-VS-BUY) ═══════════════════════════ */
 
 function ChainTab() {
-  const [product, setProduct]       = useState(null)
+  const [product, setProduct]     = useState(null)
   const [facilities, setFacilities] = useState([])
+
+  // global chain params
   const [params, setParams] = useState({
-    qty: 1, region_id: 10000002, price_basis: 'buy',
-    facility_id: '', me_pct: 0, te_pct: 0,
+    qty: 1, price_basis: 'buy',
+    me_pct: 0, te_pct: 0,
     system_cost_index: 0, facility_tax_pct: 0, structure_discount_pct: 0,
     man_lines: 10, react_lines: 0, window_hours: 24, max_depth: 12,
   })
+
+  // ── (1) Buy-price region multi-select ──
+  const [selectedRegions, setSelectedRegions] = useState(new Set([10000002]))
+  const [includeCJ, setIncludeCJ] = useState(false)
+
+  // ── (2) Sell market for profit calculation ──
+  const [sellMarket, setSellMarket] = useState('Jita')
+  const [sellMethod, setSellMethod] = useState('Sell')
+  const [sellPrice, setSellPrice]   = useState(null)
+  const [sellLoading, setSellLoading] = useState(false)
+
+  // ── (3) Facility mode: 'none' = single + manual, 'multi' = checklist ──
+  const [facilityMode, setFacilityMode] = useState('none')
+  const [singleFacilityId, setSingleFacilityId] = useState('')
+  // facilityChecks: { [id]: { checked: bool, man: number, react: number } }
+  const [facilityChecks, setFacilityChecks] = useState({})
+
+  // advanced: manual multi-location structures (used when facilityMode='none')
+  const [structures, setStructures] = useState([])
+
   const [result, setResult]   = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
-  const [structures, setStructures] = useState([])   // multi-location (optional)
-
-  const addStruct = () => setStructures(s => [...s, { place_id: '', name: '', sci: '', tax: '', disc: '', man: 5, react: 0 }])
-  const updateStruct = (i, k) => e => setStructures(s => s.map((st, j) => j === i ? { ...st, [k]: e.target.value } : st))
-  const removeStruct = i => setStructures(s => s.filter((_, j) => j !== i))
-
-  useEffect(() => { get('/facilities').then(setFacilities).catch(() => {}) }, [])
 
   useEffect(() => {
-    if (!params.facility_id) return
-    const f = facilities.find(f => f.id === Number(params.facility_id))
+    get('/facilities').then(fs => {
+      setFacilities(fs)
+      const checks = {}
+      fs.forEach(f => { checks[f.id] = { checked: false, man: 5, react: 0 } })
+      setFacilityChecks(checks)
+    }).catch(() => {})
+  }, [])
+
+  // auto-fill global params when single facility selected
+  useEffect(() => {
+    if (!singleFacilityId || facilityMode !== 'none') return
+    const f = facilities.find(f => f.id === Number(singleFacilityId))
     if (!f) return
     setParams(p => ({
       ...p,
       system_cost_index: f.system_cost_index != null ? +(f.system_cost_index * 100).toFixed(4) : p.system_cost_index,
-      facility_tax_pct: f.tax != null ? f.tax : p.facility_tax_pct,
+      facility_tax_pct:  f.tax != null ? f.tax : p.facility_tax_pct,
       structure_discount_pct: f.cost_bonus != null ? f.cost_bonus : p.structure_discount_pct,
     }))
-  }, [params.facility_id, facilities])
+  }, [singleFacilityId, facilities, facilityMode])
+
+  // structures auto-built from facility checklist
+  const multiStructures = facilityMode === 'multi'
+    ? facilities
+        .filter(f => facilityChecks[f.id]?.checked)
+        .map(f => {
+          const fc = facilityChecks[f.id] || {}
+          return {
+            place_id: f.id,
+            name: f.name,
+            system_cost_index: f.system_cost_index || 0,   // fraction from DB
+            facility_tax_pct: f.tax || 0,
+            structure_discount_pct: f.cost_bonus || 0,
+            man_lines: Number(fc.man) || 0,
+            react_lines: Number(fc.react) || 0,
+          }
+        })
+    : []
+
+  function toggleRegion(rid) {
+    setSelectedRegions(prev => {
+      const next = new Set(prev)
+      if (next.has(rid)) { if (next.size > 1) next.delete(rid) }
+      else next.add(rid)
+      return next
+    })
+  }
+
+  function toggleFacility(fid, checked) {
+    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { man: 5, react: 0 }), checked } }))
+  }
+  function setFacilitySlot(fid, key, val) {
+    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { checked: false, man: 5, react: 0 }), [key]: val } }))
+  }
+
+  // manual structures (advanced)
+  const addStruct    = () => setStructures(s => [...s, { place_id: '', name: '', sci: '', tax: '', disc: '', man: 5, react: 0 }])
+  const updateStruct = (i, k) => e => setStructures(s => s.map((st, j) => j === i ? { ...st, [k]: e.target.value } : st))
+  const removeStruct = i => setStructures(s => s.filter((_, j) => j !== i))
 
   async function calculate() {
     if (!product?.type_id) return
-    setLoading(true); setError(''); setResult(null)
+    setLoading(true); setError(''); setResult(null); setSellPrice(null)
     try {
+      const activeStructures = facilityMode === 'multi' ? multiStructures : structures
       const res = await post('/manufacturing/calculate-chain', {
         product_type_id: product.type_id,
         qty: Number(params.qty) || 1,
-        region_id: Number(params.region_id),
+        region_ids: [...selectedRegions],
+        region_id: [...selectedRegions][0] || 10000002,
         price_basis: params.price_basis,
-        facility_id: params.facility_id ? Number(params.facility_id) : null,
+        include_cj: includeCJ,
+        facility_id: singleFacilityId && facilityMode === 'none' ? Number(singleFacilityId) : null,
         me_pct: Number(params.me_pct),
         te_pct: Number(params.te_pct),
         system_cost_index: Number(params.system_cost_index) / 100,
@@ -895,27 +962,38 @@ function ChainTab() {
         react_lines: Number(params.react_lines),
         window_hours: Number(params.window_hours),
         max_depth: Number(params.max_depth),
-        ...(structures.length ? {
-          structures: structures.map(s => ({
-            place_id: Number(s.place_id) || 0,
-            name: s.name || '',
-            system_cost_index: Number(s.sci) / 100,
-            facility_tax_pct: Number(s.tax),
-            structure_discount_pct: Number(s.disc),
-            man_lines: Number(s.man) || 0,
-            react_lines: Number(s.react) || 0,
-          })),
+        ...(activeStructures.length ? {
+          structures: facilityMode === 'multi'
+            ? activeStructures   // already in API format (fractions)
+            : activeStructures.map(s => ({
+                place_id: Number(s.place_id) || 0,
+                name: s.name || '',
+                system_cost_index: Number(s.sci) / 100,
+                facility_tax_pct: Number(s.tax),
+                structure_discount_pct: Number(s.disc),
+                man_lines: Number(s.man) || 0,
+                react_lines: Number(s.react) || 0,
+              })),
         } : {}),
       })
       setResult(res)
+
+      // auto-fetch sell price for profit calculation
+      setSellLoading(true)
+      try {
+        const prices = await fetchMarketPrices([product.type_id], sellMarket)
+        const p = prices[product.type_id]
+        setSellPrice(p?.[sellMethod] ?? null)
+      } catch {}
+      finally { setSellLoading(false) }
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }
 
   const setP = k => e => setParams(p => ({ ...p, [k]: e.target.value }))
 
-  const plan = result?.plan
-  const asg  = result?.assignment
+  const plan      = result?.plan
+  const asg       = result?.assignment
   const boughtIdx = new Set((asg?.bought || []).map(a => a.job_index))
   const hasAssign = asg && (asg.status === 'optimal' || asg.status === 'feasible')
   const decisions = plan ? Object.values(plan.decisions) : []
@@ -924,27 +1002,56 @@ function ChainTab() {
   const shopping  = plan?.shopping_list || []
   const shopText  = shopping.map(s => `${s.name}\t${s.qty}`).join('\n')
 
+  const totalCost = result?.final_cost ?? plan?.total_cost ?? null
+  const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null
+  const profit    = totalSell != null && totalCost != null ? totalSell - totalCost : null
+  const margin    = profit != null && totalSell ? profit / totalSell * 100 : null
+
+  function downloadPDF() {
+    if (!plan) return
+    const html = _chainPdfHtml(product, plan, result, totalCost, sellPrice, totalSell, profit, margin, sellMarket, sellMethod, facilities, facilityMode, facilityChecks)
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+    const url  = URL.createObjectURL(blob)
+    const w    = window.open(url, '_blank', 'width=960,height=720')
+    if (w) w.addEventListener('load', () => setTimeout(() => w.print(), 300), { once: true })
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {error && <div className="error-box">{error}</div>}
 
-      {/* Controls */}
+      {/* ── Controls ── */}
       <div className="card">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px,1fr))', gap: 14 }}>
           <div style={{ gridColumn: '1 / -1' }}>
             <CLabel>Product to build (full chain)</CLabel>
             <TypeSearch value={product} onChange={t => setProduct(t?.type_id ? t : null)} placeholder="Search product…" />
             <span style={{ fontSize: 11, color: 'var(--text)' }}>
-              The whole build tree is priced and each item is decided make-vs-buy recursively.
+              Whole build tree priced; each node decided make-vs-buy recursively.
             </span>
           </div>
           <NumField label="Quantity" value={params.qty} onChange={setP('qty')} min={1} />
-          <div>
-            <CLabel>Buy-price region</CLabel>
-            <select value={params.region_id} onChange={setP('region_id')}>
-              {REGIONS.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
+
+          {/* ── (1) Buy-price regions ── */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <CLabel>Buy-price regions <Hint>min price across all selected</Hint></CLabel>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 5 }}>
+              {REGIONS.map(r => (
+                <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer',
+                  color: selectedRegions.has(r.id) ? 'var(--text-white)' : 'var(--text)' }}>
+                  <input type="checkbox" checked={selectedRegions.has(r.id)} onChange={() => toggleRegion(r.id)} />
+                  {r.name}
+                </label>
+              ))}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer',
+                color: includeCJ ? '#c8a951' : 'var(--text)' }}>
+                <input type="checkbox" checked={includeCJ} onChange={e => setIncludeCJ(e.target.checked)} />
+                C-J6MT <span style={{ fontSize: 10, color: 'var(--border2)' }}>(slow)</span>
+              </label>
+            </div>
           </div>
+
           <div>
             <CLabel>Price basis</CLabel>
             <select value={params.price_basis} onChange={setP('price_basis')}>
@@ -952,72 +1059,175 @@ function ChainTab() {
               <option value="sell">Sell orders (instant)</option>
             </select>
           </div>
+
+          {/* ── (2) Sell at for profit ── */}
           <div>
-            <CLabel>Facility</CLabel>
-            <select value={params.facility_id} onChange={setP('facility_id')}>
-              <option value="">— none —</option>
-              {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </select>
+            <CLabel>Sell at <Hint>profit calc</Hint></CLabel>
+            <div style={{ display: 'flex', gap: 5, alignItems: 'center', marginTop: 5, flexWrap: 'wrap' }}>
+              <select value={sellMarket} onChange={e => setSellMarket(e.target.value)} style={{ width: 64, padding: '2px 4px', fontSize: 11 }}>
+                {MARKETS.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+              {METHODS.map(m => (
+                <button key={m} type="button" onClick={() => setSellMethod(m)}
+                  className={`btn btn-sm ${sellMethod === m ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '2px 8px', fontSize: 11 }}>{m}</button>
+              ))}
+            </div>
           </div>
+
           <NumField label="ME % (manuf.)" value={params.me_pct} onChange={setP('me_pct')} step={0.1} />
           <NumField label="TE %" value={params.te_pct} onChange={setP('te_pct')} step={0.1} />
-          <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
-          <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
-          <NumField label="Structure Discount %" value={params.structure_discount_pct} onChange={setP('structure_discount_pct')} step={0.1} />
-          <NumField label="Manufacturing slots" value={params.man_lines} onChange={setP('man_lines')} min={0} />
-          <NumField label="Reaction slots" value={params.react_lines} onChange={setP('react_lines')} min={0} />
           <NumField label="Window (hours)" value={params.window_hours} onChange={setP('window_hours')} min={1} />
           <NumField label="Max depth" value={params.max_depth} onChange={setP('max_depth')} min={1} max={20} />
         </div>
       </div>
 
-      {/* Multi-location (optional): OR-Tools chooses the structure per job */}
+      {/* ── (3) Facility mode ── */}
       <div className="card" style={{ padding: 0 }}>
-        <div style={{ padding: '10px 16px', borderBottom: structures.length ? '1px solid var(--border)' : 'none', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Structures (multi-location, optional)</span>
-          <Hint>empty → single facility above; add 2+ → OR-Tools spreads jobs under each structure's slots</Hint>
-          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={addStruct}>+ Add structure</button>
+        <div style={{ padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Facilities</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+            <input type="radio" name="facilityMode" value="none" checked={facilityMode === 'none'} onChange={() => setFacilityMode('none')} />
+            Default / no buffs
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+            <input type="radio" name="facilityMode" value="multi" checked={facilityMode === 'multi'} onChange={() => setFacilityMode('multi')} />
+            Use my facilities <Hint>OR-Tools picks best per job</Hint>
+          </label>
         </div>
-        {structures.length > 0 && (
-          <table>
-            <thead><tr><th>Place ID</th><th>Name</th><th>SCI %</th><th>Tax %</th><th>Disc %</th><th>Manuf slots</th><th>React slots</th><th></th></tr></thead>
-            <tbody>
-              {structures.map((s, i) => (
-                <tr key={i}>
-                  <td><input style={{ width: 90 }} value={s.place_id} onChange={updateStruct(i, 'place_id')} placeholder="id" /></td>
-                  <td><input style={{ width: 120 }} value={s.name} onChange={updateStruct(i, 'name')} placeholder="Sotiyo" /></td>
-                  <td><input type="number" style={{ width: 70 }} step="0.001" value={s.sci} onChange={updateStruct(i, 'sci')} /></td>
-                  <td><input type="number" style={{ width: 60 }} step="0.1" value={s.tax} onChange={updateStruct(i, 'tax')} /></td>
-                  <td><input type="number" style={{ width: 60 }} step="0.1" value={s.disc} onChange={updateStruct(i, 'disc')} /></td>
-                  <td><input type="number" style={{ width: 60 }} value={s.man} onChange={updateStruct(i, 'man')} /></td>
-                  <td><input type="number" style={{ width: 60 }} value={s.react} onChange={updateStruct(i, 'react')} /></td>
-                  <td><button className="btn btn-danger btn-sm" onClick={() => removeStruct(i)}>✕</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+
+        {/* ── no-buffs mode: single facility + manual params ── */}
+        {facilityMode === 'none' && (
+          <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px,1fr))', gap: 12 }}>
+            <div>
+              <CLabel>Facility</CLabel>
+              <select value={singleFacilityId} onChange={e => setSingleFacilityId(e.target.value)}>
+                <option value="">— none —</option>
+                {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+            </div>
+            <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
+            <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
+            <NumField label="Structure Discount %" value={params.structure_discount_pct} onChange={setP('structure_discount_pct')} step={0.1} />
+            <NumField label="Manufacturing slots" value={params.man_lines} onChange={setP('man_lines')} min={0} />
+            <NumField label="Reaction slots" value={params.react_lines} onChange={setP('react_lines')} min={0} />
+          </div>
+        )}
+
+        {/* ── multi-facility checklist ── */}
+        {facilityMode === 'multi' && (
+          <div>
+            {facilities.length === 0
+              ? <div style={{ padding: 16, color: 'var(--text)', fontSize: 12 }}>No facilities saved yet.</div>
+              : (
+                <table>
+                  <thead>
+                    <tr><th></th><th>Facility</th><th>SCI %</th><th>Tax %</th><th>Disc %</th><th>Manuf. slots</th><th>React. slots</th></tr>
+                  </thead>
+                  <tbody>
+                    {facilities.map(f => {
+                      const fc = facilityChecks[f.id] || { checked: false, man: 5, react: 0 }
+                      return (
+                        <tr key={f.id} style={{ opacity: fc.checked ? 1 : 0.5 }}>
+                          <td>
+                            <input type="checkbox" checked={!!fc.checked} onChange={e => toggleFacility(f.id, e.target.checked)} />
+                          </td>
+                          <td style={{ color: fc.checked ? 'var(--text-white)' : 'var(--text)', whiteSpace: 'nowrap' }}>{f.name}</td>
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}>
+                            {f.system_cost_index != null ? (f.system_cost_index * 100).toFixed(3) : '—'}
+                          </td>
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{f.tax != null ? f.tax : '—'}</td>
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{f.cost_bonus != null ? f.cost_bonus : '—'}</td>
+                          <td>
+                            <input type="number" style={{ width: 60 }} value={fc.man} disabled={!fc.checked}
+                              onChange={e => setFacilitySlot(f.id, 'man', e.target.value)} />
+                          </td>
+                          <td>
+                            <input type="number" style={{ width: 60 }} value={fc.react} disabled={!fc.checked}
+                              onChange={e => setFacilitySlot(f.id, 'react', e.target.value)} />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )
+            }
+            <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--text)', borderTop: facilities.length ? '1px solid var(--border)' : 'none' }}>
+              {multiStructures.length
+                ? `${multiStructures.length} structure${multiStructures.length !== 1 ? 's' : ''} selected — OR-Tools assigns each job to the cheapest available slot`
+                : 'Select at least one facility above'}
+            </div>
+          </div>
         )}
       </div>
+
+      {/* ── Advanced: manual structures (no-buffs mode only) ── */}
+      {facilityMode === 'none' && (
+        <div className="card" style={{ padding: 0 }}>
+          <div style={{ padding: '10px 16px', borderBottom: structures.length ? '1px solid var(--border)' : 'none', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500 }}>Advanced: multi-location structures</span>
+            <Hint>add 2+ → OR-Tools spreads jobs under each structure's slots</Hint>
+            <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={addStruct}>+ Add</button>
+          </div>
+          {structures.length > 0 && (
+            <table>
+              <thead><tr><th>Place ID</th><th>Name</th><th>SCI %</th><th>Tax %</th><th>Disc %</th><th>Manuf</th><th>React</th><th></th></tr></thead>
+              <tbody>
+                {structures.map((s, i) => (
+                  <tr key={i}>
+                    <td><input style={{ width: 90 }} value={s.place_id} onChange={updateStruct(i, 'place_id')} placeholder="id" /></td>
+                    <td><input style={{ width: 120 }} value={s.name} onChange={updateStruct(i, 'name')} placeholder="Sotiyo" /></td>
+                    <td><input type="number" style={{ width: 70 }} step="0.001" value={s.sci} onChange={updateStruct(i, 'sci')} /></td>
+                    <td><input type="number" style={{ width: 60 }} step="0.1" value={s.tax} onChange={updateStruct(i, 'tax')} /></td>
+                    <td><input type="number" style={{ width: 60 }} step="0.1" value={s.disc} onChange={updateStruct(i, 'disc')} /></td>
+                    <td><input type="number" style={{ width: 60 }} value={s.man} onChange={updateStruct(i, 'man')} /></td>
+                    <td><input type="number" style={{ width: 60 }} value={s.react} onChange={updateStruct(i, 'react')} /></td>
+                    <td><button className="btn btn-danger btn-sm" onClick={() => removeStruct(i)}>✕</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn btn-primary" onClick={calculate} disabled={!product?.type_id || loading}>
           {loading ? 'Solving chain…' : '⚙ Calculate chain'}
         </button>
+        {result && plan && (
+          <button className="btn btn-ghost" onClick={downloadPDF}>📄 Download PDF</button>
+        )}
         <span style={{ fontSize: 11, color: 'var(--text)' }}>
-          {structures.length
-            ? `Multi-location: OR-Tools places jobs across ${structures.length} structure${structures.length > 1 ? 's' : ''}.`
-            : 'Make-vs-buy across the whole tree + slot assignment under the current window.'}
+          {includeCJ ? 'C-J prices take ~5–15 s extra.' : ''}
+          {facilityMode === 'multi' && multiStructures.length > 1
+            ? `Multi-location: OR-Tools across ${multiStructures.length} structures.` : ''}
         </span>
       </div>
 
       {result && plan && (
         <>
-          {/* Summary */}
+          {/* ── Summary ── */}
           <Section title="Chain summary">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, padding: 12 }}>
               <IskStat label="Unit cost" value={plan.unit_cost} color="var(--accent)" bold />
-              <IskStat label="Total (all in-house)" value={plan.total_cost} bold />
-              <IskStat label="Final (after slots)" value={result.final_cost} color="var(--text-white)" bold />
+              <IskStat label="Total production cost" value={totalCost} bold />
+              {sellLoading
+                ? <div style={{ fontSize: 12, color: 'var(--text)' }}>Fetching sell price…</div>
+                : sellPrice != null
+                  ? <>
+                      <IskStat label={`Sell (${sellMarket} ${sellMethod})`} value={totalSell} color="#4caf7d" bold />
+                      <IskStat label="Profit" value={profit} color={profit >= 0 ? '#4caf7d' : '#e05252'} bold />
+                      <div>
+                        <div style={statLabel}>Margin</div>
+                        <div style={{ fontWeight: 700, fontSize: 18, color: margin >= 0 ? '#4caf7d' : '#e05252',
+                          background: margin >= 0 ? '#0e2a1a' : '#2a0e0e', padding: '3px 8px', borderRadius: 4, display: 'inline-block' }}>
+                          {margin?.toFixed(1)}%
+                        </div>
+                      </div>
+                    </>
+                  : null}
               <div>
                 <div style={statLabel}>Engine</div>
                 <span style={{
@@ -1036,13 +1246,13 @@ function ChainTab() {
             {asg && (
               <div style={{ padding: '0 12px 12px', fontSize: 12, color: 'var(--text)' }}>
                 {hasAssign
-                  ? <>Assignment <b style={{ color: 'var(--accent)' }}>{asg.status}</b> · in-house {asg.in_house?.length || 0}, bounced to buy {asg.bought?.length || 0} · savings captured <span style={{ color: '#4caf7d' }}>{fmtIsk(asg.savings_captured)}</span>{asg.savings_forfeited > 0 && <> · forfeited <span style={{ color: '#e05252' }}>{fmtIsk(asg.savings_forfeited)}</span></>}</>
+                  ? <>Assignment <b style={{ color: 'var(--accent)' }}>{asg.status}</b> · in-house {asg.in_house?.length || 0}, bounced {asg.bought?.length || 0} · saved <span style={{ color: '#4caf7d' }}>{fmtIsk(asg.savings_captured)}</span>{asg.savings_forfeited > 0 && <> · forfeited <span style={{ color: '#e05252' }}>{fmtIsk(asg.savings_forfeited)}</span></>}</>
                   : <>Slot assignment: <b style={{ color: '#e0884f' }}>{asg.status}</b>{asg.note ? ` — ${asg.note}` : ''}</>}
               </div>
             )}
           </Section>
 
-          {/* Decisions */}
+          {/* ── Make vs Buy ── */}
           <Section title={`Make vs Buy — ${decisions.length} nodes`}>
             <table>
               <thead><tr><th>Item</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th></tr></thead>
@@ -1063,11 +1273,16 @@ function ChainTab() {
             </table>
           </Section>
 
-          {/* Jobs */}
+          {/* ── Production plan ── */}
           {plan.jobs.length > 0 && (
-            <Section title={`Production jobs — ${plan.jobs.length}`}>
+            <Section title={`Production plan — ${plan.jobs.length} jobs`}>
               <table>
-                <thead><tr><th>Item</th><th>Type</th><th>Runs</th><th>Output</th><th>Time</th><th>Place</th><th>Slot</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>Item</th><th>Type</th><th>Runs</th>
+                    <th>Qty to produce</th><th>Time</th><th>Produce at</th><th>Slot</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {plan.jobs.map((j, i) => {
                     const bounced = hasAssign && boughtIdx.has(i)
@@ -1076,9 +1291,13 @@ function ChainTab() {
                         <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{j.name}</td>
                         <td style={{ fontSize: 12 }}>{j.activity === 11 ? 'Reaction' : 'Manuf.'}</td>
                         <td>{j.runs.toLocaleString()}</td>
-                        <td>{j.qty_out.toLocaleString()}</td>
+                        <td style={{ color: bounced ? 'var(--text)' : 'var(--accent)', fontWeight: bounced ? 400 : 600 }}>
+                          {j.qty_out.toLocaleString()}
+                        </td>
                         <td style={{ fontSize: 12, color: 'var(--text)' }}>{fmtTime(j.time_s)}</td>
-                        <td style={{ fontSize: 12, color: 'var(--text)' }}>{j.place_name || j.place_id}</td>
+                        <td style={{ fontSize: 12, color: bounced ? '#e0884f' : 'var(--text-white)' }}>
+                          {bounced ? '↩ buy instead' : (j.place_name || j.place_id || '—')}
+                        </td>
                         <td>
                           {hasAssign
                             ? (bounced
@@ -1094,7 +1313,7 @@ function ChainTab() {
             </Section>
           )}
 
-          {/* Shopping list */}
+          {/* ── Shopping list ── */}
           {shopping.length > 0 && (
             <Section title={`Shopping list — ${shopping.length} items`}>
               <table>
@@ -1124,6 +1343,113 @@ function ChainTab() {
       )}
     </div>
   )
+}
+
+/* Generate printable HTML for the chain plan PDF */
+function _chainPdfHtml(product, plan, result, totalCost, sellPrice, totalSell, profit, margin, sellMarket, sellMethod, facilities, facilityMode, facilityChecks) {
+  const decisions = Object.values(plan.decisions)
+  const shopping  = plan.shopping_list || []
+  const jobs      = plan.jobs || []
+
+  const isk = v => {
+    if (v == null) return '—'
+    const n = Number(v); if (isNaN(n)) return '—'
+    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + ' B ISK'
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + ' M ISK'
+    return n.toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' ISK'
+  }
+  const fmtT = s => {
+    if (!s) return '—'
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)
+    return h ? `${h}h ${m}m` : `${m}m`
+  }
+
+  // group jobs by facility
+  const byFacility = {}
+  jobs.forEach(j => {
+    const key = j.place_name || String(j.place_id) || 'Unassigned'
+    ;(byFacility[key] = byFacility[key] || []).push(j)
+  })
+
+  const profitColor = profit >= 0 ? '#1a7a3c' : '#9b1c1c'
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Chain Plan — ${product?.name || ''}</title>
+<style>
+  body{font-family:Arial,sans-serif;font-size:12px;color:#222;margin:20px;max-width:960px}
+  h1{font-size:20px;margin-bottom:2px}
+  h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #ccc;padding-bottom:3px;color:#333}
+  h3{font-size:12px;margin:12px 0 4px;color:#555}
+  table{width:100%;border-collapse:collapse;margin-bottom:10px}
+  th{background:#f4f4f4;text-align:left;padding:5px 8px;font-size:11px;border-bottom:2px solid #ddd}
+  td{padding:4px 8px;border-bottom:1px solid #eee}
+  .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}
+  .stat{padding:10px;border:1px solid #ddd;border-radius:5px}
+  .stat-label{font-size:10px;color:#666;margin-bottom:2px}
+  .stat-value{font-weight:700;font-size:15px}
+  .make{color:#1a7a3c}.buy{color:#1a5c9b}.na{color:#9b1c1c}
+  @media print{@page{margin:12mm}button{display:none}}
+</style>
+</head>
+<body>
+<h1>Chain Production Plan</h1>
+<p style="color:#666;margin:0 0 12px">${product?.name || ''} &times; ${plan.target_qty.toLocaleString()} units &mdash; ${new Date().toLocaleDateString()}</p>
+
+<div class="summary">
+  <div class="stat"><div class="stat-label">Unit cost</div><div class="stat-value">${isk(plan.unit_cost)}</div></div>
+  <div class="stat"><div class="stat-label">Total production cost</div><div class="stat-value">${isk(totalCost)}</div></div>
+  ${sellPrice != null ? `
+  <div class="stat"><div class="stat-label">Sell (${sellMarket} ${sellMethod})</div><div class="stat-value" style="color:#1a7a3c">${isk(totalSell)}</div></div>
+  <div class="stat"><div class="stat-label">Profit &bull; Margin</div><div class="stat-value" style="color:${profitColor}">${isk(profit)} &bull; ${margin?.toFixed(1)}%</div></div>
+  ` : '<div class="stat"><div class="stat-label">Sell price</div><div class="stat-value">—</div></div><div></div>'}
+</div>
+
+<h2>Production Plan — What &amp; Where to Make</h2>
+${Object.entries(byFacility).map(([place, pjobs]) => `
+<h3>@ ${place}</h3>
+<table>
+<thead><tr><th>Item</th><th>Activity</th><th>Runs</th><th>Qty to produce</th><th>Time</th></tr></thead>
+<tbody>
+${pjobs.map(j => `<tr>
+  <td>${j.name}</td>
+  <td>${j.activity === 11 ? 'Reaction' : 'Manufacturing'}</td>
+  <td>${j.runs.toLocaleString()}</td>
+  <td><b>${j.qty_out.toLocaleString()}</b></td>
+  <td>${fmtT(j.time_s)}</td>
+</tr>`).join('')}
+</tbody>
+</table>`).join('')}
+
+${shopping.length ? `
+<h2>Shopping List — Items to Buy</h2>
+<table>
+<thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead>
+<tbody>
+${shopping.map(s => `<tr>
+  <td>${s.name}</td>
+  <td>${s.qty.toLocaleString()}</td>
+  <td>${isk(s.unit)}</td>
+  <td><b>${isk(s.total)}</b></td>
+</tr>`).join('')}
+</tbody>
+</table>` : ''}
+
+<h2>Make vs Buy Decisions</h2>
+<table>
+<thead><tr><th>Item</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th></tr></thead>
+<tbody>
+${[...decisions].sort((a, b) => (b.saved_per_unit || 0) - (a.saved_per_unit || 0)).map(d => `<tr>
+  <td>${d.name}</td>
+  <td class="${d.decision}">${d.decision.toUpperCase()}</td>
+  <td>${d.unit_make != null ? isk(d.unit_make) : '—'}</td>
+  <td>${d.unit_buy  != null ? isk(d.unit_buy)  : '—'}</td>
+  <td><b>${d.unit_cost != null ? isk(d.unit_cost) : '—'}</b></td>
+  <td style="color:${(d.saved_per_unit || 0) > 0 ? '#1a7a3c' : '#999'}">${(d.saved_per_unit || 0) > 0 ? isk(d.saved_per_unit) : '—'}</td>
+</tr>`).join('')}
+</tbody>
+</table>
+</body></html>`
 }
 
 function DecisionBadge({ decision }) {

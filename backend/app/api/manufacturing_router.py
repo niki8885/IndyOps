@@ -309,6 +309,8 @@ class ChainCalcRequest(BaseModel):
     product_type_id: int
     qty: int = 1
     region_id: int = 10000002
+    region_ids: List[int] = []     # multi-region: take min price across all; falls back to region_id
+    include_cj: bool = False       # also fetch C-J6MT prices and take min (slow: 1 scrape/type)
     price_basis: str = "buy"
     facility_id: Optional[int] = None
     place_id: int = 0
@@ -339,6 +341,17 @@ def _market_buy_prices(region_id: int, type_ids: list[int], basis: str) -> dict[
         val = s.get("percentile") or s.get(fallback)
         out[tid] = float(val) if val else None
     return out
+
+
+def _market_buy_prices_multi(region_ids: list[int], type_ids: list[int], basis: str) -> dict[int, Optional[float]]:
+    """Take the minimum acquire price across all given Fuzzwork regions."""
+    merged: dict[int, Optional[float]] = {}
+    for rid in region_ids:
+        for tid, price in _market_buy_prices(rid, type_ids, basis).items():
+            if price is not None:
+                cur = merged.get(tid)
+                merged[tid] = min(cur, price) if cur is not None else price
+    return merged
 
 
 def _job_dict(j: PlannedJob) -> dict:
@@ -432,7 +445,25 @@ async def calculate_chain(
         raise HTTPException(400, "Target product has no manufacturing/reaction recipe")
 
     type_ids = list(tree)
-    buy_prices = _market_buy_prices(body.region_id, type_ids, body.price_basis)
+    eff_region_ids = body.region_ids if body.region_ids else [body.region_id]
+    buy_prices = _market_buy_prices_multi(eff_region_ids, type_ids, body.price_basis)
+
+    if body.include_cj:
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            cj_results = await asyncio.gather(
+                *[loop.run_in_executor(ex, market.gnf_local, tid) for tid in type_ids]
+            )
+        for tid, p in zip(type_ids, cj_results):
+            if p is not None:
+                cj_acquire = p.get("buy") or p.get("sell")
+                if cj_acquire:
+                    cur = buy_prices.get(tid)
+                    if cur is None or cj_acquire < cur:
+                        buy_prices[tid] = cj_acquire
+
     buy_prices.update({int(k): float(v) for k, v in body.price_overrides.items()})
     try:
         adj = market.esi_adjusted_prices()
