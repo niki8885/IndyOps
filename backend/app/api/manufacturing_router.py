@@ -21,6 +21,7 @@ from app.services.facility_bonus import (
     EC_COST_ROLE, EC_MATERIAL_ROLE, RigBonus, band_of, effective_bonuses,
 )
 from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_calculation
+from app.services.scheduling import stage_schedul
 from app.services.pricing import flag_unrealistic, resolve_price
 
 router = APIRouter()
@@ -638,9 +639,16 @@ async def calculate_chain(
 
     plan, engine = chain_engine.solve(req)   # native Haskell core, falls back to Python
 
+    # Capacity schedule: lay the jobs into dependency-ordered stages within the
+    # selected facilities' manufacturing / reaction slots.
+    man_slots = sum(f.man_lines for f in facilities if f.can_man)
+    react_slots = sum(f.react_lines for f in facilities if f.can_react)
+    schedule = stage_schedule(plan.jobs, man_slots, react_slots)
+
     return _to_jsonable({
         "plan": _plan_dict(plan),
         "assignment": _chain_assignment(plan, facilities),
+        "schedule": schedule,
         "final_cost": round(float(plan.total_cost), 2),
         "engine": engine,
         "multi_location": len(facilities) > 1,

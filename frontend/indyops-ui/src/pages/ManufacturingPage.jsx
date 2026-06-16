@@ -1395,6 +1395,9 @@ function ChainTab() {
             </table>
           </Section>
 
+          {/* ── Capacity schedule (stages) ── */}
+          {result?.schedule && <ChainSchedule schedule={result.schedule} />}
+
           {/* ── Production plan ── */}
           {plan.jobs.length > 0 && (() => {
             // Every job already carries its concrete factory (the core assigned the
@@ -2522,6 +2525,46 @@ function LegendDot({ color, label }) {
 }
 
 // Chain analytics — mirrors the Calculator tab's ProductionMetrics, fed from the plan.
+// Capacity schedule: dependency-ordered stages within the facilities' slots.
+function ChainSchedule({ schedule }) {
+  if (!schedule?.stages?.length) return null
+  const { stages, man_slots, react_slots, total_stages, total_time_s, peak_man, peak_react } = schedule
+  const slot = n => (n && n > 0 ? n : '∞')
+  return (
+    <Section title={`Schedule — ${total_stages} stage${total_stages !== 1 ? 's' : ''}`}>
+      <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text)', display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+        <span>Slots: <b style={{ color: 'var(--text-white)' }}>{slot(man_slots)}</b> manufacturing · <b style={{ color: 'var(--text-white)' }}>{slot(react_slots)}</b> reaction</span>
+        <span>Total time: <b style={{ color: 'var(--accent)' }}>{fmtTime(total_time_s)}</b></span>
+        <span>Peak use: {peak_man} man · {peak_react} react</span>
+      </div>
+      <table>
+        <thead><tr><th>Stage</th><th>Jobs</th><th>Man</th><th>React</th><th>Stage time</th><th>Cumulative</th></tr></thead>
+        <tbody>
+          {stages.map(st => (
+            <tr key={st.stage}>
+              <td style={{ color: 'var(--text-white)', fontWeight: 600 }}>{st.stage}</td>
+              <td>
+                {st.jobs.map((j, i) => (
+                  <span key={i} style={{ display: 'inline-block', marginRight: 6, marginBottom: 2, fontSize: 11,
+                    background: j.slot_kind === 'reaction' ? '#13202e' : '#102018',
+                    color: j.slot_kind === 'reaction' ? '#3a9bd6' : '#4caf7d',
+                    border: '1px solid var(--border)', padding: '1px 6px', borderRadius: 3 }}>
+                    {j.name}{j.runs > 1 ? ` ×${j.runs}` : ''}
+                  </span>
+                ))}
+              </td>
+              <td style={{ color: '#4caf7d' }}>{st.man_used || '—'}</td>
+              <td style={{ color: '#3a9bd6' }}>{st.react_used || '—'}</td>
+              <td style={{ fontSize: 12, color: 'var(--text)' }}>{fmtTime(st.stage_time_s)}</td>
+              <td style={{ fontSize: 12, color: 'var(--text)' }}>{fmtTime(st.cumulative_s)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
 function ChainMetrics({ plan, totalCost, profit, buildHours }) {
   const units = plan.target_qty || 0
   const pos = c => (c == null ? undefined : c >= 0 ? '#4caf7d' : '#e05252')
