@@ -243,7 +243,7 @@ def _node_location(
     the old flat behaviour.
     """
     if loc.rigs or loc.is_ec:
-        eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name)
+        eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name, is_reaction)
         if is_reaction:
             me_mult = 1.0
         else:

@@ -28,6 +28,16 @@ const STATUS_COLOR = {
 const MARKETS = ['Jita', 'C-J']
 const METHODS = ['Buy', 'Split', 'Sell']
 
+// Engineering complexes (Raitaru/Azbel/Sotiyo) manufacture; refineries (Athanor/
+// Tatara) run reactions. Default a facility's chain slots to what its type can do.
+const REACTION_FAC = new Set(['Athanor', 'Tatara'])
+const EC_FAC = new Set(['Raitaru', 'Azbel', 'Sotiyo'])
+function defaultSlots(type) {
+  if (REACTION_FAC.has(type)) return { man: 0, react: 5 }
+  if (EC_FAC.has(type)) return { man: 5, react: 0 }
+  return { man: 5, react: 5 }   // Other → both
+}
+
 /**
  * Fetch market prices for a set of type_ids.
  * Jita → Fuzzwork aggregates; C-J → backend appraise.gnf.lt scraper.
@@ -858,6 +868,7 @@ function ChainTab() {
     me_pct: 0, te_pct: 0,
     system_cost_index: 0, facility_tax_pct: 0, structure_discount_pct: 0,
     man_lines: 10, react_lines: 0, max_depth: 12,
+    flag_unrealistic: true, unrealistic_ratio: 30,   // drop buys below 30% of adjusted
   })
 
   // ── (1) Buy-price region multi-select ──
@@ -888,7 +899,7 @@ function ChainTab() {
     get('/facilities').then(fs => {
       setFacilities(fs)
       const checks = {}
-      fs.forEach(f => { checks[f.id] = { checked: false, man: 5, react: 5 } })
+      fs.forEach(f => { checks[f.id] = { checked: false, ...defaultSlots(f.facility_type) } })
       setFacilityChecks(checks)
     }).catch(() => {})
   }, [])
@@ -933,16 +944,17 @@ function ChainTab() {
     })
   }
 
+  const facSlots = fid => defaultSlots(facilities.find(x => x.id === fid)?.facility_type)
   function toggleFacility(fid, checked) {
-    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { man: 5, react: 5 }), checked } }))
+    setFacilityChecks(prev => ({ ...prev, [fid]: { ...facSlots(fid), ...(prev[fid] || {}), checked } }))
   }
   function setFacilitySlot(fid, key, val) {
-    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { checked: false, man: 5, react: 5 }), [key]: val } }))
+    setFacilityChecks(prev => ({ ...prev, [fid]: { checked: false, ...facSlots(fid), ...(prev[fid] || {}), [key]: val } }))
   }
   function setAllFacilities(checked) {
     setFacilityChecks(prev => {
       const next = { ...prev }
-      facilities.forEach(f => { next[f.id] = { ...(prev[f.id] || { man: 5, react: 5 }), checked } })
+      facilities.forEach(f => { next[f.id] = { ...defaultSlots(f.facility_type), ...(prev[f.id] || {}), checked } })
       return next
     })
   }
@@ -970,6 +982,8 @@ function ChainTab() {
         region_id: [...selectedRegions][0] || 10000002,
         price_basis: params.price_basis,
         include_cj: includeCJ,
+        flag_unrealistic: params.flag_unrealistic,
+        unrealistic_ratio: Number(params.unrealistic_ratio) / 100,
         facility_id: singleFacilityId && facilityMode === 'none' ? Number(singleFacilityId) : null,
         me_pct: Number(params.me_pct),
         te_pct: Number(params.te_pct),
@@ -1030,14 +1044,17 @@ function ChainTab() {
 
   // where to buy each shopping item — winning region/source the backend reported
   const priceSource = result?.price_source || {}
+  const priceFlags  = result?.price_flags || {}
   const buyAtLabel = tid => {
     const src = priceSource[tid] ?? priceSource[String(tid)]
     if (src == null) return '—'
     if (src === 'C-J6MT') return 'C-J6MT'
     if (src === 'override') return 'manual'
+    if (src === 'adjusted') return 'ESI adjusted'
     const r = REGIONS.find(r => r.id === Number(src))
     return r ? r.name.replace(/\s*\(.*\)$/, '') : `region ${src}`
   }
+  const priceFlag = tid => priceFlags[tid] ?? priceFlags[String(tid)]
 
   const totalCost = result?.final_cost ?? plan?.total_cost ?? null
   const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null
@@ -1100,6 +1117,20 @@ function ChainTab() {
               <option value="buy">Buy orders (place buy)</option>
               <option value="sell">Sell orders (instant)</option>
             </select>
+          </div>
+
+          <div>
+            <CLabel>Scam-price guard <Hint>drop suspiciously low buys</Hint></CLabel>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer' }}>
+                <input type="checkbox" checked={params.flag_unrealistic}
+                  onChange={e => setParams(p => ({ ...p, flag_unrealistic: e.target.checked }))} />
+                ignore below
+              </label>
+              <input type="number" min={0} max={100} step={5} value={params.unrealistic_ratio}
+                onChange={setP('unrealistic_ratio')} disabled={!params.flag_unrealistic} style={{ width: 56 }} />
+              <span style={{ fontSize: 12, color: 'var(--text)' }}>% of adjusted</span>
+            </div>
           </div>
 
           {/* ── (2) Sell at for profit ── */}
@@ -1174,7 +1205,7 @@ function ChainTab() {
                   </thead>
                   <tbody>
                     {facilities.map(f => {
-                      const fc = facilityChecks[f.id] || { checked: false, man: 5, react: 5 }
+                      const fc = facilityChecks[f.id] || { checked: false, ...defaultSlots(f.facility_type) }
                       return (
                         <tr key={f.id} style={{ opacity: fc.checked ? 1 : 0.5 }}>
                           <td>
@@ -1455,9 +1486,20 @@ function ChainTab() {
                         </tr>
                       </thead>
                       <tbody>
-                        {shopping.map(s => (
+                        {shopping.map(s => {
+                          const fl = priceFlag(s.type_id)
+                          return (
                           <tr key={s.type_id}>
-                            <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{s.name}</td>
+                            <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>
+                              {s.name}
+                              {fl && (
+                                <span title={fl.reason}
+                                  style={{ fontSize: 10, color: '#e0884f', marginLeft: 6, background: '#2a1d10',
+                                    border: '1px solid #5a3d1a', padding: '1px 5px', borderRadius: 3 }}>
+                                  ⚠ ignored {fmtIsk(fl.original)}→{fmtIsk(fl.used)}
+                                </span>
+                              )}
+                            </td>
                             <td>{s.qty.toLocaleString()}</td>
                             <td>{fmtIsk(s.unit)}</td>
                             <td style={{ color: 'var(--accent)' }}>{fmtIsk(s.total)}</td>
@@ -1465,7 +1507,8 @@ function ChainTab() {
                               {buyAtLabel(s.type_id)}
                             </td>
                           </tr>
-                        ))}
+                          )
+                        })}
                       </tbody>
                     </table>
               <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>

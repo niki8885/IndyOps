@@ -21,11 +21,24 @@ from app.services.facility_bonus import (
     EC_COST_ROLE, EC_MATERIAL_ROLE, RigBonus, band_of, effective_bonuses,
 )
 from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_calculation
-from app.services.scheduling import stage_schedule
+from app.services.scheduling import stage_schedul
+from app.services.pricing import flag_unrealistic, resolve_price
 
 router = APIRouter()
 
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
+REACTION_TYPES = (FacilityType.ATHANOR, FacilityType.TATARA)
+
+
+def _activity_caps(facility_type) -> tuple[bool, bool]:
+    """(can_manufacture, can_react) for a facility type. Engineering complexes only
+    manufacture, refineries only run reactions, 'Other' can do both. This is what
+    keeps reactions off a Raitaru even if its slots are mis-configured."""
+    if facility_type in REACTION_TYPES:
+        return (False, True)
+    if facility_type in EC_TYPES:
+        return (True, False)
+    return (True, True)
 
 
 class BlueprintInfoOut(BaseModel):
@@ -63,6 +76,8 @@ class CalcRequest(BaseModel):
     time_role_pct: float = 0.0
     estimated_item_value: Optional[float] = None
     material_prices: List[MaterialPrice] = []
+    flag_unrealistic: bool = True
+    unrealistic_ratio: float = 0.3
 
 
 class JobCreate(BaseModel):
@@ -232,6 +247,17 @@ async def calculate(
         eve_db.close()
 
     price_map = {p.type_id: p.unit_cost for p in body.material_prices}
+
+    try:
+        adj = market.esi_adjusted_prices()
+    except Exception:
+        adj = {}
+
+    # Drop scam / unrealistically-low material prices before costing.
+    price_flags: dict[int, dict] = {}
+    if body.flag_unrealistic and adj:
+        price_map, price_flags = flag_unrealistic(price_map, adj, ratio=body.unrealistic_ratio)
+
     materials = [
         {**m, "unit_cost": price_map.get(m["type_id"], 0.0)}
         for m in base_mats
@@ -239,12 +265,8 @@ async def calculate(
 
     eiv = body.estimated_item_value
     if not eiv or eiv <= 0:
-        try:
-            adj = market.esi_adjusted_prices()
-            computed = sum((m["base_qty"] * body.runs) * adj.get(m["type_id"], 0.0) for m in base_mats)
-            eiv = computed if computed > 0 else None
-        except Exception:
-            eiv = None
+        computed = sum((m["base_qty"] * body.runs) * adj.get(m["type_id"], 0.0) for m in base_mats)
+        eiv = computed if computed > 0 else None
 
     sci = body.system_cost_index
     tax = body.facility_tax_pct
@@ -291,7 +313,9 @@ async def calculate(
         time_role_pct=time_role,
         windows=body.windows,
     )
-    return asdict(run_calculation(inp))
+    result = asdict(run_calculation(inp))
+    result["price_flags"] = {str(t): fl for t, fl in price_flags.items()}
+    return result
 
 
 # Recursive make-vs-buy chain + slot assignment
@@ -328,12 +352,23 @@ class ChainCalcRequest(BaseModel):
     window_hours: float = 24.0     # deprecated/ignored — kept for old clients
     max_depth: int = 12
     price_overrides: dict[int, float] = {}
+    # Scam-price guard: drop buy prices below `unrealistic_ratio` of the ESI adjusted
+    # price (manual price_overrides are exempt). Set flag_unrealistic=False to disable.
+    flag_unrealistic: bool = True
+    unrealistic_ratio: float = 0.3
     # Nodes the user chose to skip making (force buy): their recipes are dropped so
     # the core can only buy them. Lets the chain be re-shaped from the graph.
     force_buy: List[int] = []
     # The user's facilities. When given, each makeable node is built at the cheapest
     # eligible one (the core picks per node, using that facility's rigs).
     structures: List[ChainStructure] = []
+
+
+def _fnum(v) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _market_buy_prices(region_id: int, type_ids: list[int], basis: str) -> dict[int, Optional[float]]:
@@ -349,19 +384,21 @@ def _market_buy_prices(region_id: int, type_ids: list[int], basis: str) -> dict[
     return out
 
 
-def _market_buy_prices_multi(region_ids: list[int], type_ids: list[int], basis: str):
-    """Minimum acquire price across all given Fuzzwork regions, plus the *winning*
-    region per type so the shopping list can say where to buy each item."""
-    merged: dict[int, Optional[float]] = {}
-    source: dict[int, object] = {}     # type_id -> region_id (or "C-J6MT"/"override")
-    for rid in region_ids:
-        for tid, price in _market_buy_prices(rid, type_ids, basis).items():
-            if price is not None:
-                cur = merged.get(tid)
-                if cur is None or price < cur:
-                    merged[tid] = price
-                    source[tid] = rid
-    return merged, source
+def _region_two_sided(region_id: int, type_ids: list[int]) -> dict[int, dict]:
+    """Per-type ``{'buy','sell'}`` acquire prices from one region's Fuzzwork
+    aggregate — both sides from a single fetch, so the scam-price fallback can swap
+    sides or regions without extra calls."""
+    agg = market.fuzzwork_aggregates_or_empty(region_id, type_ids)
+    out: dict[int, dict] = {}
+    for tid in type_ids:
+        s = agg.get(str(tid)) or {}
+        b = s.get("buy") or {}
+        se = s.get("sell") or {}
+        out[tid] = {
+            "buy": _fnum(b.get("percentile") or b.get("max")),
+            "sell": _fnum(se.get("percentile") or se.get("min")),
+        }
+    return out
 
 
 def _job_dict(j: PlannedJob) -> dict:
@@ -403,6 +440,10 @@ def _facility_location(s: ChainStructure, f, rigs, band: str,
     global me_pct/te_pct are the manual base the rigs multiply onto.
     """
     is_ec = bool(f and f.facility_type in EC_TYPES)
+    # A facility can only run an activity its *type* allows (EC → manufacturing,
+    # refinery → reactions) AND has slots for. Type wins, so reactions never land
+    # on a Raitaru even if the user set react slots on it.
+    allow_man, allow_react = _activity_caps(f.facility_type) if f else (True, True)
     return LocationParams(
         place_id=s.place_id,
         place_name=s.name or (getattr(f, "name", None) if f else None) or f"struct {s.place_id}",
@@ -411,7 +452,8 @@ def _facility_location(s: ChainStructure, f, rigs, band: str,
         struct_discount=s.structure_discount_pct / 100,
         man_lines=s.man_lines, react_lines=s.react_lines,
         rigs=tuple(rigs), band=band, is_ec=is_ec,
-        can_man=s.man_lines > 0, can_react=s.react_lines > 0,
+        can_man=allow_man and s.man_lines > 0,
+        can_react=allow_react and s.react_lines > 0,
     )
 
 
@@ -474,10 +516,11 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
         finally:
             eve_db.close()
 
-    # single facility (facility_id) or pure-manual default — one location, both activities
+    # single facility (facility_id) or pure-manual default — one location.
     sci, tax_pct, disc_pct = body.system_cost_index, body.facility_tax_pct, body.structure_discount_pct
     place_id, place_name = body.place_id, body.place_name
     rigs, band, is_ec = [], "null", False
+    can_man, can_react = True, True   # pure-manual default builds anything
     if body.facility_id:
         f = db.query(Facility).filter(Facility.id == body.facility_id,
                                       Facility.user_id == user_id).first()
@@ -491,6 +534,7 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
             if disc_pct == 0.0 and f.cost_bonus:
                 disc_pct = f.cost_bonus
             is_ec = f.facility_type in EC_TYPES
+            can_man, can_react = _activity_caps(f.facility_type)   # a refinery can't manufacture, etc.
             eve_db = EveSessionLocal()
             try:
                 rigs, band, _sec = _facility_rig_context(eve_db, f)
@@ -502,6 +546,7 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
         sci=sci, tax=tax_pct / 100, scc=SCC_SURCHARGE, struct_discount=disc_pct / 100,
         man_lines=body.man_lines, react_lines=body.react_lines,
         rigs=tuple(rigs), band=band, is_ec=is_ec,
+        can_man=can_man, can_react=can_react,
     )]
 
 
@@ -531,8 +576,15 @@ async def calculate_chain(
 
     type_ids = list(tree)
     eff_region_ids = body.region_ids if body.region_ids else [body.region_id]
-    buy_prices, price_source = _market_buy_prices_multi(eff_region_ids, type_ids, body.price_basis)
 
+    try:
+        adj = market.esi_adjusted_prices()
+    except Exception:
+        adj = {}
+
+    # Both market sides from every selected region (one fetch each), plus optional C-J.
+    region_data = {rid: _region_two_sided(rid, type_ids) for rid in eff_region_ids}
+    cj_data: dict[int, dict] = {}
     if body.include_cj:
         import asyncio
         from concurrent.futures import ThreadPoolExecutor
@@ -542,22 +594,33 @@ async def calculate_chain(
                 *[loop.run_in_executor(ex, market.gnf_local, tid) for tid in type_ids]
             )
         for tid, p in zip(type_ids, cj_results):
-            if p is not None:
-                cj_acquire = p.get("buy") or p.get("sell")
-                if cj_acquire:
-                    cur = buy_prices.get(tid)
-                    if cur is None or cj_acquire < cur:
-                        buy_prices[tid] = cj_acquire
-                        price_source[tid] = "C-J6MT"
+            if p:
+                cj_data[tid] = {"buy": _fnum(p.get("buy")), "sell": _fnum(p.get("sell"))}
 
-    for k, v in body.price_overrides.items():
-        buy_prices[int(k)] = float(v)
-        price_source[int(k)] = "override"
+    overrides = {int(k): float(v) for k, v in body.price_overrides.items()}
+    ratio = body.unrealistic_ratio if body.flag_unrealistic else 0.0
 
-    try:
-        adj = market.esi_adjusted_prices()
-    except Exception:
-        adj = {}
+    # Per type: cheapest *realistic* price — another region or the sell side beats a
+    # scam buy order before we ever fall back to the ESI adjusted price.
+    buy_prices: dict[int, Optional[float]] = {}
+    price_source: dict[int, object] = {}     # type_id -> region_id / "C-J6MT" / "adjusted" / "override"
+    price_flags: dict[int, dict] = {}
+    for tid in type_ids:
+        if tid in overrides:
+            buy_prices[tid] = overrides[tid]
+            price_source[tid] = "override"
+            continue
+        buy_c = [(region_data[rid][tid]["buy"], rid) for rid in eff_region_ids]
+        sell_c = [(region_data[rid][tid]["sell"], rid) for rid in eff_region_ids]
+        if tid in cj_data:
+            buy_c.append((cj_data[tid]["buy"], "C-J6MT"))
+            sell_c.append((cj_data[tid]["sell"], "C-J6MT"))
+        price, src, flag = resolve_price(buy_c, sell_c, adj.get(tid), ratio, body.price_basis)
+        buy_prices[tid] = price
+        if src is not None:
+            price_source[tid] = src
+        if flag:
+            price_flags[tid] = flag
 
     facilities = _build_facilities(body, db, current_user.id)
     req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, facilities)
@@ -591,6 +654,7 @@ async def calculate_chain(
         "multi_location": len(facilities) > 1,
         "price_basis": body.price_basis,
         "price_source": {str(t): src for t, src in price_source.items()},
+        "price_flags": {str(t): fl for t, fl in price_flags.items()},
         "force_buy_skipped": forced_skipped,
     })
 
