@@ -13,6 +13,7 @@ from app.api.blueprints_router import router as blueprints_router
 from app.api.manufacturing_router import router as manufacturing_router
 from app.api.eve_router import router as eve_router
 from app.api.analysis_router import router as analysis_router
+from app.api.market_router import router as market_router
 from app.api.tracking_router import router as tracking_router
 from app.api.simulation_router import router as simulation_router
 
@@ -44,6 +45,7 @@ app.include_router(blueprints_router, prefix="/api/v1/blueprints", tags=["Bluepr
 app.include_router(manufacturing_router, prefix="/api/v1/manufacturing", tags=["Manufacturing"])
 app.include_router(eve_router, prefix="/api/v1/eve", tags=["EVE SDE"])
 app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])
+app.include_router(market_router, prefix="/api/v1/market", tags=["Market Browser"])
 app.include_router(tracking_router, prefix="/api/v1/tracking", tags=["Tracking"])
 app.include_router(simulation_router, prefix="/api/v1/simulation", tags=["Simulation"])
 

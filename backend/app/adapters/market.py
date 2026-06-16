@@ -110,3 +110,72 @@ def gnf_local(type_id: int) -> Optional[dict]:
                 "buy": buy.get("Max") or buy.get("99th Percentile")}
     except Exception:
         return None
+
+
+# ── ESI live order book (full buy+sell order list for one type in a region) ──
+# Fuzzwork only gives aggregates (best/percentile/volume); the Market Browser's
+# Orders and Order Book tabs need the individual orders, which only ESI exposes.
+_ORDERS_CACHE: dict = {}
+_ORDERS_TTL = 180  # orders move fast — a 3-min cache absorbs tab switches without hammering ESI
+_ESI_ORDERS_URL = "https://esi.evetech.net/latest/markets/{region_id}/orders/"
+
+
+def esi_region_orders(region_id: int, type_id: int) -> list[dict]:
+    """All live buy+sell orders for (region, type) from ESI. Paginated, cached 3 min.
+
+    Each order carries: order_id, price, volume_remain, volume_total, min_volume,
+    is_buy_order, range, location_id, system_id, duration, issued. Returns whatever
+    was fetched (possibly ``[]``) — never raises.
+    """
+    cache_key = (region_id, type_id)
+    now = _time.time()
+    hit = _ORDERS_CACHE.get(cache_key)
+    if hit and now - hit[0] < _ORDERS_TTL:
+        return hit[1]
+
+    url = _ESI_ORDERS_URL.format(region_id=region_id)
+    params = {"datasource": "tranquility", "order_type": "all", "type_id": type_id, "page": 1}
+    orders: list[dict] = []
+    try:
+        r = requests.get(url, params=params, headers=_HEADERS, timeout=_TIMEOUT)
+        r.raise_for_status()
+        orders.extend(r.json())
+        pages = int(r.headers.get("X-Pages", 1) or 1)
+        for page in range(2, min(pages, 10) + 1):  # cap at 10 pages (10k orders) for safety
+            params["page"] = page
+            rp = requests.get(url, params=params, headers=_HEADERS, timeout=_TIMEOUT)
+            rp.raise_for_status()
+            orders.extend(rp.json())
+    except Exception as exc:
+        logger.warning("esi orders region %s type %s failed: %s", region_id, type_id, exc)
+
+    _ORDERS_CACHE[cache_key] = (now, orders)
+    return orders
+
+
+_HIST_FULL_CACHE: dict = {}
+
+
+def esi_region_history_full(region_id: int, type_id: int) -> Optional[list]:
+    """Full daily ESI market history (up to ~13 months) for (region, type).
+
+    Like :func:`esi_region_history` but *not* truncated to 30 days — the Market
+    Browser uses the long range for technical/risk analytics. None on failure.
+    """
+    cache_key = (region_id, type_id)
+    now = _time.time()
+    hit = _HIST_FULL_CACHE.get(cache_key)
+    if hit and now - hit[0] < _HIST_TTL:
+        return hit[1]
+    try:
+        r = requests.get(
+            f"https://esi.evetech.net/latest/markets/{region_id}/history/",
+            params={"type_id": type_id, "datasource": "tranquility"},
+            headers=_HEADERS, timeout=25,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        data = None
+    _HIST_FULL_CACHE[cache_key] = (now, data)
+    return data
