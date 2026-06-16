@@ -70,13 +70,13 @@ def test_to_jsonable_floats_fractions_for_api():
     assert isinstance(payload["plan"]["total_cost"], float)
 
 
-def test_market_buy_prices_multi_tracks_winning_region(monkeypatch):
-    # Amarr is cheaper than Jita → its region id is recorded as the buy source.
-    def fake(region, ids):
-        return {"34": {"buy": {"percentile": 6.0 if region == 10000002 else 5.0}}}
-    monkeypatch.setattr(market, "fuzzwork_aggregates_or_empty", fake)
-    prices, source = mr._market_buy_prices_multi([10000002, 10000043], [34], "buy")
-    assert prices[34] == 5.0 and source[34] == 10000043
+def test_region_two_sided_parses_both_sides(monkeypatch):
+    agg = {"34": {"buy": {"percentile": 5.5, "max": 6.0}, "sell": {"percentile": 7.5, "min": 7.0}},
+           "99": {"buy": {}, "sell": {}}}
+    monkeypatch.setattr(market, "fuzzwork_aggregates_or_empty", lambda region, ids: agg)
+    out = mr._region_two_sided(10000002, [34, 99])
+    assert out[34] == {"buy": 5.5, "sell": 7.5}       # percentile preferred
+    assert out[99] == {"buy": None, "sell": None}     # missing → None both sides
 
 
 def test_chain_assignment_summarises_plan_by_facility():
