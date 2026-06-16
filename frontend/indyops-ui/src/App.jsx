@@ -8,6 +8,7 @@ import Layout from './pages/Layout'
 import InventoryPage from './pages/InventoryPage'
 import ManufacturingPage from './pages/ManufacturingPage'
 import OrganisationsHub from './pages/OrganisationsHub'
+import PersonalFilePage from './pages/PersonalFilePage'
 
 // Analysis and Market both pull in Plotly (~4MB) — load them on demand so they
 // can never block the rest of the app and stay out of the main bundle.
@@ -37,6 +38,7 @@ export default function App() {
                 </Suspense>
               } />
               <Route path="/organisations" element={<OrganisationsHub />} />
+              <Route path="/personal"      element={<PersonalFilePage />} />
               {/* legacy redirects */}
               <Route path="/facilities" element={<Navigate to="/organisations" replace />} />
               <Route path="/projects"   element={<Navigate to="/organisations" replace />} />
