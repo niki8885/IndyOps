@@ -78,13 +78,29 @@ def _ship_size(group_name: Optional[str]) -> Optional[str]:
     return None
 
 
-def rig_applies(rig_name: str, cat_id: Optional[int], group_name: Optional[str]) -> bool:
+def rig_applies(rig_name: str, cat_id: Optional[int], group_name: Optional[str],
+                is_reaction: bool = False) -> bool:
     """
-    Match an engineering rig to a product, based on the official affected-category
+    Match an industry rig to a product, based on the official affected-category
     lists from the SDE rig multiplier attribute descriptions.
+
+    Reactions are a separate world: only **reactor** rigs (refinery rigs) apply to
+    reaction outputs, and a subtype rig (composite/hybrid/biochemical) only covers
+    its own family — a plain "Reactor Efficiency" rig covers every reaction. Reactor
+    rigs never apply to manufacturing, and manufacturing rigs never apply to reactions.
     """
     n = (rig_name or "").lower()
     gn = (group_name or "").lower()
+    is_reactor_rig = "reactor" in n or "reaction" in n
+    if is_reaction:
+        if not is_reactor_rig:
+            return False
+        if "composite" in n: return "composite" in gn
+        if "hybrid" in n:    return "hybrid" in gn
+        if "biochem" in n:   return "biochem" in gn or "organic" in gn
+        return True
+    if is_reactor_rig:
+        return False
     if "equipment" in n:
         return cat_id in (_CAT_MODULE, _CAT_IMPLANT) or "cargo container" in gn or "deployable" in gn
     if "ammunition" in n:
@@ -112,12 +128,14 @@ def rig_applies(rig_name: str, cat_id: Optional[int], group_name: Optional[str])
 def effective_bonuses(
         rigs: list[RigBonus], band: str,
         cat_id: Optional[int], group_name: Optional[str],
+        is_reaction: bool = False,
 ) -> EffectiveBonus:
     """Roll a structure's rigs up to effective ME/TE/cost % for one product.
 
     Only rigs whose affected-category list covers the product contribute to the
     totals; every rig still appears in ``rigs`` so callers can show why one was
-    skipped. EC role bonuses are intentionally excluded (added by the caller).
+    skipped. ``is_reaction`` switches to reactor-rig matching (see ``rig_applies``).
+    EC role bonuses are intentionally excluded (added by the caller).
     """
     tot_me = tot_te = tot_cost = 0.0
     detail: list[dict] = []
@@ -127,7 +145,7 @@ def effective_bonuses(
                            "applies": False, "reason": "no industry bonus"})
             continue
         mod = {"hi": rb.hisec_mod, "low": rb.lowsec_mod, "null": rb.nullsec_mod}[band] or 1.0
-        applies = rig_applies(rb.name, cat_id, group_name)
+        applies = rig_applies(rb.name, cat_id, group_name, is_reaction)
         eff_me = abs(rb.me_bonus or 0) * mod
         eff_te = abs(rb.te_bonus or 0) * mod
         eff_cost = abs(rb.cost_bonus or 0) * mod

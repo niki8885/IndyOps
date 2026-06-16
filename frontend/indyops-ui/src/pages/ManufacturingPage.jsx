@@ -28,6 +28,16 @@ const STATUS_COLOR = {
 const MARKETS = ['Jita', 'C-J']
 const METHODS = ['Buy', 'Split', 'Sell']
 
+// Engineering complexes (Raitaru/Azbel/Sotiyo) manufacture; refineries (Athanor/
+// Tatara) run reactions. Default a facility's chain slots to what its type can do.
+const REACTION_FAC = new Set(['Athanor', 'Tatara'])
+const EC_FAC = new Set(['Raitaru', 'Azbel', 'Sotiyo'])
+function defaultSlots(type) {
+  if (REACTION_FAC.has(type)) return { man: 0, react: 5 }
+  if (EC_FAC.has(type)) return { man: 5, react: 0 }
+  return { man: 5, react: 5 }   // Other → both
+}
+
 /**
  * Fetch market prices for a set of type_ids.
  * Jita → Fuzzwork aggregates; C-J → backend appraise.gnf.lt scraper.
@@ -888,7 +898,7 @@ function ChainTab() {
     get('/facilities').then(fs => {
       setFacilities(fs)
       const checks = {}
-      fs.forEach(f => { checks[f.id] = { checked: false, man: 5, react: 5 } })
+      fs.forEach(f => { checks[f.id] = { checked: false, ...defaultSlots(f.facility_type) } })
       setFacilityChecks(checks)
     }).catch(() => {})
   }, [])
@@ -933,16 +943,17 @@ function ChainTab() {
     })
   }
 
+  const facSlots = fid => defaultSlots(facilities.find(x => x.id === fid)?.facility_type)
   function toggleFacility(fid, checked) {
-    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { man: 5, react: 5 }), checked } }))
+    setFacilityChecks(prev => ({ ...prev, [fid]: { ...facSlots(fid), ...(prev[fid] || {}), checked } }))
   }
   function setFacilitySlot(fid, key, val) {
-    setFacilityChecks(prev => ({ ...prev, [fid]: { ...(prev[fid] || { checked: false, man: 5, react: 5 }), [key]: val } }))
+    setFacilityChecks(prev => ({ ...prev, [fid]: { checked: false, ...facSlots(fid), ...(prev[fid] || {}), [key]: val } }))
   }
   function setAllFacilities(checked) {
     setFacilityChecks(prev => {
       const next = { ...prev }
-      facilities.forEach(f => { next[f.id] = { ...(prev[f.id] || { man: 5, react: 5 }), checked } })
+      facilities.forEach(f => { next[f.id] = { ...defaultSlots(f.facility_type), ...(prev[f.id] || {}), checked } })
       return next
     })
   }
@@ -1174,7 +1185,7 @@ function ChainTab() {
                   </thead>
                   <tbody>
                     {facilities.map(f => {
-                      const fc = facilityChecks[f.id] || { checked: false, man: 5, react: 5 }
+                      const fc = facilityChecks[f.id] || { checked: false, ...defaultSlots(f.facility_type) }
                       return (
                         <tr key={f.id} style={{ opacity: fc.checked ? 1 : 0.5 }}>
                           <td>
