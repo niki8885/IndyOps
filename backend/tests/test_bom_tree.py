@@ -1,20 +1,12 @@
-"""
-bom_tree walks the full DAG across manufacturing (1) and reactions (11) and
-stays batched per level (no N+1) — same SQLite-in-memory SDE as the other repo
-tests.
-"""
+
 from app.core.database_eve import (
     EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint, EveType,
+    EveMetaType,
 )
 from app.repositories import eve as eve_repo
 
 
 def _seed_two_tier(s):
-    """
-    T2(2000) ← bp1000[act1]  : 4×COMP(3000) + 100×MIN(34)
-    COMP(3000) ← bp1001[act11]: 2×MOON(4000)   (reaction, yields 10/run)
-    MIN(34), MOON(4000) are leaves.
-    """
     s.add_all([
         EveActivityProduct(type_id=1000, activity_id=1, product_type_id=2000, quantity=1),
         EveActivityProduct(type_id=1001, activity_id=11, product_type_id=3000, quantity=10),
@@ -58,6 +50,19 @@ def test_bom_tree_is_batched_per_level(eve_session, query_counter):
     # 3 levels (hull / comp+min / moon) + batched name + group lookups. Constant in
     # the number of materials per tier — adding a 4th input would NOT add a query.
     assert query_counter.count == 11
+
+
+def test_bom_tree_surfaces_meta_group(eve_session):
+    """Each node carries its tech level (meta_group_id); nodes with no invMetaTypes
+    row come back None (treated as Tech I by the rig gate)."""
+    _seed_two_tier(eve_session)
+    eve_session.add(EveMetaType(type_id=2000, meta_group_id=2))   # T2 hull
+    eve_session.commit()
+    tree = eve_repo.bom_tree(eve_session, 2000)
+    assert tree[2000]["meta_group_id"] == 2
+    assert tree[3000]["meta_group_id"] is None
+    assert eve_repo.meta_group_for(eve_session, 2000) == 2
+    assert eve_repo.meta_group_for(eve_session, 3000) is None
 
 
 def test_recipes_for_product_lists_both_activities(eve_session):

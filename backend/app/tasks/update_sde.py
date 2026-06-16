@@ -19,6 +19,7 @@ from app.core.database_eve import (
     EveGroup,
     EveMarketGroup,
     EveType,
+    EveMetaType,
     EveBlueprint,
     EveActivityTime,
     EveActivityMaterial,
@@ -241,6 +242,28 @@ def update_types(db) -> int:
                 "capacity", "portion_size", "race_id", "base_price",
                 "published", "market_group_id", "icon_id", "graphic_id", "sound_id",
             )},
+        )
+
+    return _upsert_chunks(db, build, raw)
+
+
+def update_meta_types(db) -> int:
+    """Item tech level (meta group) from invMetaTypes — gates Basic/Advanced rigs."""
+    raw = _download_csv("invMetaTypes")
+
+    def build(batch):
+        values = [
+            {
+                "type_id": _coerce(r, "typeID", int),
+                "parent_type_id": _coerce(r, "parentTypeID", int),
+                "meta_group_id": _coerce(r, "metaGroupID", int),
+            }
+            for r in batch
+        ]
+        stmt = pg_insert(EveMetaType).values(values)
+        return stmt.on_conflict_do_update(
+            index_elements=["type_id"],
+            set_={c: stmt.excluded[c] for c in ("parent_type_id", "meta_group_id")},
         )
 
     return _upsert_chunks(db, build, raw)
@@ -540,6 +563,7 @@ STEPS: list[tuple[str, Any]] = [
     ("groups", update_groups),
     ("market_groups", update_market_groups),
     ("types", update_types),
+    ("meta_types", update_meta_types),
     ("blueprints", update_blueprints),
     ("activity_times", update_activity_times),
     ("activity_materials", update_activity_materials),

@@ -95,6 +95,21 @@ class EveType(EveBase):
     sound_id = Column(Integer, nullable=True)
 
 
+class EveMetaType(EveBase):
+    """invMetaTypes — an item's tech level (meta group).
+
+    ``meta_group_id``: 1 Tech I · 2 Tech II · 14 Tech III · 3 Storyline ·
+    4 Faction · … Used to gate Basic vs Advanced engineering rigs (Basic rigs
+    affect Tech I, Advanced rigs affect Tech II/III). Items with no row here
+    (minerals, base hulls…) are treated as Tech I.
+    """
+    __tablename__ = "eve_meta_types"
+
+    type_id = Column(Integer, primary_key=True)
+    parent_type_id = Column(Integer, nullable=True, index=True)
+    meta_group_id = Column(Integer, nullable=True, index=True)
+
+
 # ---------------------------------------------------------------------------
 # Industry / Blueprints
 # ---------------------------------------------------------------------------
