@@ -85,9 +85,12 @@ def test_missing_volume_does_not_zero_revenue():
     assert m.prob_loss == 0.0
 
 
-def test_partial_fill_only_when_volume_known():
-    """When volume *is* known and thin, the fill constraint still bites (revenue
-    cut); when it is absent it does not — guards against re-introducing the bug."""
+def test_product_revenue_not_throttled_by_liquidity():
+    """The product sells in full regardless of its own market depth — thin product
+    liquidity is a time/price risk, not forfeited units. A thin-volume product and a
+    no-volume product yield the SAME (full) revenue. Materials still throttle (see
+    test_shortfall_premium_raises_material_cost). Guards the 'too pessimistic' bug
+    where a low-volume capital lost most of its revenue and read as a certain loss."""
     base = dict(legs=[_flat_leg(1, 100.0)], fixed_cost=0.0, production_time_s=3600,
                 cholesky_L=[[1.0, 0.0], [0.0, 1.0]],
                 params=_deterministic_params(participation_cap=1e-9, shortfall_premium=0.0))
@@ -97,8 +100,10 @@ def test_partial_fill_only_when_volume_known():
                            vol_mean=0.0, vol_sigma=0.0, spread_mean=0.0, spread_sigma=0.0)
     m_thin = ps.simulate(ps.SimRequest("thin", product=thin, **base)).metrics
     m_none = ps.simulate(ps.SimRequest("none", product=none, **base)).metrics
-    assert m_thin.expected_profit < m_none.expected_profit   # known-thin still throttles
-    assert m_none.expected_profit > 0                         # absent data ⇒ full revenue
+    # 1000 @ 50 = 50,000 revenue regardless of product volume (no leg cost: cap is huge
+    # for the single cheap leg only via shortfall=0); both realise full revenue.
+    assert math.isclose(m_thin.expected_profit, m_none.expected_profit, rel_tol=1e-9)
+    assert m_none.expected_profit > 0                         # full revenue, not throttled
 
 
 def test_correlation_propagates_to_sampled_prices():

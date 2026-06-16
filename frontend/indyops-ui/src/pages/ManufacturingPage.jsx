@@ -907,6 +907,8 @@ function ChainTab() {
     system_cost_index: 0, facility_tax_pct: 0, structure_discount_pct: 0,
     man_lines: 10, react_lines: 0, max_depth: 12,
     flag_unrealistic: true, unrealistic_ratio: 30,   // drop buys below 30% of adjusted
+    broker_fee_pct: 3.6,   // sell-side broker fee
+    sales_tax_pct: 2.0,    // sell-side sales tax
   })
 
   // ── (1) Buy-price region multi-select ──
@@ -1163,9 +1165,13 @@ function ChainTab() {
   const priceFlag = tid => priceFlags[tid] ?? priceFlags[String(tid)]
 
   const totalCost = result?.final_cost ?? plan?.total_cost ?? null
-  const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null
-  const profit    = totalSell != null && totalCost != null ? totalSell - totalCost : null
-  const margin    = profit != null && totalSell ? profit / totalSell * 100 : null
+  const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null   // gross market value
+  // Revenue is net of sell-side fees (broker fee + sales tax), like real selling —
+  // without this the margin runs ~5 points high vs tools that subtract them (Ravworks).
+  const sellFeePct = (Number(params.broker_fee_pct) || 0) + (Number(params.sales_tax_pct) || 0)
+  const netSell   = totalSell != null ? totalSell * (1 - sellFeePct / 100) : null
+  const profit    = netSell != null && totalCost != null ? netSell - totalCost : null
+  const margin    = profit != null && netSell ? profit / netSell * 100 : null
 
   // estimated wall-clock build time: the dependency-staged schedule (global slot
   // caps) when available, else the busiest (facility, slot) line as a fallback.
@@ -1254,6 +1260,14 @@ function ChainTab() {
                   className={`btn btn-sm ${sellMethod === m ? 'btn-primary' : 'btn-ghost'}`}
                   style={{ padding: '2px 8px', fontSize: 11 }}>{m}</button>
               ))}
+              <span style={{ fontSize: 11, color: 'var(--text)', marginLeft: 4 }} title="Broker fee taken off the sell side">Broker</span>
+              <input type="number" step="0.1" min="0" value={params.broker_fee_pct}
+                onChange={setP('broker_fee_pct')} style={{ width: 44, padding: '2px 4px', fontSize: 11 }} />
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>%</span>
+              <span style={{ fontSize: 11, color: 'var(--text)', marginLeft: 4 }} title="Sales tax taken off the sell side">Tax</span>
+              <input type="number" step="0.1" min="0" value={params.sales_tax_pct}
+                onChange={setP('sales_tax_pct')} style={{ width: 44, padding: '2px 4px', fontSize: 11 }} />
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>%</span>
             </div>
           </div>
 
@@ -1482,6 +1496,7 @@ function ChainTab() {
                 : sellPrice != null
                   ? <>
                       <IskStat label={`Sell (${sellMarket} ${sellMethod})`} value={totalSell} color="#4caf7d" bold />
+                      <IskStat label={`Net sell (−${sellFeePct.toFixed(1)}%)`} value={netSell} color="#4caf7d" />
                       <IskStat label="Profit" value={profit} color={profit >= 0 ? '#4caf7d' : '#e05252'} bold />
                       <div>
                         <div style={statLabel}>Margin</div>
@@ -1594,12 +1609,14 @@ function ChainTab() {
                     <td>
                       {makeable
                         ? <span style={{ display: 'inline-flex', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                            {/* highlight the ACTUAL decision (a force-bought node already
+                                reports decision='buy'), not just the force-buy flag */}
                             <button type="button" title="Build this in-house"
                               onClick={() => { if (skipped) toggleSkip(d.type_id) }}
-                              style={swapBtnStyle(!skipped, '#4caf7d')}>MAKE</button>
+                              style={swapBtnStyle(d.decision === 'make', '#4caf7d')}>MAKE</button>
                             <button type="button" title="Buy this instead of building"
                               onClick={() => { if (!skipped) toggleSkip(d.type_id) }}
-                              style={swapBtnStyle(skipped, '#3a9bd6')}>BUY</button>
+                              style={swapBtnStyle(d.decision !== 'make', '#3a9bd6')}>BUY</button>
                           </span>
                         : <span style={{ color: 'var(--border2)', fontSize: 11 }}>buy only</span>}
                     </td>

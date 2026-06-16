@@ -183,8 +183,12 @@ splitRuns cap total
   | total <= 0 = []
   | otherwise  = let r = min cap total in r : splitRuns cap (total - r)
 
+-- Reverse post-order DFS: a valid topological sort even when a node is shared by
+-- several parents, so 'plan' has the full demand for a node before it is consumed.
+-- A pre-order ('ordered ++ [t]' before visiting children) drops every parent after
+-- the first for a shared node, undercounting its inputs and the total cost.
 topoMakeOrder :: M.Map Int Node -> Memo -> Int -> [Int]
-topoMakeOrder nodes decs target = acc
+topoMakeOrder nodes decs target = reverse acc
   where
     isMake t = maybe False ((== "make") . dDecision) (M.lookup t decs)
     chosen t = ndRecipes (nodes M.! t) !! fromMaybe 0 (dRecipeIndex (decs M.! t))
@@ -192,8 +196,9 @@ topoMakeOrder nodes decs target = acc
       | S.member t seen = st
       | not (isMake t) = st
       | otherwise =
-          let st' = (S.insert t seen, ordered ++ [t])
-          in foldl' (\s (mt, _) -> visit s mt) st' (rcInputs (chosen t))
+          let (seen', ordered') =
+                foldl' (\s (mt, _) -> visit s mt) (S.insert t seen, ordered) (rcInputs (chosen t))
+          in (seen', ordered' ++ [t])   -- post-order: append after all children
     (seen1, acc1) = visit (S.empty, []) target
     makeIds = [t | (t, d) <- M.toList decs, dDecision d == "make"]
     (_, acc) = foldl' visit (seen1, acc1) makeIds

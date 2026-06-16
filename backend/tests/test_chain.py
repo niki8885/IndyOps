@@ -132,6 +132,27 @@ def test_property_shared_subtree_demand_sums():
     assert raw_lines[0].qty == 10            # 3 (via A) + 7 (via B)
 
 
+def test_shared_made_intermediate_demand_sums():
+    # A *made* node S feeds two made parents A and B (like a composite reaction that
+    # feeds many capital components). Every parent's demand for S must be summed.
+    # Regression: the make-order was a pre-order, which processes S right after the
+    # FIRST parent and silently drops every later parent's demand → S's inputs and
+    # the whole total cost were undercounted (Anshar margin 54% instead of ~20%).
+    nodes = {
+        1: Node(1, "ROOT", 1e12, (_recipe([(2, 1), (3, 1)]),)),
+        2: Node(2, "A", 1e9, (_recipe([(4, 1)]),)),
+        3: Node(3, "B", 1e9, (_recipe([(4, 1)]),)),
+        4: Node(4, "S", 1e9, (_recipe([(5, 5)]),)),   # made shared intermediate
+        5: Node(5, "RAW", 100.0),                     # bought leaf
+    }
+    plan = solve_chain(ChainRequest(1, 1, nodes))
+    assert plan.decisions[4].decision == "make"
+    raw = [s for s in plan.shopping_list if s.type_id == 5][0]
+    assert raw.qty == 10                       # 2 × S × 5 RAW (NOT 5 — both parents counted)
+    # phase-2 plan total must equal the phase-1 recursive unit cost (no install here).
+    assert plan.total_cost == plan.unit_cost == 1000.0
+
+
 def test_property_total_matches_unit_when_clean():
     # qty divides runs cleanly and me_mult 1 → phase-1 unit × qty == phase-2 total.
     nodes = {

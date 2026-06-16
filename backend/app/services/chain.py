@@ -397,7 +397,18 @@ def _decide(req: ChainRequest) -> dict[int, NodeDecision]:
 
 
 def _topo_make_order(req: ChainRequest, decisions: dict[int, NodeDecision]) -> list[int]:
-    """Make-nodes, every node after all its make-parents (root first)."""
+    """Make-nodes in dependency order — every node *after* all of its make-parents
+    (root first), so ``_plan`` has accumulated the full demand for a node before it
+    is consumed.
+
+    This is a **reverse post-order** DFS, which is a valid topological sort even when
+    a node is shared by several parents. A plain pre-order is NOT: it places a shared
+    node at its first-encountered position, so every later parent's demand is added
+    after the node was already processed and is silently dropped — undercounting the
+    shared inputs (e.g. a composite reaction feeding many capital components) and the
+    total cost. Post-order guarantees descendants precede ancestors; reversing gives
+    ancestors (parents) before descendants (children) for *every* parent.
+    """
     make = {t for t, d in decisions.items() if d.decision == "make"}
     order: list[int] = []
     seen: set[int] = set()
@@ -406,15 +417,16 @@ def _topo_make_order(req: ChainRequest, decisions: dict[int, NodeDecision]) -> l
         if tid in seen or tid not in make:
             return
         seen.add(tid)
-        order.append(tid)
         d = decisions[tid]
         recipe = req.nodes[tid].recipes[d.recipe_index]
         for mtid, _ in recipe.inputs:
             visit(mtid)
+        order.append(tid)          # post-order: append after all children
 
     visit(req.target_type_id)
-    for t in make:
+    for t in sorted(make):
         visit(t)
+    order.reverse()                # → parents before children (valid topo order)
     return order
 
 

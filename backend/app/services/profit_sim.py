@@ -276,25 +276,28 @@ def simulate(req: SimRequest) -> SimResult:
     buy_price = price[:, :m] * (1.0 + p.slippage * spread[:, :m])
     sell_price = price[:, m] * (1.0 - p.slippage * spread[:, m])
 
-    # 4. liquidity / fill (market-execution risk). A zero ``vol_mean`` means we have
-    #    *no* volume history for that variable (degenerate / point-price fallback), not
-    #    that the market is empty — so impose no liquidity constraint (fill=1) instead
-    #    of treating it as unsellable (fill=0). The latter zeroes the product's revenue
-    #    in every scenario and forces the shortfall premium onto every leg, which makes
-    #    even a clearly-profitable chain look like a guaranteed loss.
-    volume = vol_mean * np.exp(vol_sig * rng.standard_normal((n, nvars)))
+    # 4. liquidity / fill (market-execution risk) — **materials only**. A zero
+    #    ``vol_mean`` means we have *no* volume history for that leg (degenerate /
+    #    point-price fallback), not an empty market — so impose no constraint (fill=1).
+    #    An under-fill does not lose the material, it adds the shortfall premium (you
+    #    pay up to source it faster).
+    volume = vol_mean[:m] * np.exp(vol_sig[:m] * rng.standard_normal((n, m)))
     exec_cap = p.participation_cap * volume * p.horizon_days
-    known = vol_mean > 0.0  # do we actually have liquidity data for this variable?
+    known = vol_mean[:m] > 0.0  # do we actually have liquidity data for this leg?
     with np.errstate(divide="ignore", invalid="ignore"):
-        fill_mat = np.where((qty > 0) & known[:m],
-                            np.minimum(1.0, exec_cap[:, :m] / qty), 1.0)
-        fill_prod = np.where(req.product.qty > 0 and bool(known[m]),
-                             np.minimum(1.0, exec_cap[:, m] / req.product.qty), 1.0)
+        fill_mat = np.where((qty > 0) & known,
+                            np.minimum(1.0, exec_cap / qty), 1.0)
 
     # 5. P&L per scenario
     base_mat = buy_price * qty
     material_cost = (base_mat * (1.0 + (1.0 - fill_mat) * p.shortfall_premium)).sum(axis=1)
-    revenue = req.product.qty * sell_price * fill_prod
+    # The product sells in FULL. Thin product liquidity means the batch takes longer to
+    # sell — that is price risk over the holding horizon (already in the price model), it
+    # does NOT forfeit units. The old ``* fill_prod`` kept only the fraction sellable in a
+    # single ``horizon_days`` and threw the rest away, so a low-volume capital (Anshar
+    # ~3.5/day) lost ~65% of its revenue and a clearly-profitable build read as a near-
+    # certain loss (E[profit] went negative, P(loss) ~76%).
+    revenue = req.product.qty * sell_price
     taxes = revenue * (req.product.broker_fee_pct + req.product.sales_tax_pct) / 100.0
 
     delayed = rng.random(n) < p.haul_delay_prob
