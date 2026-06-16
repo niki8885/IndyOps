@@ -29,6 +29,9 @@ const STATUS_COLOR = {
 const MARKETS = ['Jita', 'C-J']
 const METHODS = ['Buy', 'Split', 'Sell']
 
+// EVE item icon CDN — lets each chain node show what the component actually is.
+const iconUrl = (id, size = 32) => `https://images.evetech.net/types/${id}/icon?size=${size}`
+
 // Engineering complexes (Raitaru/Azbel/Sotiyo) manufacture; refineries (Athanor/
 // Tatara) run reactions. Default a facility's chain slots to what its type can do.
 const REACTION_FAC = new Set(['Athanor', 'Tatara'])
@@ -1461,6 +1464,16 @@ function ChainTab() {
           {result.simulation && <SimulationPanel run={result.simulation} projectId={result.simulation.project_id} />}
           {/* ── Summary ── */}
           <Section title="Chain summary">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 12px 0' }}>
+              <img src={iconUrl(plan.target_type_id, 64)} alt="" width={40} height={40} loading="lazy"
+                style={{ borderRadius: 5, background: 'var(--surface3)', flexShrink: 0 }} />
+              <div>
+                <div style={{ color: 'var(--text-white)', fontWeight: 600, fontSize: 15 }}>
+                  {plan.decisions?.[plan.target_type_id]?.name || product?.name || `Type ${plan.target_type_id}`}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text)' }}>Producing ×{plan.target_qty}</div>
+              </div>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, padding: 12 }}>
               <IskStat label="Unit cost" value={plan.unit_cost} color="var(--accent)" bold />
               <IskStat label="Total production cost" value={totalCost} bold />
@@ -1550,7 +1563,13 @@ function ChainTab() {
                   const edited = meTeOverrides[d.type_id] != null
                   return (
                   <tr key={d.type_id}>
-                    <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{d.name}</td>
+                    <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                        <img src={iconUrl(d.type_id, 32)} alt="" width={22} height={22} loading="lazy"
+                          style={{ borderRadius: 3, background: 'var(--surface3)', flexShrink: 0 }} />
+                        {d.name}
+                      </span>
+                    </td>
                     <td>
                       {makeable
                         ? <input type="number" min={0} max={10} style={{ width: 44, color: edited ? 'var(--accent)' : undefined }}
@@ -1574,9 +1593,15 @@ function ChainTab() {
                     </td>
                     <td>
                       {makeable
-                        ? <input type="checkbox" checked={!skipped} title="uncheck to skip making this (force buy)"
-                            onChange={() => toggleSkip(d.type_id)} />
-                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>}
+                        ? <span style={{ display: 'inline-flex', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                            <button type="button" title="Build this in-house"
+                              onClick={() => { if (skipped) toggleSkip(d.type_id) }}
+                              style={swapBtnStyle(!skipped, '#4caf7d')}>MAKE</button>
+                            <button type="button" title="Buy this instead of building"
+                              onClick={() => { if (!skipped) toggleSkip(d.type_id) }}
+                              style={swapBtnStyle(skipped, '#3a9bd6')}>BUY</button>
+                          </span>
+                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>buy only</span>}
                     </td>
                   </tr>
                   )
@@ -1880,6 +1905,15 @@ ${[...decisions].sort((a, b) => (b.saved_per_unit || 0) - (a.saved_per_unit || 0
 </tbody>
 </table>
 </body></html>`
+}
+
+// One segment of the make/buy swapper in the chain table. `active` side is filled.
+function swapBtnStyle(active, color) {
+  return {
+    border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 700, lineHeight: 1.4,
+    padding: '3px 9px', color: active ? '#08120c' : 'var(--text)',
+    background: active ? color : 'transparent',
+  }
 }
 
 function DecisionBadge({ decision }) {
