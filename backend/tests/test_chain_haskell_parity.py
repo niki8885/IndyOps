@@ -96,6 +96,17 @@ def _req_multi_location():
     })
 
 
+def _req_reaction_refinery():
+    # Reaction at a refinery with a reactor-rig TE cut (ME stays 1.0) — both engines
+    # must agree on the reaction job's qty/time/cost (IO-15 path).
+    rloc = _loc(20, slot_kind="reaction", te_mult=0.8, sci=0.05, tax=0.01, scc=0.04, eiv_unit=500.0)
+    rec = Recipe(11, 9001, 10, 3600, ((30, 100),), (rloc,), 100)
+    return ChainRequest(40, 30, {
+        40: Node(40, "Reacted", 5000.0, (rec,)),
+        30: Node(30, "Goo", 12.0),
+    })
+
+
 REQUESTS = {
     "two_tier": _req_two_tier,
     "install_me_scc": _req_install_me_scc,
@@ -104,6 +115,7 @@ REQUESTS = {
     "buy_beats_make": _req_buy_beats_make,
     "messy_rationals": _req_messy_rationals,
     "multi_location": _req_multi_location,
+    "reaction_refinery": _req_reaction_refinery,
 }
 
 

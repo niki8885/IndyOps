@@ -272,3 +272,64 @@ def test_bpc_cost_folds_into_make_cost():
                    bpc_unit={1: 5.0})
     job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
     assert job.bpc_cost == 5.0 * job.qty_out
+
+
+# ── reactions: only at refineries, only reactor rigs apply (IO-15) ──────────────
+
+def _tree_reaction(group_name="Composite"):
+    return {
+        1: {"name": "Reacted", "category_id": 4, "group_name": group_name,
+            "recipes": [{"activity": 11, "blueprint_type_id": 100, "qty_per_run": 10,
+                         "base_time": 3600, "max_runs": 100, "inputs": [{"type_id": 2, "qty": 100}]}]},
+        2: {"name": "Moon Goo", "category_id": None, "group_name": None, "recipes": []},
+    }
+
+
+def _tatara(rig=None, **kw):
+    return LocationParams(20, "Tatara", can_man=False, can_react=True,
+                          rigs=(rig,) if rig else (), **kw)
+
+
+def test_reaction_not_eligible_at_engineering_complex():
+    # An EC (can_man only) is not eligible for a reaction → recipe dropped → buy.
+    ec = LocationParams(10, "Sotiyo", can_man=True, can_react=False)
+    req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [ec])
+    assert req.nodes[1].recipes == ()
+    assert solve_chain(req).decisions[1].decision == "buy"
+
+
+def test_reaction_runs_at_refinery_with_reactor_rig():
+    # A refinery is eligible; its reactor rig cuts reaction time, ME stays 1.0.
+    rig = RigBonus(type_id=600, name="Standup L-Set Reactor Efficiency",
+                   te_bonus=-20.0, cost_bonus=-10.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
+    req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
+    loc = req.nodes[1].recipes[0].locations[0]
+    assert loc.slot_kind == "reaction" and loc.place_id == 20
+    assert loc.me_mult == 1.0          # reactions ignore ME
+    assert loc.te_mult == 0.8          # 20% reactor TE applied
+
+
+def test_reactor_rig_ignored_for_manufacturing():
+    rig = RigBonus(type_id=600, name="Standup L-Set Reactor Efficiency",
+                   te_bonus=-20.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
+    tree = _tree_one_tier(cat_id=6, group_name="Battleship", qty=1000)
+    req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [LocationParams(10, "Sotiyo", rigs=(rig,), band="hi")])
+    assert req.nodes[1].recipes[0].locations[0].te_mult == 1.0
+
+
+def test_ship_rig_ignored_for_reaction():
+    rig = RigBonus(type_id=500, name="Standup L-Set Ship Manufacturing Efficiency",
+                   te_bonus=-20.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
+    req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
+    assert req.nodes[1].recipes[0].locations[0].te_mult == 1.0
+
+
+def test_reactor_subtype_matches_product_family():
+    rig = RigBonus(type_id=601, name="Standup M-Set Composite Reactor Efficiency",
+                   te_bonus=-10.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
+    # composite product → the composite-reactor rig applies
+    req_c = from_bom(1, 10, _tree_reaction("Composite"), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
+    assert req_c.nodes[1].recipes[0].locations[0].te_mult == 0.9
+    # hybrid-polymer product → it does not
+    req_h = from_bom(1, 10, _tree_reaction("Hybrid Polymers"), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
+    assert req_h.nodes[1].recipes[0].locations[0].te_mult == 1.0

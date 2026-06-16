@@ -247,7 +247,7 @@ def _node_location(
     bm = loc.me_mult if base_me_mult is None else base_me_mult
     bt = loc.te_mult if base_te_mult is None else base_te_mult
     if loc.rigs or loc.is_ec:
-        eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name)
+        eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name, is_reaction)
         if is_reaction:
             me_mult = 1.0
         else:
