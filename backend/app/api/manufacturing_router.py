@@ -25,6 +25,18 @@ from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_c
 router = APIRouter()
 
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
+REACTION_TYPES = (FacilityType.ATHANOR, FacilityType.TATARA)
+
+
+def _activity_caps(facility_type) -> tuple[bool, bool]:
+    """(can_manufacture, can_react) for a facility type. Engineering complexes only
+    manufacture, refineries only run reactions, 'Other' can do both. This is what
+    keeps reactions off a Raitaru even if its slots are mis-configured."""
+    if facility_type in REACTION_TYPES:
+        return (False, True)
+    if facility_type in EC_TYPES:
+        return (True, False)
+    return (True, True)
 
 
 class BlueprintInfoOut(BaseModel):
@@ -402,6 +414,10 @@ def _facility_location(s: ChainStructure, f, rigs, band: str,
     global me_pct/te_pct are the manual base the rigs multiply onto.
     """
     is_ec = bool(f and f.facility_type in EC_TYPES)
+    # A facility can only run an activity its *type* allows (EC → manufacturing,
+    # refinery → reactions) AND has slots for. Type wins, so reactions never land
+    # on a Raitaru even if the user set react slots on it.
+    allow_man, allow_react = _activity_caps(f.facility_type) if f else (True, True)
     return LocationParams(
         place_id=s.place_id,
         place_name=s.name or (getattr(f, "name", None) if f else None) or f"struct {s.place_id}",
@@ -410,7 +426,8 @@ def _facility_location(s: ChainStructure, f, rigs, band: str,
         struct_discount=s.structure_discount_pct / 100,
         man_lines=s.man_lines, react_lines=s.react_lines,
         rigs=tuple(rigs), band=band, is_ec=is_ec,
-        can_man=s.man_lines > 0, can_react=s.react_lines > 0,
+        can_man=allow_man and s.man_lines > 0,
+        can_react=allow_react and s.react_lines > 0,
     )
 
 
@@ -473,10 +490,11 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
         finally:
             eve_db.close()
 
-    # single facility (facility_id) or pure-manual default — one location, both activities
+    # single facility (facility_id) or pure-manual default — one location.
     sci, tax_pct, disc_pct = body.system_cost_index, body.facility_tax_pct, body.structure_discount_pct
     place_id, place_name = body.place_id, body.place_name
     rigs, band, is_ec = [], "null", False
+    can_man, can_react = True, True   # pure-manual default builds anything
     if body.facility_id:
         f = db.query(Facility).filter(Facility.id == body.facility_id,
                                       Facility.user_id == user_id).first()
@@ -490,6 +508,7 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
             if disc_pct == 0.0 and f.cost_bonus:
                 disc_pct = f.cost_bonus
             is_ec = f.facility_type in EC_TYPES
+            can_man, can_react = _activity_caps(f.facility_type)   # a refinery can't manufacture, etc.
             eve_db = EveSessionLocal()
             try:
                 rigs, band, _sec = _facility_rig_context(eve_db, f)
@@ -501,6 +520,7 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
         sci=sci, tax=tax_pct / 100, scc=SCC_SURCHARGE, struct_discount=disc_pct / 100,
         man_lines=body.man_lines, react_lines=body.react_lines,
         rigs=tuple(rigs), band=band, is_ec=is_ec,
+        can_man=can_man, can_react=can_react,
     )]
 
 
