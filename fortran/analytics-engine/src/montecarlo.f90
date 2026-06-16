@@ -349,7 +349,9 @@ contains
                 buyp = price(j) * (1.0_real64 + slippage * spr(j))
                 vol = vol_mean(j) * exp(vol_sigma(j) * rng_normal(rng, 0.0_real64, 1.0_real64))
                 exec_cap = participation_cap * vol * horizon_days
-                if (qty(j) > 0.0_real64) then
+                ! No volume history (vol_mean<=0) ⇒ no liquidity constraint (fill=1),
+                ! not "unsellable" (fill=0). See the oracle for the rationale.
+                if (qty(j) > 0.0_real64 .and. vol_mean(j) > 0.0_real64) then
                     fillm = min(1.0_real64, exec_cap / qty(j))
                 else
                     fillm = 1.0_real64
@@ -362,7 +364,8 @@ contains
             sellp = price(n_vars) * (1.0_real64 - slippage * spr(n_vars))
             vol = vol_mean(n_vars) * exp(vol_sigma(n_vars) * rng_normal(rng, 0.0_real64, 1.0_real64))
             exec_cap = participation_cap * vol * horizon_days
-            if (product_qty > 0.0_real64) then
+            ! No volume history for the product ⇒ no liquidity constraint (fill=1).
+            if (product_qty > 0.0_real64 .and. vol_mean(n_vars) > 0.0_real64) then
                 fillp = min(1.0_real64, exec_cap / product_qty)
             else
                 fillp = 1.0_real64

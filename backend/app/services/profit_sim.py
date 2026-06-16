@@ -276,12 +276,19 @@ def simulate(req: SimRequest) -> SimResult:
     buy_price = price[:, :m] * (1.0 + p.slippage * spread[:, :m])
     sell_price = price[:, m] * (1.0 - p.slippage * spread[:, m])
 
-    # 4. liquidity / fill (market-execution risk)
+    # 4. liquidity / fill (market-execution risk). A zero ``vol_mean`` means we have
+    #    *no* volume history for that variable (degenerate / point-price fallback), not
+    #    that the market is empty — so impose no liquidity constraint (fill=1) instead
+    #    of treating it as unsellable (fill=0). The latter zeroes the product's revenue
+    #    in every scenario and forces the shortfall premium onto every leg, which makes
+    #    even a clearly-profitable chain look like a guaranteed loss.
     volume = vol_mean * np.exp(vol_sig * rng.standard_normal((n, nvars)))
     exec_cap = p.participation_cap * volume * p.horizon_days
+    known = vol_mean > 0.0  # do we actually have liquidity data for this variable?
     with np.errstate(divide="ignore", invalid="ignore"):
-        fill_mat = np.where(qty > 0, np.minimum(1.0, exec_cap[:, :m] / qty), 1.0)
-        fill_prod = np.where(req.product.qty > 0,
+        fill_mat = np.where((qty > 0) & known[:m],
+                            np.minimum(1.0, exec_cap[:, :m] / qty), 1.0)
+        fill_prod = np.where(req.product.qty > 0 and bool(known[m]),
                              np.minimum(1.0, exec_cap[:, m] / req.product.qty), 1.0)
 
     # 5. P&L per scenario
