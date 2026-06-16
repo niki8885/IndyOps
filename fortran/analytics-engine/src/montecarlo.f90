@@ -206,7 +206,7 @@ contains
         real(real64), allocatable :: z(:), price(:), spr(:)
         real(real64), allocatable :: xpath(:), x_step1(:), sig2(:), prev_eps(:), prev_sig(:)
         real(real64), allocatable :: psorted(:)
-        real(real64) :: base, fillm, fillp, buyp, sellp, vol, exec_cap, u
+        real(real64) :: base, fillm, buyp, sellp, vol, exec_cap, u
         real(real64) :: rev_k, mat_k, tax_k, log_k, delay_h, se(4)
         real(real64) :: mean_p, std_p, p1, p5, p25, p50, p75, p95, p99, cvar5, w1
         real(real64) :: time_mean, prob_loss
@@ -360,17 +360,15 @@ contains
                 mat_k = mat_k + base * (1.0_real64 + (1.0_real64 - fillm) * shortfall_premium)
             end do
 
-            ! product (last variable)
+            ! product (last variable). The product sells in FULL — thin product
+            ! liquidity means the batch takes longer to sell (price risk over the
+            ! horizon, already modelled), it does NOT forfeit units. The old
+            ! ``* fillp`` kept only the fraction sellable in one horizon and threw the
+            ! rest away, so a low-volume capital lost most of its revenue and a
+            ! profitable build read as a near-certain loss. Materials keep their
+            ! fill-based shortfall premium above.
             sellp = price(n_vars) * (1.0_real64 - slippage * spr(n_vars))
-            vol = vol_mean(n_vars) * exp(vol_sigma(n_vars) * rng_normal(rng, 0.0_real64, 1.0_real64))
-            exec_cap = participation_cap * vol * horizon_days
-            ! No volume history for the product ⇒ no liquidity constraint (fill=1).
-            if (product_qty > 0.0_real64 .and. vol_mean(n_vars) > 0.0_real64) then
-                fillp = min(1.0_real64, exec_cap / product_qty)
-            else
-                fillp = 1.0_real64
-            end if
-            rev_k = product_qty * sellp * fillp
+            rev_k = product_qty * sellp
             tax_k = rev_k * (broker_fee_pct + sales_tax_pct) / 100.0_real64
 
             ! logistics delay
