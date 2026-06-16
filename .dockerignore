@@ -19,6 +19,9 @@ LICENSE*
 haskell/chain-engine/bin
 haskell/chain-engine/build
 haskell/chain-engine/dist-newstyle
+haskell/risk-engine/bin
+haskell/risk-engine/build
+haskell/risk-engine/dist-newstyle
 fortran/analytics-engine/bin
 fortran/analytics-engine/build
 **/*.o

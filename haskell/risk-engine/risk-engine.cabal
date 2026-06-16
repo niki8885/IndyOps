@@ -1,0 +1,33 @@
+cabal-version:      2.4
+name:               risk-engine
+version:            0.1.0
+synopsis:           Strategy risk-scoring & ranking for the Monte-Carlo profit simulator
+build-type:         Simple
+
+
+common warnings
+    ghc-options: -Wall -O2
+
+library
+    import:           warnings
+    hs-source-dirs:   src
+    exposed-modules:  Json
+                      Risk.Types
+                      Risk.Score
+    build-depends:    base >=4.14
+    default-language: Haskell2010
+
+executable risk-engine
+    import:           warnings
+    main-is:          Main.hs
+    hs-source-dirs:   app
+    build-depends:    base, risk-engine
+    default-language: Haskell2010
+
+test-suite risk-engine-tests
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    hs-source-dirs:   tests
+    build-depends:    base, risk-engine
+    default-language: Haskell2010

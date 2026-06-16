@@ -9,14 +9,22 @@ COPY haskell/chain-engine/app/ ./app/
 RUN mkdir -p /out \
  && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/chain-engine
 
-# ── stage 2: compile the Fortran analytics-engine (offline, gfortran only) ───
+# ── stage 1b: compile the Haskell risk-engine (offline, boot libs only) ──────
+FROM haskell:9.6.6 AS risk-builder
+WORKDIR /build
+COPY haskell/risk-engine/src/ ./src/
+COPY haskell/risk-engine/app/ ./app/
+RUN mkdir -p /out \
+ && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/risk-engine
+
+# ── stage 2: compile the Fortran analytics-engine + profit-sim (gfortran only) ─
 FROM debian:bookworm-slim AS analytics-builder
 WORKDIR /build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gfortran \
  && rm -rf /var/lib/apt/lists/*
 COPY fortran/analytics-engine/ ./analytics-engine/
-RUN sh analytics-engine/build.sh
+RUN sh analytics-engine/build.sh   # builds both bin/analytics-engine and bin/profit-sim
 
 # ── stage 3: python backend ──────────────────────────────────────────────────
 FROM python:3.12-slim
@@ -44,6 +52,14 @@ ENV CHAIN_ENGINE_BIN=/usr/local/bin/chain-engine
 # contract: the adapter prefers it via ANALYTICS_ENGINE_BIN, else pure Python.
 COPY --from=analytics-builder /build/analytics-engine/bin/analytics-engine /usr/local/bin/analytics-engine
 ENV ANALYTICS_ENGINE_BIN=/usr/local/bin/analytics-engine
+
+# Native Monte-Carlo profit simulator (IO-22), built from the same Fortran project.
+COPY --from=analytics-builder /build/analytics-engine/bin/profit-sim /usr/local/bin/profit-sim
+ENV PROFIT_SIM_BIN=/usr/local/bin/profit-sim
+
+# Native risk-scoring / strategy-ranking engine (Haskell). Falls back to Python.
+COPY --from=risk-builder /out/risk-engine /usr/local/bin/risk-engine
+ENV RISK_ENGINE_BIN=/usr/local/bin/risk-engine
 
 EXPOSE 8000
 
