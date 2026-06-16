@@ -84,6 +84,9 @@ class NodeDecision:
     recipe_index: Optional[int] = None
     place_id: Optional[int] = None
     saved_per_unit: float = 0.0
+    # The activity of this node's make recipe (1 manufacturing, 11 reaction), even when
+    # the node is decided buy — so the UI knows reactions ignore ME/TE. None for leaves.
+    activity: Optional[int] = None
 
 
 @dataclass
@@ -374,9 +377,10 @@ def _decide(req: ChainRequest) -> dict[int, NodeDecision]:
         if unit_make is not None:
             choices.append(("make", unit_make))
 
+        act = node.recipes[best[1] if best else 0].activity if node.recipes else None
         if not choices:
             dec = NodeDecision(tid, node.name, "unobtainable", None,
-                               unit_buy=unit_buy, unit_make=unit_make)
+                               unit_buy=unit_buy, unit_make=unit_make, activity=act)
         else:
             kind, unit = min(choices, key=lambda c: c[1])
             saved = (unit_buy - unit_make) if (unit_buy is not None and unit_make is not None) else Fraction(0)
@@ -388,6 +392,7 @@ def _decide(req: ChainRequest) -> dict[int, NodeDecision]:
                 recipe_index=best[1] if (kind == "make" and best) else None,
                 place_id=best[2] if (kind == "make" and best) else None,
                 saved_per_unit=saved,
+                activity=act,
             )
         memo[tid] = dec
         return dec
@@ -561,6 +566,7 @@ def plan_from_dict(d: dict) -> ChainPlan:
             unit_cost=_rat(v["unit_cost"]), unit_buy=_rat(v["unit_buy"]), unit_make=_rat(v["unit_make"]),
             recipe_index=v["recipe_index"], place_id=v["place_id"],
             saved_per_unit=_rat(v["saved_per_unit"]),
+            activity=v.get("activity"),
         )
         for k, v in d["decisions"].items()
     }

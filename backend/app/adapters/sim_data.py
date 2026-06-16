@@ -1,23 +1,7 @@
-"""
-Gather the market history the profit simulator samples from, per type.
-
-I/O lives here (DB reads + ESI), keeping services.profit_sim / market_model pure
-(see [[indyops-service-layering]]). Source priority per type:
-
-  1. the user's tracked buy/sell/volume series (richest — both order-book sides),
-  2. else ESI region daily history (lowest≈buy, highest≈sell, average mid, volume),
-  3. else a degenerate point price (the resolved plan price) → the builder falls
-     back to a lognormal around it.
-
-The result feeds services.profit_sim.request_from_chain / request_from_calc.
-"""
 from __future__ import annotations
-
 import logging
 from typing import Optional
-
 import pandas as pd
-
 from app.adapters import market
 from app.repositories import market_repo
 from app.services.profit_sim import TypeHistory
@@ -89,5 +73,8 @@ def gather_history(db, user_id: int, type_ids: list[int], region_id: int, *,
             th.last_buy = point_buy.get(tid)
         if th.last_sell is None:
             th.last_sell = point_sell.get(tid) or point_buy.get(tid)
+
+        th.anchor_buy = point_buy.get(tid)
+        th.anchor_sell = point_sell.get(tid) or point_buy.get(tid)
         out[tid] = th
     return out
