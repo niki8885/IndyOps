@@ -30,3 +30,21 @@ export const get    = (path)        => req('GET',    path)
 export const post   = (path, body)  => req('POST',   path, body)
 export const patch  = (path, body)  => req('PATCH',  path, body)
 export const del    = (path)        => req('DELETE',  path)
+
+// Fetch a binary response (e.g. a PDF) and trigger a browser download.
+export async function download(path, filename) {
+  const token = localStorage.getItem('token')
+  const res = await fetch(`${BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}

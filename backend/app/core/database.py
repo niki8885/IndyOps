@@ -4,7 +4,7 @@ from app.core.config import SQLALCHEMY_DATABASE_URL
 from sqlalchemy import (
     create_engine, Column, Integer, Enum,
     ForeignKey, String, DateTime, Boolean, Float, Text, BigInteger, JSON,
-    Index, UniqueConstraint,
+    Index, UniqueConstraint, LargeBinary,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -369,6 +369,32 @@ class AnalyticsCache(Base):
     __table_args__ = (
         UniqueConstraint("kind", "cache_key", "window", name="uq_analytics_cache"),
     )
+
+
+class SimulationRun(Base):
+    """A stored Monte-Carlo profit-simulation run (IO-22): the request snapshot,
+    the risk-adjusted metrics, and the rendered per-run PDF. Roll-up reports are
+    generated on demand from all runs sharing a project."""
+    __tablename__ = "simulation_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+
+    source = Column(String(12), nullable=False, default="chain")   # chain | production
+    target_type_id = Column(Integer, nullable=False)
+    label = Column(String(200), nullable=False)
+    n_iterations = Column(Integer, nullable=False, default=25000)
+    engine = Column(String(12), nullable=False, default="python")  # fortran | python
+
+    params = Column(JSON, nullable=True)        # SimParams snapshot
+    metrics = Column(JSON, nullable=False)      # SimMetrics (asdict)
+    pdf = Column(LargeBinary, nullable=True)    # rendered per-run report
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+    owner = relationship("UserDB", backref="simulation_runs")
+    project = relationship("Projects", backref="simulation_runs")
 
 
 def get_db():

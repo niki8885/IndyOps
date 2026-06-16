@@ -1,4 +1,5 @@
 import datetime
+import logging
 from collections import defaultdict
 from dataclasses import asdict, replace
 from fractions import Fraction
@@ -14,6 +15,9 @@ from app.core.database_eve import (
 from app.core.schemas import ProductionStatus, ProductionTarget, FacilityType
 from app.core.security import get_current_user
 from app.adapters import chain_engine
+from app.adapters import sim_data
+from app.api import simulation_router as sim_router
+from app.api.simulation_router import SimParamsIn
 from app.repositories import eve as eve_repo
 from app.services.chain import LocationParams, PlannedJob, from_bom
 from app.services.costing import plan_fifo
@@ -25,6 +29,7 @@ from app.services.scheduling import stage_schedule
 from app.services.pricing import flag_unrealistic, resolve_price
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
 REACTION_TYPES = (FacilityType.ATHANOR, FacilityType.TATARA)
@@ -78,6 +83,11 @@ class CalcRequest(BaseModel):
     material_prices: List[MaterialPrice] = []
     flag_unrealistic: bool = True
     unrealistic_ratio: float = 0.3
+    # IO-22: optionally run a Monte-Carlo profit simulation on this calc and store it.
+    simulate: bool = False
+    project_id: Optional[int] = None
+    region_id: int = 10000002        # market region for sim history (default The Forge)
+    sim: Optional[SimParamsIn] = None
 
 
 class JobCreate(BaseModel):
@@ -313,8 +323,27 @@ async def calculate(
         time_role_pct=time_role,
         windows=body.windows,
     )
-    result = asdict(run_calculation(inp))
+    calc = run_calculation(inp)
+    result = asdict(calc)
     result["price_flags"] = {str(t): fl for t, fl in price_flags.items()}
+
+    # IO-22: optional Monte-Carlo profit simulation on this production calc.
+    if body.simulate:
+        try:
+            sim_types = [m.type_id for m in calc.materials] + [body.product_type_id]
+            point_buy = {m.type_id: float(m.unit_cost) for m in calc.materials}
+            point_sell = {body.product_type_id: body.output_price or None}
+            history = sim_data.gather_history(db, current_user.id, sim_types, body.region_id,
+                                              point_buy=point_buy, point_sell=point_sell)
+            params = (body.sim or SimParamsIn()).to_params()
+            run = sim_router.run_calc_simulation(
+                db, user_id=current_user.id, project_id=body.project_id, calc=calc,
+                product_type_id=body.product_type_id, history=history, params=params,
+                product_name=product_name)
+            result["simulation"] = sim_router.run_payload(run)
+        except Exception as exc:  # never let the sim break the calc
+            logger.warning("production simulation failed: %s", exc)
+            result["simulation"] = {"error": str(exc)}
     return result
 
 
@@ -371,6 +400,12 @@ class ChainCalcRequest(BaseModel):
     # The user's facilities. When given, each makeable node is built at the cheapest
     # eligible one (the core picks per node, using that facility's rigs).
     structures: List[ChainStructure] = []
+    # IO-22: optionally run a Monte-Carlo profit simulation on the resulting plan and
+    # store it (per-run PDF + project roll-up). project_id associates the run for the
+    # roll-up. ``sim`` carries the simulation knobs (iterations, distributions, risk).
+    simulate: bool = False
+    project_id: Optional[int] = None
+    sim: Optional[SimParamsIn] = None
 
 
 def _fnum(v) -> Optional[float]:
@@ -725,7 +760,7 @@ async def calculate_chain(
     # cap comes from the pilot's skills, shared across every structure they use.
     schedule = stage_schedule(plan.jobs, body.man_lines, body.react_lines)
 
-    return _to_jsonable({
+    response = {
         "plan": _plan_dict(plan),
         "assignment": _chain_assignment(plan, facilities),
         "schedule": schedule,
@@ -738,7 +773,34 @@ async def calculate_chain(
         "force_buy_skipped": forced_skipped,
         "bp_report": _bp_report(plan, chosen_bps),
         "blueprint_selection": {str(t): bp.id for t, bp in chosen_bps.items()},
-    })
+    }
+
+    # IO-22: optional Monte-Carlo profit simulation on the resulting plan.
+    if body.simulate:
+        try:
+            primary = eff_region_ids[0]
+            sim_types = [s.type_id for s in plan.shopping_list] + [body.product_type_id]
+            group_of = {tid: nd.get("category_id") for tid, nd in tree.items()}
+            point_sell = {tid: (region_data.get(primary, {}).get(tid, {}) or {}).get("sell")
+                          for tid in sim_types}
+            history = sim_data.gather_history(
+                db, current_user.id, sim_types, primary,
+                group_of=group_of, point_buy=buy_prices, point_sell=point_sell)
+            simin = body.sim or SimParamsIn()
+            params = simin.to_params()
+            if (body.sim is None or body.sim.slots <= 1) and (body.man_lines + body.react_lines) > 0:
+                params.slots = max(1, body.man_lines + body.react_lines)
+            run = sim_router.run_chain_simulation(
+                db, user_id=current_user.id, project_id=body.project_id, plan=plan,
+                production_time_s=int(schedule.get("total_time_s") or 0), history=history,
+                params=params, product_name=tree[body.product_type_id]["name"],
+                broker_fee_pct=simin.broker_fee_pct, sales_tax_pct=simin.sales_tax_pct)
+            response["simulation"] = sim_router.run_payload(run)
+        except Exception as exc:  # never let the sim break the chain calc
+            logger.warning("chain simulation failed: %s", exc)
+            response["simulation"] = {"error": str(exc)}
+
+    return _to_jsonable(response)
 
 
 # Facility rig bonuses

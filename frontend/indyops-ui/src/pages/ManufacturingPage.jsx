@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { get, post, patch, del } from '../api/client'
+import SimulationPanel from '../components/SimulationPanel'
 import TypeSearch from '../components/TypeSearch'
 
 // Plotly (~4MB) only loads when the chain graph actually renders — keeps it out
@@ -930,6 +931,11 @@ function ChainTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
   const [forceBuy, setForceBuy] = useState(new Set())   // nodes the user chose to skip making
+  // IO-22: optional Monte-Carlo profit simulation run alongside the chain calc
+  const [sim, setSim] = useState({
+    on: false, n_iterations: 25000, dist_mode: 0, corr_mode: 0,
+    copula: 0, dynamics: 0,   // dynamics: 0 static / 1 AR(1) path / 2 AR(1)+GARCH
+  })
 
   // owned blueprints + per-node selection (product_type_id -> blueprint_id)
   const [ownedBPs, setOwnedBPs]   = useState([])
@@ -1049,6 +1055,18 @@ function ChainTab() {
         react_lines: Number(params.react_lines),
         max_depth: Number(params.max_depth),
         force_buy: [...fb],
+        simulate: !!sim.on,
+        project_id: null,
+        ...(sim.on ? {
+          sim: {
+            n_iterations: Number(sim.n_iterations) || 25000,
+            dist_mode: Number(sim.dist_mode) || 0,
+            corr_mode: Number(sim.corr_mode) || 0,
+            copula: Number(sim.copula) || 0,
+            path_steps: Number(sim.dynamics) > 0 ? 24 : 1,
+            garch: Number(sim.dynamics) === 2 ? 1 : 0,
+          },
+        } : {}),
         ...(activeStructures.length ? {
           structures: facilityMode === 'multi'
             ? activeStructures   // already in API format (fractions)
@@ -1401,6 +1419,36 @@ function ChainTab() {
         {result && plan && (
           <button className="btn btn-ghost" onClick={downloadPDF}>📄 Download PDF</button>
         )}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text)' }}>
+          <input type="checkbox" checked={sim.on} onChange={e => setSim(s => ({ ...s, on: e.target.checked }))} />
+          🎲 Monte-Carlo risk sim
+        </label>
+        {sim.on && (
+          <>
+            <select value={sim.n_iterations} onChange={e => setSim(s => ({ ...s, n_iterations: e.target.value }))}>
+              <option value={10000}>10k</option>
+              <option value={25000}>25k</option>
+              <option value={50000}>50k</option>
+            </select>
+            <select value={sim.dist_mode} onChange={e => setSim(s => ({ ...s, dist_mode: e.target.value }))}>
+              <option value={0}>empirical</option>
+              <option value={1}>lognormal</option>
+            </select>
+            <select value={sim.corr_mode} onChange={e => setSim(s => ({ ...s, corr_mode: e.target.value }))}>
+              <option value={0}>Cholesky corr.</option>
+              <option value={1}>factor model</option>
+            </select>
+            <select value={sim.copula} onChange={e => setSim(s => ({ ...s, copula: e.target.value }))}>
+              <option value={0}>Gaussian copula</option>
+              <option value={1}>Student-t (tail dep.)</option>
+            </select>
+            <select value={sim.dynamics} onChange={e => setSim(s => ({ ...s, dynamics: e.target.value }))}>
+              <option value={0}>static (one-shot)</option>
+              <option value={1}>AR(1) path</option>
+              <option value={2}>AR(1)+GARCH path</option>
+            </select>
+          </>
+        )}
         <span style={{ fontSize: 11, color: 'var(--text)' }}>
           {includeCJ ? 'C-J prices take ~5–15 s extra.' : ''}
           {facilityMode === 'multi' && multiStructures.length > 1
@@ -1410,6 +1458,7 @@ function ChainTab() {
 
       {result && plan && (
         <>
+          {result.simulation && <SimulationPanel run={result.simulation} projectId={result.simulation.project_id} />}
           {/* ── Summary ── */}
           <Section title="Chain summary">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, padding: 12 }}>

@@ -8,6 +8,12 @@ the computed `series` / `stats` / `risk` / `montecarlo` / `heatmap` / `states`.
 The Python `compute_index_payload` stays as the **oracle**; this binary must match
 it (`backend/tests/test_analytics_fortran_parity.py`).
 
+This project also builds a **second binary, `profit-sim`** — a Monte-Carlo
+profit simulator (IO-22) that reuses the same numeric primitives
+(`rng`/`sort_stats`/`json`). See [profit-sim](#profit-sim--monte-carlo-profit-simulator)
+below. The `analytics-engine` sources (indicators/risk/report/main) are untouched
+by it, so its parity test is unaffected.
+
 ## Dependency-free by design
 
 Only gfortran + a hand-rolled JSON (`src/json.f90`) — no external Fortran
@@ -82,3 +88,54 @@ gfortran and runs `build.sh`, then the final image `COPY`s the Linux binary to
 sets `ANALYTICS_ENGINE_BIN`. The deploy workflow additionally builds the engine
 and runs the parity test, so a logic regression blocks the deploy. `bin/` +
 `build/` stay git-ignored — the committed sources are compiled fresh per image.
+
+## profit-sim — Monte-Carlo profit simulator
+
+A second binary built from this project (`src/distrib.f90`, `src/montecarlo.f90`,
+`app/profitsim.f90`) that estimates **risk-adjusted manufacturing profitability
+under market uncertainty**. It wraps the deterministic profit calc
+(`services.chain.ChainPlan` / `services.manufacturing.CalcResult`) in a sampling
+model and reduces thousands of scenarios to metrics (E[Profit], VaR 5%/1%,
+CVaR/worst-1%, σ, CV, P(loss), percentiles, time).
+
+Same architecture as `analytics-engine`: a pure stdin→stdout JSON filter with a
+Python **oracle** (`backend/app/services/profit_sim.py`) and adapter
+(`backend/app/adapters/profit_sim.py`, prefers the binary via `PROFIT_SIM_BIN`,
+else falls back to Python). Parity is **statistical** (own RNG ≠ numpy) —
+`backend/tests/test_profit_sim_fortran_parity.py`.
+
+Model per scenario `k` (`j` over buy-legs + the product):
+
+```
+z      ~ correlated N(0,1)        (corr_mode 0: Cholesky L·ε | 1: factor loadings·F + idio·η)
+price_j = qgrid_j(Φ(z_j))         (dist_mode 0: empirical copula) | exp(mu_j+sigma_j·z_j) (1)
+fill_j  = min(1, participation_cap·volume_j·horizon / qty_j)
+profit  = product_qty·sell·fill − taxes − Σ acquire_j·qty_j·(1+(1−fill_j)·premium) − fixed − logistics
+```
+
+### Quant hardening (IO-22) — all flag-gated, default off (= the model above)
+
+* **Tail dependence — `copula` (0 Gaussian, 1 Student-t), `t_df`.** The t-copula
+  multiplies `z` by a *shared* `√(ν/W)`, `W~χ²_ν` (`src/rng.f90` `rng_chi2`), so all
+  variables go extreme together — modelling joint crashes the Gaussian copula
+  (tail dependence 0) misses. `u = Tν(t)` via `src/distrib.f90 student_t_cdf`
+  (incomplete beta); the lognormal marginal uses `norm_ppf` (Acklam). `t_df=0` ⇒
+  Python estimates ν from kurtosis (MoM).
+* **Price dynamics — `path_steps` (>1), `garch`.** Replaces the one-shot draw with
+  an AR(1)/OU log-price path (`ar_phi`, `step_sigma`, `theta`, `x0`) driven by
+  correlated innovations, optional GARCH(1,1) (`garch_omega/alpha/beta`) volatility
+  clustering. Materials are priced at step 1 (bought now), the product at the
+  terminal step (sold after the holding horizon). Fitted by `services.market_model`.
+* **MC error bars — always on.** Batch-means standard errors + 95% CIs on
+  `expected_profit`/`var5`/`var1`/`cvar5`, plus `mc_rel_error` and a `converged`
+  flag — so a slowly-converging tail VaR is visible, not hidden.
+
+The request is **numeric-only and rectangular** — Python reduces history to
+`mu`/`sigma` + a 101-point quantile grid, fits the AR(1)/GARCH process params and
+the Cholesky factor / factor loadings; every 2-D array (`qgrid`, `l`, `loadings`)
+is **flattened row-major** because `src/json.f90` reads only flat arrays. The
+response keys mirror `services.profit_sim.SimMetrics`. Smoke test:
+
+```sh
+./bin/profit-sim < sample-profitsim.json
+```

@@ -14,6 +14,7 @@ from app.api.manufacturing_router import router as manufacturing_router
 from app.api.eve_router import router as eve_router
 from app.api.analysis_router import router as analysis_router
 from app.api.tracking_router import router as tracking_router
+from app.api.simulation_router import router as simulation_router
 
 # Schema bootstrap for the API container (the worker runs jobs only and sets
 # RUN_DB_BOOTSTRAP=0). Scheduled jobs live in the separate worker (app.worker).
@@ -44,6 +45,7 @@ app.include_router(manufacturing_router, prefix="/api/v1/manufacturing", tags=["
 app.include_router(eve_router, prefix="/api/v1/eve", tags=["EVE SDE"])
 app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])
 app.include_router(tracking_router, prefix="/api/v1/tracking", tags=["Tracking"])
+app.include_router(simulation_router, prefix="/api/v1/simulation", tags=["Simulation"])
 
 
 @app.get("/", tags=["Health"])
