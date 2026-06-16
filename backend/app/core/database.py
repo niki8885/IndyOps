@@ -153,6 +153,35 @@ class Facility(Base):
     owner = relationship("UserDB", backref="facilities")
 
 
+class Blueprint(Base):
+    """A blueprint the user owns — BPO (original, unlimited runs) or BPC (copy, with
+    a run count and a purchase cost). The chain uses its ME/TE for the product it
+    makes and folds a BPC's cost into the build."""
+    __tablename__ = "blueprints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=True, index=True)
+
+    blueprint_type_id = Column(Integer, nullable=False, index=True)
+    product_type_id = Column(Integer, nullable=False, index=True)   # what it makes — chain join key
+    name = Column(String(200), nullable=False)
+
+    is_bpo = Column(Boolean, nullable=False, default=True)
+    me = Column(Integer, nullable=False, default=0)
+    te = Column(Integer, nullable=False, default=0)
+    runs = Column(Integer, nullable=True)        # remaining runs for a BPC; null = BPO / unlimited
+    quantity = Column(Integer, nullable=False, default=1)
+    cost = Column(Float, nullable=True)          # purchase cost per copy (BPC)
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
+    note = Column(String(500), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+
+    owner = relationship("UserDB", backref="blueprints")
+
+
 class ProductionJob(Base):
     """PAK — a manufacturing production job/contract."""
     __tablename__ = "production_jobs"

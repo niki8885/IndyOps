@@ -241,6 +241,39 @@ def test_rig_does_not_apply_to_wrong_category():
     assert job.inputs[0].qty == 1000
 
 
+# ── owned-blueprint ME/TE + BPC cost (IO-11) ───────────────────────────────────
+
+def test_blueprint_me_te_override_node():
+    # An owned ME10/TE20 blueprint sets the node's base multipliers (0.90 / 0.80).
+    tree = _tree_one_tier(qty=1000)
+    req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [LocationParams(1, "P")],
+                   node_overrides={1: (10, 20)})
+    loc = req.nodes[1].recipes[0].locations[0]
+    assert loc.me_mult == 0.9 and loc.te_mult == 0.8
+    job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
+    assert job.inputs[0].qty == 900                       # ceil(1000 × 0.90)
+
+
+def test_blueprint_me_stacks_with_rigs_and_role():
+    # ME10 blueprint (0.90) × 2% ship rig × 1% EC role → 1000×0.90×0.98×0.99 = 873.18 → 874.
+    tree = _tree_one_tier(cat_id=6, group_name="Battleship", qty=1000)
+    rig = RigBonus(type_id=500, name="Standup L-Set Ship Manufacturing Efficiency",
+                   me_bonus=-2.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
+    fac = LocationParams(10, "Sotiyo", rigs=(rig,), band="hi", is_ec=True)
+    req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [fac], node_overrides={1: (10, 0)})
+    job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
+    assert job.inputs[0].qty == 874
+
+
+def test_bpc_cost_folds_into_make_cost():
+    # A BPC cost of 5/unit shows up as the job's bpc_cost (× output qty).
+    tree = _tree_one_tier(qty=10)
+    req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [LocationParams(1, "P")],
+                   bpc_unit={1: 5.0})
+    job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
+    assert job.bpc_cost == 5.0 * job.qty_out
+
+
 # ── reactions: only at refineries, only reactor rigs apply (IO-15) ──────────────
 
 def _tree_reaction(group_name="Composite"):

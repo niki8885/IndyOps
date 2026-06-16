@@ -895,6 +895,11 @@ function ChainTab() {
   const [error, setError]     = useState('')
   const [forceBuy, setForceBuy] = useState(new Set())   // nodes the user chose to skip making
 
+  // owned blueprints + per-node selection (product_type_id -> blueprint_id)
+  const [ownedBPs, setOwnedBPs]   = useState([])
+  const [useBlueprints, setUseBlueprints] = useState(false)
+  const [bpSelection, setBpSelection] = useState({})
+
   useEffect(() => {
     get('/facilities').then(fs => {
       setFacilities(fs)
@@ -902,6 +907,7 @@ function ChainTab() {
       fs.forEach(f => { checks[f.id] = { checked: false, ...defaultSlots(f.facility_type) } })
       setFacilityChecks(checks)
     }).catch(() => {})
+    get('/blueprints').then(setOwnedBPs).catch(() => {})
   }, [])
 
   // auto-fill global params when single facility selected
@@ -969,9 +975,11 @@ function ChainTab() {
   const updateStruct = (i, k) => e => setStructures(s => s.map((st, j) => j === i ? { ...st, [k]: e.target.value } : st))
   const removeStruct = i => setStructures(s => s.filter((_, j) => j !== i))
 
-  async function calculate(fbSet) {
+  async function calculate(fbSet, opts = {}) {
     if (!product?.type_id) return
     const fb = fbSet instanceof Set ? fbSet : forceBuy
+    const useBP = opts.useBP ?? useBlueprints
+    const bpSel = opts.bpSel ?? bpSelection
     setLoading(true); setError('')
     try {
       const activeStructures = facilityMode === 'multi' ? multiStructures : structures
@@ -982,6 +990,8 @@ function ChainTab() {
         region_id: [...selectedRegions][0] || 10000002,
         price_basis: params.price_basis,
         include_cj: includeCJ,
+        use_owned_blueprints: useBP,
+        blueprint_selection: bpSel,
         flag_unrealistic: params.flag_unrealistic,
         unrealistic_ratio: Number(params.unrealistic_ratio) / 100,
         facility_id: singleFacilityId && facilityMode === 'none' ? Number(singleFacilityId) : null,
@@ -1030,6 +1040,23 @@ function ChainTab() {
     next.has(tid) ? next.delete(tid) : next.add(tid)
     setForceBuy(next)
     calculate(next)
+  }
+
+  // owned blueprints keyed by the product they make
+  const bpByProduct = {}
+  ownedBPs.forEach(b => { (bpByProduct[b.product_type_id] ||= []).push(b) })
+
+  function toggleUseBlueprints(on) {
+    setUseBlueprints(on)
+    calculate(undefined, { useBP: on })
+  }
+  // Pick a specific blueprint for one node (or '' = auto) and re-solve.
+  function selectBP(tid, bpId) {
+    const next = { ...bpSelection }
+    if (bpId) next[tid] = bpId; else delete next[tid]
+    setBpSelection(next)
+    if (!useBlueprints) setUseBlueprints(true)
+    calculate(undefined, { useBP: true, bpSel: next })
   }
 
   const plan      = result?.plan
@@ -1151,6 +1178,15 @@ function ChainTab() {
           <NumField label="ME % (manuf.)" value={params.me_pct} onChange={setP('me_pct')} step={0.1} />
           <NumField label="TE %" value={params.te_pct} onChange={setP('te_pct')} step={0.1} />
           <NumField label="Max depth" value={params.max_depth} onChange={setP('max_depth')} min={1} max={20} />
+          <div>
+            <CLabel>Blueprints <Hint>use ME/TE you own</Hint></CLabel>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginTop: 5,
+              color: ownedBPs.length ? 'var(--text-white)' : 'var(--text)' }}>
+              <input type="checkbox" checked={useBlueprints} disabled={!ownedBPs.length}
+                onChange={e => toggleUseBlueprints(e.target.checked)} />
+              Use my blueprints ({ownedBPs.length})
+            </label>
+          </div>
         </div>
       </div>
 
@@ -1394,6 +1430,53 @@ function ChainTab() {
               </tbody>
             </table>
           </Section>
+
+          {/* ── Blueprints (per-node ME/TE + needed report) ── */}
+          {ownedBPs.length > 0 && (() => {
+            const bpRep = {}
+            ;(result.bp_report || []).forEach(r => { bpRep[r.type_id] = r })
+            const nodes = decisions.filter(d => d.decision === 'make' && bpByProduct[d.type_id]?.length)
+            if (!nodes.length) return null
+            return (
+              <Section title="Blueprints needed">
+                {!useBlueprints && (
+                  <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text)' }}>
+                    Enable <b>Use my blueprints</b> above to apply owned ME/TE, or pick one per item below.
+                  </div>
+                )}
+                <table>
+                  <thead><tr><th>Item</th><th>Blueprint</th><th>ME/TE</th><th>Runs needed</th><th>Owned</th><th>Shortfall</th></tr></thead>
+                  <tbody>
+                    {nodes.map(d => {
+                      const cands = bpByProduct[d.type_id] || []
+                      const rep = bpRep[d.type_id]
+                      return (
+                        <tr key={d.type_id}>
+                          <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{d.name}</td>
+                          <td>
+                            <select value={bpSelection[d.type_id] || ''} onChange={e => selectBP(d.type_id, Number(e.target.value) || null)}>
+                              <option value="">Auto</option>
+                              {cands.map(b => (
+                                <option key={b.id} value={b.id}>
+                                  {b.is_bpo ? 'BPO' : 'BPC'} ME{b.me} TE{b.te}{b.is_bpo ? '' : ` ×${b.runs ?? '?'}r`}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{rep ? `${rep.me} / ${rep.te}` : '—'}</td>
+                          <td>{rep ? rep.runs_needed.toLocaleString() : '—'}</td>
+                          <td>{rep ? (rep.runs_owned == null ? '∞' : rep.runs_owned.toLocaleString()) : '—'}</td>
+                          <td style={{ color: rep && rep.shortfall > 0 ? '#e05252' : 'var(--text)' }}>
+                            {rep ? (rep.shortfall > 0 ? `⚠ ${rep.shortfall}` : 'ok') : '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </Section>
+            )
+          })()}
 
           {/* ── Capacity schedule (stages) ── */}
           {result?.schedule && <ChainSchedule schedule={result.schedule} />}
