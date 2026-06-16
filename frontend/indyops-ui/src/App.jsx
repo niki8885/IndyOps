@@ -7,12 +7,12 @@ import RegisterPage from './pages/RegisterPage'
 import Layout from './pages/Layout'
 import InventoryPage from './pages/InventoryPage'
 import ManufacturingPage from './pages/ManufacturingPage'
-import MarketPage from './pages/MarketPage'
 import OrganisationsHub from './pages/OrganisationsHub'
 
-// Analysis pulls in Plotly (~4MB) — load it on demand so it can never block
-// the rest of the app and stays out of the main bundle.
+// Analysis and Market both pull in Plotly (~4MB) — load them on demand so they
+// can never block the rest of the app and stay out of the main bundle.
 const AnalysisPage = lazy(() => import('./pages/AnalysisPage'))
+const MarketPage   = lazy(() => import('./pages/MarketPage'))
 
 export default function App() {
   return (
@@ -26,7 +26,11 @@ export default function App() {
               <Route index element={<Navigate to="/manufacturing" replace />} />
               <Route path="/manufacturing" element={<ManufacturingPage />} />
               <Route path="/inventory"     element={<InventoryPage />} />
-              <Route path="/market"        element={<MarketPage />} />
+              <Route path="/market"        element={
+                <Suspense fallback={<div className="empty-state">Loading market…</div>}>
+                  <MarketPage />
+                </Suspense>
+              } />
               <Route path="/analysis"      element={
                 <Suspense fallback={<div className="empty-state">Loading analytics…</div>}>
                   <AnalysisPage />
