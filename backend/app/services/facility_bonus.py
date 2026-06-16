@@ -23,6 +23,11 @@ _CAT_SHIP, _CAT_MODULE, _CAT_CHARGE, _CAT_DRONE = 6, 7, 8, 18
 _CAT_IMPLANT, _CAT_FIGHTER, _CAT_POS_STRUCT = 20, 87, 23
 _CAT_UPWELL, _CAT_STRUCT_MODULE = 65, 66
 
+# metaGroupIDs treated as "advanced" for the Basic/Advanced rig split:
+# 2 = Tech II, 14 = Tech III. Everything else (Tech I, faction, storyline,
+# or no meta entry at all) counts as basic for rig purposes.
+ADVANCED_META = frozenset({2, 14})
+
 
 @dataclass(frozen=True)
 class RigBonus:
@@ -79,17 +84,39 @@ def _ship_size(group_name: Optional[str]) -> Optional[str]:
 
 
 def rig_applies(rig_name: str, cat_id: Optional[int], group_name: Optional[str],
-                is_reaction: bool = False) -> bool:
+                is_reaction: bool = False, meta_group_id: Optional[int] = None) -> bool:
     """
     Match an industry rig to a product, based on the official affected-category
-    lists from the SDE rig multiplier attribute descriptions.
+    lists from the SDE rig multiplier attribute descriptions, then gate by the
+    product's tech level.
 
     Reactions are a separate world: only **reactor** rigs (refinery rigs) apply to
     reaction outputs, and a subtype rig (composite/hybrid/biochemical) only covers
     its own family — a plain "Reactor Efficiency" rig covers every reaction. Reactor
     rigs never apply to manufacturing, and manufacturing rigs never apply to reactions.
+
+    Tech-level gate (manufacturing only): a **Basic** rig only affects Tech I products
+    and an **Advanced** rig only affects Tech II/III (``ADVANCED_META``). This stops a
+    facility fitted with both a Basic and an Advanced ship/component rig from stacking
+    both on the same item — e.g. a T2 cruiser (Basilisk) gets the Advanced rig only.
+    A rig whose name carries neither word is not tech-split and applies regardless.
     """
     n = (rig_name or "").lower()
+    if not _base_rig_applies(n, cat_id, group_name, is_reaction):
+        return False
+    if not is_reaction:
+        advanced = meta_group_id in ADVANCED_META
+        if "advanced" in n:
+            return advanced
+        if "basic" in n:
+            return not advanced
+    return True
+
+
+def _base_rig_applies(n: str, cat_id: Optional[int], group_name: Optional[str],
+                      is_reaction: bool) -> bool:
+    """Category/size match for a rig (``n`` is the lowercased rig name), before the
+    Basic/Advanced tech-level gate."""
     gn = (group_name or "").lower()
     is_reactor_rig = "reactor" in n or "reaction" in n
     if is_reaction:
@@ -128,13 +155,14 @@ def rig_applies(rig_name: str, cat_id: Optional[int], group_name: Optional[str],
 def effective_bonuses(
         rigs: list[RigBonus], band: str,
         cat_id: Optional[int], group_name: Optional[str],
-        is_reaction: bool = False,
+        is_reaction: bool = False, meta_group_id: Optional[int] = None,
 ) -> EffectiveBonus:
     """Roll a structure's rigs up to effective ME/TE/cost % for one product.
 
     Only rigs whose affected-category list covers the product contribute to the
     totals; every rig still appears in ``rigs`` so callers can show why one was
-    skipped. ``is_reaction`` switches to reactor-rig matching (see ``rig_applies``).
+    skipped. ``is_reaction`` switches to reactor-rig matching (see ``rig_applies``);
+    ``meta_group_id`` gates Basic vs Advanced rigs by the product's tech level.
     EC role bonuses are intentionally excluded (added by the caller).
     """
     tot_me = tot_te = tot_cost = 0.0
@@ -145,7 +173,7 @@ def effective_bonuses(
                            "applies": False, "reason": "no industry bonus"})
             continue
         mod = {"hi": rb.hisec_mod, "low": rb.lowsec_mod, "null": rb.nullsec_mod}[band] or 1.0
-        applies = rig_applies(rb.name, cat_id, group_name, is_reaction)
+        applies = rig_applies(rb.name, cat_id, group_name, is_reaction, meta_group_id)
         eff_me = abs(rb.me_bonus or 0) * mod
         eff_te = abs(rb.te_bonus or 0) * mod
         eff_cost = abs(rb.cost_bonus or 0) * mod

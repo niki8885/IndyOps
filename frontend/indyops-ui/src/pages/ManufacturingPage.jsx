@@ -37,6 +37,40 @@ function defaultSlots(type) {
   if (EC_FAC.has(type)) return { man: 5, react: 0 }
   return { man: 5, react: 5 }   // Other → both
 }
+// Engineering complexes carry a flat 3% job-cost role bonus; this is the part of
+// the discount that depends only on the structure *type* (cost rigs add more, but
+// per-item — applied by the backend per build node, not shown as a single number).
+const EC_COST_ROLE = 3
+function facilityActivity(type) {
+  if (REACTION_FAC.has(type)) return 'Reaction'
+  if (EC_FAC.has(type)) return 'Manufacturing'
+  return 'Both'
+}
+function baseDiscountByType(type) {
+  return EC_FAC.has(type) ? EC_COST_ROLE : 0
+}
+
+// Quick-preset bonuses for an un-saved structure (Default / no-buffs mode): the
+// structure ROLE (by type) plus one representative T2 industry rig per axis, security
+// -scaled like the backend (hi ×1.0 / low ×1.9 / null·WH ×2.1). A flat approximation —
+// for per-item rig accuracy use a saved facility under "Use my facilities". The base
+// magnitudes below are deliberately simple to tune.
+const PRESET_TYPES = ['Raitaru', 'Azbel', 'Sotiyo', 'Athanor', 'Tatara']
+const SEC_MULT = { hi: 1.0, low: 1.9, null: 2.1 }
+const T2_RIG_BASE = 2.4   // % per T2 industry rig at hi-sec, before security scaling
+function structurePreset(type, band) {
+  if (!type) return null
+  const m = SEC_MULT[band] ?? 1.0
+  const rig = T2_RIG_BASE * m
+  const isEC = EC_FAC.has(type)
+  const isReaction = REACTION_FAC.has(type)
+  const round = x => +x.toFixed(1)
+  return {
+    me_pct: round(isReaction ? 0 : (isEC ? 1 : 0) + rig),   // reactions ignore ME
+    te_pct: round(rig),
+    structure_discount_pct: round((isEC ? EC_COST_ROLE : 0) + rig),
+  }
+}
 
 /**
  * Fetch market prices for a set of type_ids.
@@ -889,6 +923,8 @@ function ChainTab() {
 
   // advanced: manual multi-location structures (used when facilityMode='none')
   const [structures, setStructures] = useState([])
+  // quick preset for the default/no-buffs location: structure type + security band
+  const [preset, setPreset] = useState({ type: '', band: 'null' })
 
   const [result, setResult]   = useState(null)
   const [loading, setLoading] = useState(false)
@@ -899,6 +935,9 @@ function ChainTab() {
   const [ownedBPs, setOwnedBPs]   = useState([])
   const [useBlueprints, setUseBlueprints] = useState(false)
   const [bpSelection, setBpSelection] = useState({})
+  // manual per-node ME/TE overrides: { [product_type_id]: [me, te] }. Wins over the
+  // global ME/TE default below; cleared per node by emptying both fields.
+  const [meTeOverrides, setMeTeOverrides] = useState({})
 
   useEffect(() => {
     get('/facilities').then(fs => {
@@ -954,9 +993,6 @@ function ChainTab() {
   function toggleFacility(fid, checked) {
     setFacilityChecks(prev => ({ ...prev, [fid]: { ...facSlots(fid), ...(prev[fid] || {}), checked } }))
   }
-  function setFacilitySlot(fid, key, val) {
-    setFacilityChecks(prev => ({ ...prev, [fid]: { checked: false, ...facSlots(fid), ...(prev[fid] || {}), [key]: val } }))
-  }
   function setAllFacilities(checked) {
     setFacilityChecks(prev => {
       const next = { ...prev }
@@ -970,6 +1006,13 @@ function ChainTab() {
     if (mode === 'multi' && !Object.values(facilityChecks).some(c => c?.checked)) setAllFacilities(true)
   }
 
+  // apply a structure-type quick preset → flat ME/TE/discount for the default location
+  function applyPreset(type, band) {
+    setPreset({ type, band })
+    const p = structurePreset(type, band)
+    if (p) setParams(prev => ({ ...prev, ...p }))
+  }
+
   // manual structures (advanced)
   const addStruct    = () => setStructures(s => [...s, { place_id: '', name: '', sci: '', tax: '', disc: '', man: 5, react: 5 }])
   const updateStruct = (i, k) => e => setStructures(s => s.map((st, j) => j === i ? { ...st, [k]: e.target.value } : st))
@@ -980,6 +1023,7 @@ function ChainTab() {
     const fb = fbSet instanceof Set ? fbSet : forceBuy
     const useBP = opts.useBP ?? useBlueprints
     const bpSel = opts.bpSel ?? bpSelection
+    const meTe = opts.meTe ?? meTeOverrides
     setLoading(true); setError('')
     try {
       const activeStructures = facilityMode === 'multi' ? multiStructures : structures
@@ -992,6 +1036,7 @@ function ChainTab() {
         include_cj: includeCJ,
         use_owned_blueprints: useBP,
         blueprint_selection: bpSel,
+        me_te_overrides: meTe,
         flag_unrealistic: params.flag_unrealistic,
         unrealistic_ratio: Number(params.unrealistic_ratio) / 100,
         facility_id: singleFacilityId && facilityMode === 'none' ? Number(singleFacilityId) : null,
@@ -1059,6 +1104,19 @@ function ChainTab() {
     calculate(undefined, { useBP: true, bpSel: next })
   }
 
+  // Effective ME/TE shown for a node: manual override → else global default.
+  const nodeMe = tid => meTeOverrides[tid]?.[0] ?? (Number(params.me_pct) || 0)
+  const nodeTe = tid => meTeOverrides[tid]?.[1] ?? (Number(params.te_pct) || 0)
+  // Edit one node's ME or TE (kept local; re-solve happens on blur via reSolveMeTe).
+  function setNodeMeTe(tid, field, val) {
+    const n = val === '' ? 0 : Math.max(0, Number(val) || 0)
+    setMeTeOverrides(prev => {
+      const cur = prev[tid] || [Number(params.me_pct) || 0, Number(params.te_pct) || 0]
+      return { ...prev, [tid]: field === 'me' ? [n, cur[1]] : [cur[0], n] }
+    })
+  }
+  const reSolveMeTe = () => { if (product?.type_id) calculate(undefined, { meTe: meTeOverrides }) }
+
   const plan      = result?.plan
   const asg       = result?.assignment
   const boughtIdx = new Set((asg?.bought || []).map(a => a.job_index))
@@ -1088,9 +1146,12 @@ function ChainTab() {
   const profit    = totalSell != null && totalCost != null ? totalSell - totalCost : null
   const margin    = profit != null && totalSell ? profit / totalSell * 100 : null
 
-  // estimated wall-clock build time: the busiest (facility, slot) line drives it
-  const buildSeconds = (asg?.usage || []).reduce(
-    (mx, u) => Math.max(mx, (u.used_s || 0) / Math.max(u.lines || 1, 1)), 0)
+  // estimated wall-clock build time: the dependency-staged schedule (global slot
+  // caps) when available, else the busiest (facility, slot) line as a fallback.
+  const buildSeconds = result?.schedule?.total_time_s != null
+    ? result.schedule.total_time_s
+    : (asg?.usage || []).reduce(
+        (mx, u) => Math.max(mx, (u.used_s || 0) / Math.max(u.lines || 1, 1)), 0)
   const buildHours = buildSeconds / 3600
 
   function downloadPDF() {
@@ -1175,8 +1236,8 @@ function ChainTab() {
             </div>
           </div>
 
-          <NumField label="ME % (manuf.)" value={params.me_pct} onChange={setP('me_pct')} step={0.1} />
-          <NumField label="TE %" value={params.te_pct} onChange={setP('te_pct')} step={0.1} />
+          <NumField label="Default ME" value={params.me_pct} onChange={setP('me_pct')} step={1} min={0} max={10} />
+          <NumField label="Default TE" value={params.te_pct} onChange={setP('te_pct')} step={1} min={0} max={20} />
           <NumField label="Max depth" value={params.max_depth} onChange={setP('max_depth')} min={1} max={20} />
           <div>
             <CLabel>Blueprints <Hint>use ME/TE you own</Hint></CLabel>
@@ -1204,9 +1265,34 @@ function ChainTab() {
           </label>
         </div>
 
+        {/* ── job slots: a single per-character total, shared across all structures ── */}
+        <div style={{ padding: '12px 16px', display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
+          <NumField label="Manufacturing slots" value={params.man_lines} onChange={setP('man_lines')} min={0} />
+          <NumField label="Reaction slots" value={params.react_lines} onChange={setP('react_lines')} min={0} />
+          <span style={{ fontSize: 11, color: 'var(--text)', maxWidth: 320 }}>
+            Per character — your total free job slots, shared across every structure (set by your skills, e.g. 30 / 20).
+          </span>
+        </div>
+
         {/* ── no-buffs mode: single facility + manual params ── */}
         {facilityMode === 'none' && (
+          <>
           <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px,1fr))', gap: 12 }}>
+            <div>
+              <CLabel>Quick preset <Hint>T2-rigged structure</Hint></CLabel>
+              <select value={preset.type} onChange={e => applyPreset(e.target.value, preset.band)}>
+                <option value="">— manual —</option>
+                {PRESET_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <CLabel>Security <Hint>rig scaling</Hint></CLabel>
+              <select value={preset.band} onChange={e => applyPreset(preset.type, e.target.value)} disabled={!preset.type}>
+                <option value="hi">Hi-sec</option>
+                <option value="low">Low-sec</option>
+                <option value="null">Null / WH</option>
+              </select>
+            </div>
             <div>
               <CLabel>Facility</CLabel>
               <select value={singleFacilityId} onChange={e => setSingleFacilityId(e.target.value)}>
@@ -1217,9 +1303,14 @@ function ChainTab() {
             <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
             <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
             <NumField label="Structure Discount %" value={params.structure_discount_pct} onChange={setP('structure_discount_pct')} step={0.1} />
-            <NumField label="Manufacturing slots" value={params.man_lines} onChange={setP('man_lines')} min={0} />
-            <NumField label="Reaction slots" value={params.react_lines} onChange={setP('react_lines')} min={0} />
           </div>
+          {preset.type && (
+            <div style={{ padding: '0 16px 12px', fontSize: 11, color: 'var(--text)' }}>
+              Preset filled ME / TE / discount for a T2-rigged <b>{preset.type}</b> ({preset.band}-sec) — a flat
+              estimate. For per-item rig accuracy, save the structure and use <b>Use my facilities</b>.
+            </div>
+          )}
+          </>
         )}
 
         {/* ── multi-facility checklist ── */}
@@ -1237,7 +1328,7 @@ function ChainTab() {
               : (
                 <table>
                   <thead>
-                    <tr><th></th><th>Facility</th><th>SCI %</th><th>Tax %</th><th>Disc %</th><th>Manuf. slots</th><th>React. slots</th></tr>
+                    <tr><th></th><th>Facility</th><th>Activity</th><th>SCI %</th><th>Tax %</th><th>Disc %</th></tr>
                   </thead>
                   <tbody>
                     {facilities.map(f => {
@@ -1248,18 +1339,14 @@ function ChainTab() {
                             <input type="checkbox" checked={!!fc.checked} onChange={e => toggleFacility(f.id, e.target.checked)} />
                           </td>
                           <td style={{ color: fc.checked ? 'var(--text-white)' : 'var(--text)', whiteSpace: 'nowrap' }}>{f.name}</td>
+                          <td style={{ fontSize: 11, color: 'var(--text)' }}>{facilityActivity(f.facility_type)}</td>
                           <td style={{ fontSize: 12, color: 'var(--text)' }}>
                             {f.system_cost_index != null ? (f.system_cost_index * 100).toFixed(3) : '—'}
                           </td>
                           <td style={{ fontSize: 12, color: 'var(--text)' }}>{f.tax != null ? f.tax : '—'}</td>
-                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{f.cost_bonus != null ? f.cost_bonus : '—'}</td>
-                          <td>
-                            <input type="number" style={{ width: 60 }} value={fc.man} disabled={!fc.checked}
-                              onChange={e => setFacilitySlot(f.id, 'man', e.target.value)} />
-                          </td>
-                          <td>
-                            <input type="number" style={{ width: 60 }} value={fc.react} disabled={!fc.checked}
-                              onChange={e => setFacilitySlot(f.id, 'react', e.target.value)} />
+                          <td style={{ fontSize: 12, color: '#4caf7d' }}
+                              title="Structure role bonus (by type). Cost rigs add more per item, applied automatically in the calc.">
+                            -{baseDiscountByType(f.facility_type)}%
                           </td>
                         </tr>
                       )
@@ -1402,15 +1489,33 @@ function ChainTab() {
 
           {/* ── Make vs Buy ── */}
           <Section title={`Make vs Buy — ${decisions.length} nodes`}>
+            <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--text)' }}>
+              ME / TE per item override the <b>Default ME / TE</b> above; edit a cell and click away to re-solve.
+            </div>
             <table>
-              <thead><tr><th>Item</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th><th>Build?</th></tr></thead>
+              <thead><tr><th>Item</th><th>ME</th><th>TE</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th><th>Build?</th></tr></thead>
               <tbody>
                 {[...decisions].sort((a, b) => (b.saved_per_unit || 0) - (a.saved_per_unit || 0)).map(d => {
                   const skipped = forceBuy.has(d.type_id)
                   const makeable = d.unit_make != null || skipped   // has a recipe we could run
+                  const edited = meTeOverrides[d.type_id] != null
                   return (
                   <tr key={d.type_id}>
                     <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{d.name}</td>
+                    <td>
+                      {makeable
+                        ? <input type="number" min={0} max={10} style={{ width: 44, color: edited ? 'var(--accent)' : undefined }}
+                            value={nodeMe(d.type_id)} onChange={e => setNodeMeTe(d.type_id, 'me', e.target.value)}
+                            onBlur={reSolveMeTe} title="Material Efficiency for this blueprint (overrides Default ME)" />
+                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>}
+                    </td>
+                    <td>
+                      {makeable
+                        ? <input type="number" min={0} max={20} style={{ width: 44, color: edited ? 'var(--accent)' : undefined }}
+                            value={nodeTe(d.type_id)} onChange={e => setNodeMeTe(d.type_id, 'te', e.target.value)}
+                            onBlur={reSolveMeTe} title="Time Efficiency for this blueprint (overrides Default TE)" />
+                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>}
+                    </td>
                     <td><DecisionBadge decision={d.decision} /></td>
                     <td>{d.unit_make != null ? fmtIsk(d.unit_make) : '—'}</td>
                     <td>{d.unit_buy != null ? fmtIsk(d.unit_buy) : '—'}</td>
@@ -1514,7 +1619,7 @@ function ChainTab() {
                         <thead>
                           <tr>
                             <th>Item</th><th>Runs</th><th>Qty to produce</th><th>Time</th>
-                            <th>Factory</th><th>Slot</th>
+                            <th>Factory</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1542,13 +1647,6 @@ function ChainTab() {
                                             background: 'var(--surface3)', padding: '1px 4px', borderRadius: 3 }}>{typeTag}</span>
                                         </>
                                       : <span style={{ fontSize: 12, color: 'var(--text)' }}>{j.activity === 11 ? 'Reaction' : 'Manufacturing'}</span>}
-                                </td>
-                                <td>
-                                  {hasAssign
-                                    ? (j.bounced
-                                      ? <span style={{ color: '#e0884f', fontSize: 11 }}>↩ bought</span>
-                                      : <span style={{ color: '#4caf7d', fontSize: 11 }}>● in-house</span>)
-                                    : <span style={{ fontSize: 11, color: 'var(--text)' }}>{j.slot_kind}</span>}
                                 </td>
                               </tr>
                             )

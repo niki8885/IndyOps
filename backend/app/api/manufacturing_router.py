@@ -364,6 +364,10 @@ class ChainCalcRequest(BaseModel):
     # (product_type_id -> blueprint_id) overrides the pick for a node.
     use_owned_blueprints: bool = False
     blueprint_selection: dict[int, int] = {}
+    # Manual per-node ME/TE: product_type_id -> [me, te]. Highest priority — wins over
+    # an owned blueprint's ME/TE and over the global me_pct/te_pct default. Lets the
+    # user tune a single node in the tree without owning a blueprint record for it.
+    me_te_overrides: dict[int, List[int]] = {}
     # The user's facilities. When given, each makeable node is built at the cheapest
     # eligible one (the core picks per node, using that facility's rigs).
     structures: List[ChainStructure] = []
@@ -445,9 +449,10 @@ def _facility_location(s: ChainStructure, f, rigs, band: str,
     global me_pct/te_pct are the manual base the rigs multiply onto.
     """
     is_ec = bool(f and f.facility_type in EC_TYPES)
-    # A facility can only run an activity its *type* allows (EC → manufacturing,
-    # refinery → reactions) AND has slots for. Type wins, so reactions never land
-    # on a Raitaru even if the user set react slots on it.
+    # A facility may run only the activities its *type* allows (EC → manufacturing,
+    # refinery → reactions). Eligibility is purely type-based now — job-slot capacity
+    # is a single per-character total (see calculate_chain), not a per-facility count,
+    # so reactions never land on a Raitaru regardless of any stale per-row slot value.
     allow_man, allow_react = _activity_caps(f.facility_type) if f else (True, True)
     return LocationParams(
         place_id=s.place_id,
@@ -457,8 +462,8 @@ def _facility_location(s: ChainStructure, f, rigs, band: str,
         struct_discount=s.structure_discount_pct / 100,
         man_lines=s.man_lines, react_lines=s.react_lines,
         rigs=tuple(rigs), band=band, is_ec=is_ec,
-        can_man=allow_man and s.man_lines > 0,
-        can_react=allow_react and s.react_lines > 0,
+        can_man=allow_man,
+        can_react=allow_react,
     )
 
 
@@ -693,6 +698,10 @@ async def calculate_chain(
     facilities = _build_facilities(body, db, current_user.id)
     # Owned blueprints: per-node ME/TE + a BPC's cost folded into the build.
     node_overrides, bpc_unit, chosen_bps = _blueprint_plan(body, db, current_user.id, tree)
+    # Manual per-node ME/TE wins over the owned-blueprint pick (and the global default).
+    for tid, me_te in body.me_te_overrides.items():
+        if isinstance(me_te, (list, tuple)) and len(me_te) == 2:
+            node_overrides[int(tid)] = (int(me_te[0]), int(me_te[1]))
     req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, facilities,
                    bpc_unit=bpc_unit, node_overrides=node_overrides)
 
@@ -711,10 +720,10 @@ async def calculate_chain(
     plan, engine = chain_engine.solve(req)   # native Haskell core, falls back to Python
 
     # Capacity schedule: lay the jobs into dependency-ordered stages within the
-    # selected facilities' manufacturing / reaction slots.
-    man_slots = sum(f.man_lines for f in facilities if f.can_man)
-    react_slots = sum(f.react_lines for f in facilities if f.can_react)
-    schedule = stage_schedule(plan.jobs, man_slots, react_slots)
+    # character's job slots. Slots are a single per-character total (man_lines /
+    # react_lines), not a per-facility count — in EVE the manufacturing/reaction job
+    # cap comes from the pilot's skills, shared across every structure they use.
+    schedule = stage_schedule(plan.jobs, body.man_lines, body.react_lines)
 
     return _to_jsonable({
         "plan": _plan_dict(plan),
@@ -789,8 +798,9 @@ async def facility_bonuses(
         grp = eve_db.query(EveGroup).filter(EveGroup.group_id == prod.group_id).first() if prod else None
         cat_id = grp.category_id if grp else None
         group_name = grp.group_name if grp else None
+        meta_group_id = eve_repo.meta_group_for(eve_db, product_type_id)
 
-        eff = effective_bonuses(rigs, band, cat_id, group_name)
+        eff = effective_bonuses(rigs, band, cat_id, group_name, meta_group_id=meta_group_id)
 
         is_ec = f.facility_type in EC_TYPES
         structure_role = {

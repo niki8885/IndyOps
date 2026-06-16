@@ -7,7 +7,7 @@ from sqlalchemy import func
 
 from app.core.database_eve import (
     EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint,
-    EveGroup,
+    EveGroup, EveMetaType,
 )
 
 MANUFACTURING = 1
@@ -85,22 +85,33 @@ def type_names(eve_db, type_ids: list[int]) -> dict[int, str]:
 
 
 def type_groups(eve_db, type_ids: list[int]) -> dict[int, dict]:
-    """{type_id: {"category_id", "group_name"}} for the given ids (single query).
+    """{type_id: {"category_id", "group_name", "meta_group_id"}} (single query).
 
-    Used to decide which engineering rigs apply to each node of a build tree.
+    Used to decide which engineering rigs apply to each node of a build tree —
+    category/group for the size match, ``meta_group_id`` for the Basic/Advanced
+    (Tech I vs Tech II/III) tech-level gate.
     """
     rows = (
-        eve_db.query(EveType.type_id, EveGroup.category_id, EveGroup.group_name)
+        eve_db.query(EveType.type_id, EveGroup.category_id, EveGroup.group_name,
+                     EveMetaType.meta_group_id)
         .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
+        .outerjoin(EveMetaType, EveType.type_id == EveMetaType.type_id)
         .filter(EveType.type_id.in_(type_ids or [-1]))
         .all()
     )
-    return {tid: {"category_id": cid, "group_name": gname} for tid, cid, gname in rows}
+    return {tid: {"category_id": cid, "group_name": gname, "meta_group_id": mgid}
+            for tid, cid, gname, mgid in rows}
 
 
 def max_production_limit(eve_db, blueprint_type_id: int) -> Optional[int]:
     row = eve_db.query(EveBlueprint).filter(EveBlueprint.type_id == blueprint_type_id).first()
     return row.max_production_limit if row else None
+
+
+def meta_group_for(eve_db, type_id: int) -> Optional[int]:
+    """Tech level (meta group id) of one type, or None (treated as Tech I)."""
+    row = eve_db.query(EveMetaType.meta_group_id).filter(EveMetaType.type_id == type_id).first()
+    return row[0] if row else None
 
 
 def type_volume(eve_db, type_id: int) -> Optional[float]:
@@ -173,6 +184,7 @@ def bom_tree(eve_db, root_type_id: int, max_depth: int = 12) -> dict[int, dict]:
     flat ``{type_id: node}`` map where each node is::
 
         {"name": str, "category_id": int|None, "group_name": str|None,
+         "meta_group_id": int|None,
          "recipes": [{"activity", "blueprint_type_id", "qty_per_run",
                       "base_time", "max_runs", "inputs": [{"type_id","qty"}]}]}
 
@@ -254,4 +266,5 @@ def bom_tree(eve_db, root_type_id: int, max_depth: int = 12) -> dict[int, dict]:
         g = groups.get(tid) or {}
         n["category_id"] = g.get("category_id")
         n["group_name"] = g.get("group_name")
+        n["meta_group_id"] = g.get("meta_group_id")
     return nodes

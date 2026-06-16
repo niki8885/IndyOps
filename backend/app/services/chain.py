@@ -234,6 +234,7 @@ def _node_location(
         cat_id: Optional[int], group_name: Optional[str],
         eiv_unit: float, bpc_unit: float,
         base_me_mult: Optional[float] = None, base_te_mult: Optional[float] = None,
+        meta_group_id: Optional[int] = None,
 ) -> RecipeLocation:
     """Resolve one facility's effective ME/TE/cost for one node.
 
@@ -247,7 +248,8 @@ def _node_location(
     bm = loc.me_mult if base_me_mult is None else base_me_mult
     bt = loc.te_mult if base_te_mult is None else base_te_mult
     if loc.rigs or loc.is_ec:
-        eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name, is_reaction)
+        eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name,
+                                is_reaction, meta_group_id)
         if is_reaction:
             me_mult = 1.0
         else:
@@ -300,6 +302,7 @@ def from_bom(
     for tid, nd in tree.items():
         cat_id = nd.get("category_id")
         group_name = nd.get("group_name")
+        meta_group_id = nd.get("meta_group_id")
         ov = node_overrides.get(tid)
         base_me_mult = (1 - ov[0] / 100) if ov else None
         base_te_mult = (1 - ov[1] / 100) if ov else None
@@ -313,7 +316,8 @@ def from_bom(
             ) / qpr
             locs = [
                 _node_location(fac, is_reaction, cat_id, group_name, eiv_unit,
-                               bpc_unit.get(tid, 0.0), base_me_mult, base_te_mult)
+                               bpc_unit.get(tid, 0.0), base_me_mult, base_te_mult,
+                               meta_group_id=meta_group_id)
                 for fac in facilities
                 if (fac.can_react if is_reaction else fac.can_man)
             ]
