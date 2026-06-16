@@ -113,11 +113,28 @@ fill_j  = min(1, participation_cap·volume_j·horizon / qty_j)
 profit  = product_qty·sell·fill − taxes − Σ acquire_j·qty_j·(1+(1−fill_j)·premium) − fixed − logistics
 ```
 
+### Quant hardening (IO-22) — all flag-gated, default off (= the model above)
+
+* **Tail dependence — `copula` (0 Gaussian, 1 Student-t), `t_df`.** The t-copula
+  multiplies `z` by a *shared* `√(ν/W)`, `W~χ²_ν` (`src/rng.f90` `rng_chi2`), so all
+  variables go extreme together — modelling joint crashes the Gaussian copula
+  (tail dependence 0) misses. `u = Tν(t)` via `src/distrib.f90 student_t_cdf`
+  (incomplete beta); the lognormal marginal uses `norm_ppf` (Acklam). `t_df=0` ⇒
+  Python estimates ν from kurtosis (MoM).
+* **Price dynamics — `path_steps` (>1), `garch`.** Replaces the one-shot draw with
+  an AR(1)/OU log-price path (`ar_phi`, `step_sigma`, `theta`, `x0`) driven by
+  correlated innovations, optional GARCH(1,1) (`garch_omega/alpha/beta`) volatility
+  clustering. Materials are priced at step 1 (bought now), the product at the
+  terminal step (sold after the holding horizon). Fitted by `services.market_model`.
+* **MC error bars — always on.** Batch-means standard errors + 95% CIs on
+  `expected_profit`/`var5`/`var1`/`cvar5`, plus `mc_rel_error` and a `converged`
+  flag — so a slowly-converging tail VaR is visible, not hidden.
+
 The request is **numeric-only and rectangular** — Python reduces history to
-`mu`/`sigma` + a 101-point quantile grid and pre-builds the Cholesky factor and
-factor loadings; every 2-D array (`qgrid`, `l`, `loadings`) is **flattened
-row-major** because `src/json.f90` reads only flat arrays. The response keys
-mirror `services.profit_sim.SimMetrics`. Smoke test:
+`mu`/`sigma` + a 101-point quantile grid, fits the AR(1)/GARCH process params and
+the Cholesky factor / factor loadings; every 2-D array (`qgrid`, `l`, `loadings`)
+is **flattened row-major** because `src/json.f90` reads only flat arrays. The
+response keys mirror `services.profit_sim.SimMetrics`. Smoke test:
 
 ```sh
 ./bin/profit-sim < sample-profitsim.json

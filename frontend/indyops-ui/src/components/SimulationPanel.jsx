@@ -27,14 +27,18 @@ const isk = x => x == null ? '—'
 const pct = x => x == null ? '—' : `${(x * 100).toFixed(2)}%`
 const num = (x, n = 2) => x == null ? '—' : Number(x).toFixed(n)
 
-function Stat({ label, value, color }) {
+function Stat({ label, value, color, sub }) {
   return (
     <div>
       <div style={{ fontSize: 11, color: 'var(--text)' }}>{label}</div>
       <div style={{ fontWeight: 700, fontSize: 16, color: color || 'var(--text-white)' }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: 'var(--text)' }}>{sub}</div>}
     </div>
   )
 }
+
+// ± half-width of a 95% CI [lo,hi]
+const ciHalf = (ci) => (Array.isArray(ci) && ci.length === 2) ? (ci[1] - ci[0]) / 2 : null
 
 export default function SimulationPanel({ run, projectId }) {
   const [detail, setDetail] = useState(null)
@@ -119,11 +123,13 @@ export default function SimulationPanel({ run, projectId }) {
       {err && <div style={{ color: '#e05252', fontSize: 12, marginTop: 6 }}>{err}</div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(130px,1fr))', gap: 12, marginTop: 12 }}>
-        <Stat label="Expected profit" value={isk(ep)} color={ep >= 0 ? '#4caf7d' : '#e05252'} />
+        <Stat label="Expected profit" value={isk(ep)} color={ep >= 0 ? '#4caf7d' : '#e05252'}
+              sub={m && ciHalf(m.ci95?.expected_profit) != null ? `95% CI ±${isk(ciHalf(m.ci95.expected_profit))}` : null} />
         <Stat label="Median" value={isk(m?.median_profit ?? s.median_profit)} />
         <Stat label="Std σ" value={isk(m?.std ?? s.std)} />
         <Stat label="Coef. of variation" value={num(m?.cv ?? s.cv, 3)} />
-        <Stat label="VaR 5%" value={isk(m?.var5 ?? s.var5)} color="#e0884f" />
+        <Stat label="VaR 5%" value={isk(m?.var5 ?? s.var5)} color="#e0884f"
+              sub={m && ciHalf(m.ci95?.var5) != null ? `±${isk(ciHalf(m.ci95.var5))}` : null} />
         <Stat label="VaR 1%" value={isk(m?.var1 ?? s.var1)} color="#e0884f" />
         <Stat label="CVaR 5%" value={isk(m?.cvar5 ?? s.cvar5)} color="#e0884f" />
         <Stat label="Worst 1%" value={isk(m?.worst1 ?? s.worst1)} color="#e05252" />
@@ -141,6 +147,13 @@ export default function SimulationPanel({ run, projectId }) {
           {' '}(<span style={{ color: '#4caf7d' }}>— E[Profit]</span>,{' '}
           <span style={{ color: '#e0884f' }}>— VaR 5%</span>,{' '}
           <span style={{ color: '#e05252' }}>— break-even</span>)
+          {m.mc_rel_error != null && (
+            <span> · MC error {(m.mc_rel_error * 100).toFixed(2)}% ·{' '}
+              <span style={{ color: m.converged ? '#4caf7d' : '#e0884f' }}>
+                {m.converged ? '✓ converged' : '⚠ increase iterations'}
+              </span>
+            </span>
+          )}
         </div>
       )}
     </div>

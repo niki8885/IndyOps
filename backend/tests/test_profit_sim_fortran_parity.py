@@ -57,9 +57,17 @@ FIXTURES = {
     "with_logistics": lambda: _req(seed=6, dist_mode=0, corr_mode=0,
                                    haul_delay_prob=0.3, haul_delay_hours_mean=48.0,
                                    holding_daily_rate=0.01),
+    # IO-22 hardening: Student-t copula + AR(1)/OU(+GARCH) price paths
+    "tcopula_empirical": lambda: _req(seed=11, dist_mode=0, corr_mode=0, copula=1, t_df=5.0),
+    "tcopula_lognormal": lambda: _req(seed=12, dist_mode=1, corr_mode=0, copula=1, t_df=5.0),
+    "path_ar1": lambda: _req(seed=13, dist_mode=0, corr_mode=0, path_steps=24, garch=0),
+    "path_garch": lambda: _req(seed=14, dist_mode=0, corr_mode=0, path_steps=24, garch=1),
 }
 
-_MONETARY = ["expected_profit", "median_profit", "std", "var5", "var1", "cvar5", "worst1"]
+# headline metrics converge tightly; the deep 1% tail (var1/worst1) is noisier and
+# is exactly what the new MC confidence intervals quantify, so it gets a wider band.
+_TIGHT = ["expected_profit", "median_profit", "std", "var5", "cvar5"]
+_DEEP = ["var1", "worst1"]
 
 
 @pytest.mark.parametrize("name", list(FIXTURES))
@@ -72,9 +80,12 @@ def test_fortran_matches_python(name):
     assert native.engine == "fortran"
     assert a.n_iterations == b.n_iterations == req.params.n_iterations
 
-    for k in _MONETARY:
+    for k in _TIGHT:
         x, y = getattr(a, k), getattr(b, k)
-        assert abs(x - y) <= REL * (abs(y) + 1.0), f"{k}: {x} vs {y}"
+        assert abs(x - y) <= 0.06 * (abs(y) + 1.0), f"{k}: {x} vs {y}"
+    for k in _DEEP:
+        x, y = getattr(a, k), getattr(b, k)
+        assert abs(x - y) <= 0.25 * (abs(y) + 1.0), f"{k}: {x} vs {y}"
 
     assert abs(a.prob_loss - b.prob_loss) <= ABS_P
 
@@ -101,3 +112,13 @@ def test_fortran_matches_python(name):
     for k in ("sharpe_like", "risk_adjusted", "return_per_slot", "return_per_time", "cv"):
         x, y = getattr(a, k), getattr(b, k)
         assert abs(x - y) <= 0.10 * (abs(y) + 1.0), f"{k}: {x} vs {y}"
+
+    # MC confidence intervals: present, well-formed, bracket the point estimate, and
+    # the native standard errors agree with the oracle's to a generous factor.
+    assert set(a.standard_error) == {"expected_profit", "var5", "var1", "cvar5"}
+    assert a.n_batches >= 2 and a.mc_rel_error >= 0
+    for k in ("expected_profit", "var5"):
+        lo, hi = a.ci95[k]
+        point = a.expected_profit if k == "expected_profit" else getattr(a, k)
+        assert lo <= point <= hi
+        assert 0.25 * b.standard_error[k] <= a.standard_error[k] <= 4.0 * b.standard_error[k] + 1.0

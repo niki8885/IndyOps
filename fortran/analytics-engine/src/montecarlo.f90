@@ -4,8 +4,8 @@ module montecarlo_mod
     use, intrinsic :: iso_fortran_env, only : real64
     use json_mod
     use sort_stats_mod, only : sort_asc, percentile_linear, mean_f, std_f, histogram_np
-    use rng_mod, only : rng_t, rng_seed, rng_uniform, rng_normal
-    use distrib_mod, only : norm_cdf, quantile_grid_interp
+    use rng_mod, only : rng_t, rng_seed, rng_uniform, rng_normal, rng_chi2
+    use distrib_mod, only : norm_cdf, norm_ppf, student_t_cdf, quantile_grid_interp
     implicit none
     private
     public :: build_sim_report
@@ -83,6 +83,99 @@ contains
         call kv_raw(b, key_e); call jb_f64_array(b, edges, size(edges))
     end subroutine emit_hist
 
+    ! Correlated standard normals z(nv): Cholesky (cm=0) or factor model (cm=1).
+    subroutine draw_corr(rng, cm, nv, nf, lf, ld, fs, idio, z)
+        type(rng_t), intent(inout) :: rng
+        integer, intent(in) :: cm, nv, nf
+        real(real64), intent(in) :: lf(:), ld(:), fs(:), idio(:)
+        real(real64), intent(out) :: z(:)
+        real(real64) :: acc, fac(max(1, nf)), eps(nv)
+        integer :: i, j
+        if (cm == 1) then
+            do j = 1, nf
+                fac(j) = rng_normal(rng, 0.0_real64, 1.0_real64) * fs(j)
+            end do
+            do i = 1, nv
+                acc = 0.0_real64
+                do j = 1, nf
+                    acc = acc + ld((i - 1) * nf + j) * fac(j)
+                end do
+                z(i) = acc + idio(i) * rng_normal(rng, 0.0_real64, 1.0_real64)
+            end do
+        else
+            do j = 1, nv
+                eps(j) = rng_normal(rng, 0.0_real64, 1.0_real64)
+            end do
+            do i = 1, nv                              ! z = L·eps (L lower-triangular)
+                acc = 0.0_real64
+                do j = 1, i
+                    acc = acc + lf((i - 1) * nv + j) * eps(j)
+                end do
+                z(i) = acc
+            end do
+        end if
+    end subroutine draw_corr
+
+    ! "key":[centre−1.96σ, centre+1.96σ]
+    subroutine ci_pair(b, key, centre, s)
+        type(jbuilder), intent(inout) :: b
+        character(len = *), intent(in) :: key
+        real(real64), intent(in) :: centre, s
+        call kv_raw(b, key); call jb_push(b, '[')
+        call jb_f64(b, centre - 1.96_real64 * s); call jb_push(b, ',')
+        call jb_f64(b, centre + 1.96_real64 * s); call jb_push(b, ']')
+    end subroutine ci_pair
+
+    ! batch standard error: std(batch metrics, ddof=1) / √B
+    pure function sd1(v, b) result(s)
+        real(real64), intent(in) :: v(:)
+        integer, intent(in) :: b
+        real(real64) :: s, m, acc
+        integer :: i
+        if (b < 2) then
+            s = 0.0_real64
+            return
+        end if
+        m = sum(v(1:b)) / real(b, real64)
+        acc = 0.0_real64
+        do i = 1, b
+            acc = acc + (v(i) - m) ** 2
+        end do
+        s = sqrt(acc / real(b - 1, real64)) / sqrt(real(b, real64))
+    end function sd1
+
+    ! Batch-means MC standard errors for {E, VaR5, VaR1, CVaR5} (contiguous i.i.d.
+    ! batches, array-split style: first `rem` batches get one extra sample).
+    subroutine batch_ci(profit, n, se, nb)
+        real(real64), intent(in) :: profit(:)
+        integer, intent(in) :: n
+        real(real64), intent(out) :: se(4)
+        integer, intent(out) :: nb
+        real(real64), allocatable :: bc(:), vE(:), vV5(:), vV1(:), vC5(:)
+        real(real64) :: q5
+        integer :: base, rem, bi, lo, sz
+        nb = min(40, max(2, n / 500))
+        allocate(vE(nb), vV5(nb), vV1(nb), vC5(nb))
+        base = n / nb
+        rem = n - base * nb
+        lo = 1
+        do bi = 1, nb
+            sz = base
+            if (bi <= rem) sz = base + 1
+            allocate(bc(sz)); bc = profit(lo:lo + sz - 1)
+            call sort_asc(bc, 1, sz)
+            vE(bi) = sum(bc) / real(sz, real64)
+            q5 = percentile_linear(bc, sz, 5.0_real64)
+            vV5(bi) = q5
+            vV1(bi) = percentile_linear(bc, sz, 1.0_real64)
+            vC5(bi) = tail_mean(bc, sz, q5)
+            deallocate(bc)
+            lo = lo + sz
+        end do
+        se(1) = sd1(vE, nb); se(2) = sd1(vV5, nb)
+        se(3) = sd1(vV1, nb); se(4) = sd1(vC5, nb)
+    end subroutine batch_ci
+
     ! the simulation
 
     function build_sim_report(buf) result(out)
@@ -93,25 +186,28 @@ contains
 
         ! scalars
         integer :: n, seed, corr_mode, dist_mode, n_legs, n_vars, n_factors
-        integer :: production_time_s, slots
+        integer :: production_time_s, slots, copula, garch, path_steps, tau, n_batches
         real(real64) :: horizon_days, fixed_cost, participation_cap, shortfall_premium
         real(real64) :: slippage, haul_delay_prob, haul_delay_hours_mean, holding_daily_rate
         real(real64) :: risk_lambda, broker_fee_pct, sales_tax_pct, product_qty
-        logical :: f
+        real(real64) :: t_df, garch_alpha, garch_beta, tdf, sscale, sg, mc_rel_error
+        logical :: f, conv
 
         ! arrays (per-variable; var order = legs…, product last)
         real(real64), allocatable :: qty(:), mu(:), sigma(:), vol_mean(:), vol_sigma(:)
         real(real64), allocatable :: spread_mean(:), spread_sigma(:), idio_sigma(:)
         real(real64), allocatable :: factor_sigma(:), qgrid_flat(:), l_flat(:), loadings_flat(:)
+        real(real64), allocatable :: ar_phi(:), step_sigma(:), theta(:), x0(:), garch_omega(:)
         integer :: nq
 
         ! per-scenario state
         real(real64), allocatable :: profit(:), time_h(:), mat_cost(:), revenue(:)
         real(real64), allocatable :: taxes(:), logistics(:)
-        real(real64), allocatable :: z(:), eps(:), fac(:), price(:), spr(:)
+        real(real64), allocatable :: z(:), price(:), spr(:)
+        real(real64), allocatable :: xpath(:), x_step1(:), sig2(:), prev_eps(:), prev_sig(:)
         real(real64), allocatable :: psorted(:)
-        real(real64) :: acc, base, fillm, fillp, buyp, sellp, vol, exec_cap, u
-        real(real64) :: rev_k, mat_k, tax_k, log_k, delay_h
+        real(real64) :: base, fillm, fillp, buyp, sellp, vol, exec_cap, u
+        real(real64) :: rev_k, mat_k, tax_k, log_k, delay_h, se(4)
         real(real64) :: mean_p, std_p, p1, p5, p25, p50, p75, p95, p99, cvar5, w1
         real(real64) :: time_mean, prob_loss
         integer :: k, i, j, off, ncnt
@@ -138,6 +234,13 @@ contains
         call get_f64_scalar(buf, 'broker_fee_pct', broker_fee_pct, f);        if (.not. f) broker_fee_pct = 0.0_real64
         call get_f64_scalar(buf, 'sales_tax_pct', sales_tax_pct, f);          if (.not. f) sales_tax_pct = 0.0_real64
         call get_f64_scalar(buf, 'product_qty', product_qty, f);              if (.not. f) product_qty = 1.0_real64
+        ! IO-22 hardening: copula / path-dynamics controls
+        copula = get_int_or(buf, 'copula', 0)
+        garch = get_int_or(buf, 'garch', 0)
+        path_steps = max(1, get_int_or(buf, 'path_steps', 1))
+        call get_f64_scalar(buf, 't_df', t_df, f);            if (.not. f) t_df = 8.0_real64
+        call get_f64_scalar(buf, 'garch_alpha', garch_alpha, f); if (.not. f) garch_alpha = 0.08_real64
+        call get_f64_scalar(buf, 'garch_beta', garch_beta, f);   if (.not. f) garch_beta = 0.90_real64
 
         if (n < 1 .or. n_vars < 1) then
             out = ''
@@ -157,49 +260,83 @@ contains
         call get_f64_array(buf, 'qgrid', qgrid_flat, nq)
         call get_f64_array(buf, 'l', l_flat, nq)
         call get_f64_array(buf, 'loadings', loadings_flat, nq)
+        call get_f64_array(buf, 'ar_phi', ar_phi, nq)
+        call get_f64_array(buf, 'step_sigma', step_sigma, nq)
+        call get_f64_array(buf, 'theta', theta, nq)
+        call get_f64_array(buf, 'x0', x0, nq)
+        call get_f64_array(buf, 'garch_omega', garch_omega, nq)
 
         allocate(profit(n), time_h(n), mat_cost(n), revenue(n), taxes(n), logistics(n))
-        allocate(z(n_vars), eps(n_vars), price(n_vars), spr(n_vars))
-        allocate(fac(max(1, n_factors)))
+        allocate(z(n_vars), price(n_vars), spr(n_vars))
+        allocate(xpath(n_vars), x_step1(n_vars), sig2(n_vars), prev_eps(n_vars), prev_sig(n_vars))
 
         call rng_seed(rng, seed)
 
         do k = 1, n
-            ! 1. correlated standard-normal price shocks z(n_vars)
-            if (corr_mode == 1) then
-                do j = 1, n_factors
-                    fac(j) = rng_normal(rng, 0.0_real64, 1.0_real64) * factor_sigma(j)
-                end do
-                do i = 1, n_vars
-                    acc = 0.0_real64
-                    do j = 1, n_factors
-                        acc = acc + loadings_flat((i - 1) * n_factors + j) * fac(j)
+            ! 1+2. correlated shocks → prices: AR(1)/OU(+GARCH) path, or one-shot
+            ! (Gaussian or Student-t copula) terminal draw.
+            if (path_steps > 1) then
+                tdf = max(2.5_real64, t_df)
+                xpath(1:n_vars) = x0(1:n_vars)
+                sig2(1:n_vars) = step_sigma(1:n_vars) ** 2
+                prev_eps(1:n_vars) = 0.0_real64
+                prev_sig(1:n_vars) = step_sigma(1:n_vars)
+                x_step1(1:n_vars) = x0(1:n_vars)
+                do tau = 1, path_steps
+                    call draw_corr(rng, corr_mode, n_vars, n_factors, l_flat, loadings_flat, &
+                            factor_sigma, idio_sigma, z)
+                    if (copula == 1) then
+                        sscale = sqrt(tdf / max(rng_chi2(rng, tdf), 1.0e-12_real64)) &
+                                / sqrt(tdf / (tdf - 2.0_real64))
+                        do j = 1, n_vars
+                            z(j) = z(j) * sscale
+                        end do
+                    end if
+                    do j = 1, n_vars
+                        if (garch == 1) then
+                            if (tau > 1) sig2(j) = garch_omega(j) &
+                                    + garch_alpha * (prev_sig(j) * prev_eps(j)) ** 2 + garch_beta * sig2(j)
+                            sg = sqrt(max(sig2(j), 1.0e-300_real64))
+                        else
+                            sg = step_sigma(j)
+                        end if
+                        xpath(j) = xpath(j) + ar_phi(j) * (theta(j) - xpath(j)) + sg * z(j)
+                        prev_eps(j) = z(j)
+                        prev_sig(j) = sg
                     end do
-                    z(i) = acc + idio_sigma(i) * rng_normal(rng, 0.0_real64, 1.0_real64)
+                    if (tau == 1) x_step1(1:n_vars) = xpath(1:n_vars)
                 end do
+                do j = 1, n_legs                     ! legs bought at step 1
+                    price(j) = exp(x_step1(j))
+                end do
+                price(n_vars) = exp(xpath(n_vars))   ! product sold at terminal step H
             else
-                do j = 1, n_vars
-                    eps(j) = rng_normal(rng, 0.0_real64, 1.0_real64)
-                end do
-                do i = 1, n_vars                     ! z = L·eps (L lower-triangular)
-                    acc = 0.0_real64
-                    do j = 1, i
-                        acc = acc + l_flat((i - 1) * n_vars + j) * eps(j)
+                call draw_corr(rng, corr_mode, n_vars, n_factors, l_flat, loadings_flat, &
+                        factor_sigma, idio_sigma, z)
+                if (copula == 1) then                ! Student-t copula (tail dependence)
+                    tdf = max(2.5_real64, t_df)
+                    sscale = sqrt(tdf / max(rng_chi2(rng, tdf), 1.0e-12_real64))
+                    do j = 1, n_vars
+                        u = student_t_cdf(z(j) * sscale, tdf)
+                        if (dist_mode == 1) then
+                            price(j) = exp(mu(j) + sigma(j) * norm_ppf(u))
+                        else
+                            off = (j - 1) * GRIDK
+                            price(j) = quantile_grid_interp(qgrid_flat(off + 1:off + GRIDK), GRIDK, u)
+                        end if
                     end do
-                    z(i) = acc
-                end do
-            end if
-
-            ! 2. marginal prices
-            do j = 1, n_vars
-                if (dist_mode == 1) then
-                    price(j) = exp(mu(j) + sigma(j) * z(j))
-                else
-                    u = norm_cdf(z(j))
-                    off = (j - 1) * GRIDK
-                    price(j) = quantile_grid_interp(qgrid_flat(off + 1:off + GRIDK), GRIDK, u)
+                else                                 ! Gaussian copula (default)
+                    do j = 1, n_vars
+                        if (dist_mode == 1) then
+                            price(j) = exp(mu(j) + sigma(j) * z(j))
+                        else
+                            u = norm_cdf(z(j))
+                            off = (j - 1) * GRIDK
+                            price(j) = quantile_grid_interp(qgrid_flat(off + 1:off + GRIDK), GRIDK, u)
+                        end if
+                    end do
                 end if
-            end do
+            end if
 
             ! 3. spread / execution price
             do j = 1, n_vars
@@ -252,7 +389,7 @@ contains
             time_h(k) = real(production_time_s, real64) / 3600.0_real64 + delay_h
         end do
 
-        ! ── metrics ──
+        ! metrics
         mean_p = mean_f(profit, n)
         std_p = std_f(profit, n, 0)                 ! ddof=0, like the oracle's MC sigma
         allocate(psorted(n)); psorted = profit; call sort_asc(psorted, 1, n)
@@ -276,7 +413,17 @@ contains
         prob_loss = real(ncnt, real64) / real(n, real64)
         time_mean = mean_f(time_h, n)
 
-        ! ── emit (keys mirror services.profit_sim.SimMetrics) ──
+        ! batch-means MC standard errors + convergence
+        call batch_ci(profit, n, se, n_batches)
+        if (mean_p /= 0.0_real64) then
+            mc_rel_error = se(1) / abs(mean_p)
+            conv = (1.96_real64 * se(1)) < 0.01_real64 * abs(mean_p)
+        else
+            mc_rel_error = 0.0_real64
+            conv = .false.
+        end if
+
+        ! emit
         call jb_init(b)
         call jb_push(b, '{')
         call kvi(b, 'n_iterations', n);                  call jb_push(b, ',')
@@ -315,7 +462,27 @@ contains
         call kvf(b, 'sharpe_like', sharpe_of(mean_p, std_p));        call jb_push(b, ',')
         call kvf(b, 'risk_adjusted', mean_p - risk_lambda * std_p);  call jb_push(b, ',')
         call kvf(b, 'return_per_slot', mean_p / real(slots, real64));call jb_push(b, ',')
-        call kvf(b, 'return_per_time', rpt_of(mean_p, time_mean))
+        call kvf(b, 'return_per_time', rpt_of(mean_p, time_mean));    call jb_push(b, ',')
+        ! MC sampling error (batch means)
+        call kv_raw(b, 'standard_error'); call jb_push(b, '{')
+        call kvf(b, 'expected_profit', se(1)); call jb_push(b, ',')
+        call kvf(b, 'var5', se(2)); call jb_push(b, ',')
+        call kvf(b, 'var1', se(3)); call jb_push(b, ',')
+        call kvf(b, 'cvar5', se(4))
+        call jb_push(b, '},')
+        call kv_raw(b, 'ci95'); call jb_push(b, '{')
+        call ci_pair(b, 'expected_profit', mean_p, se(1)); call jb_push(b, ',')
+        call ci_pair(b, 'var5', p5, se(2)); call jb_push(b, ',')
+        call ci_pair(b, 'var1', p1, se(3)); call jb_push(b, ',')
+        call ci_pair(b, 'cvar5', cvar5, se(4))
+        call jb_push(b, '},')
+        call kvf(b, 'mc_rel_error', mc_rel_error); call jb_push(b, ',')
+        call kv_raw(b, 'converged')
+        if (conv) then; call jb_push(b, 'true');
+        else; call jb_push(b, 'false');
+        end if
+        call jb_push(b, ',')
+        call kvi(b, 'n_batches', n_batches)
         call jb_push(b, '}')
         out = jb_str(b)
     end function build_sim_report

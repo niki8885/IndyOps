@@ -5,7 +5,7 @@ module rng_mod
     use, intrinsic :: iso_fortran_env, only : real64, int64
     implicit none
     private
-    public :: rng_t, rng_seed, rng_uniform, rng_normal
+    public :: rng_t, rng_seed, rng_uniform, rng_normal, rng_gamma, rng_chi2
 
     type :: rng_t
         integer(int64) :: s(4) = 0_int64
@@ -90,5 +90,39 @@ contains
         rng%has_spare = .true.
         z = mu + sigma * (rad * cos(TWO_PI * u2))
     end function rng_normal
+
+    ! Gamma(shape, 1) via Marsaglia–Tsang (requires shape >= 1, ample for ν/2 ≥ 1).
+    function rng_gamma(rng, shape) result(g)
+        type(rng_t), intent(inout) :: rng
+        real(real64), intent(in) :: shape
+        real(real64) :: g, d, c, x, v, u
+        d = shape - 1.0_real64 / 3.0_real64
+        c = 1.0_real64 / sqrt(9.0_real64 * d)
+        do
+            do
+                x = rng_normal(rng, 0.0_real64, 1.0_real64)
+                v = 1.0_real64 + c * x
+                if (v > 0.0_real64) exit
+            end do
+            v = v * v * v
+            u = rng_uniform(rng)
+            if (u < 1.0_real64 - 0.0331_real64 * x**4) then
+                g = d * v
+                return
+            end if
+            if (log(u) < 0.5_real64 * x * x + d * (1.0_real64 - v + log(v))) then
+                g = d * v
+                return
+            end if
+        end do
+    end function rng_gamma
+
+    ! χ²(df) = Gamma(df/2, scale 2); df >= 2 keeps the Gamma shape >= 1.
+    function rng_chi2(rng, df) result(c)
+        type(rng_t), intent(inout) :: rng
+        real(real64), intent(in) :: df
+        real(real64) :: c
+        c = 2.0_real64 * rng_gamma(rng, df / 2.0_real64)
+    end function rng_chi2
 
 end module rng_mod

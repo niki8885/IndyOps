@@ -1,29 +1,12 @@
-"""
-Market-distribution & correlation estimation for the Monte-Carlo profit simulator.
-
-Pure numpy/stdlib — no ORM, FastAPI or requests (see [[indyops-service-layering]]).
-Turns raw price/volume history into the numeric inputs the simulation core needs:
-
-* per-variable marginals — lognormal ``(mu, sigma)`` of log-price, and a
-  fixed-resolution **empirical quantile grid** (so the engine can sample any
-  historical distribution by linear interpolation, with a rectangular wire format);
-* the cross-variable dependency — a correlation matrix and its **Cholesky** factor
-  (Option A), or a **factor-model** decomposition (Option B): per-group + global
-  loadings reproducing the block structure of the empirical correlation.
-
-The same reductions feed both the Python oracle (``services.profit_sim``) and,
-through the adapter, the native Fortran engine — so the two stay in parity.
-"""
 from __future__ import annotations
-
 import math
 
 import numpy as np
 
-QGRID_POINTS = 101  # quantile-function resolution: percentiles 0,1,…,100
+QGRID_POINTS = 101  # quantile-function resolution
 
 
-# ── marginals ─────────────────────────────────────────────────────────────────
+# marginals
 
 def _clean_positive(hist) -> np.ndarray:
     """Finite, strictly-positive samples as a float array (prices are > 0)."""
@@ -70,13 +53,11 @@ def relative_spread(buy_hist, sell_hist) -> float:
     return float(np.clip(((s[ok] - b[ok]) / mid[ok]).mean(), 0.0, 1.0))
 
 
-# ── cross-variable dependency ───────────────────────────────────────────────────
+# cross-variable dependency
 
 def align_returns(price_columns: list[list[float]]) -> np.ndarray:
     """Tail-align equal-purpose price series to the shortest length and return the
-    matrix of log-returns ``[T-1 × n]``. Rows with any non-finite return are
-    dropped, so the result is clean for a correlation estimate. Empty when fewer
-    than two aligned points are available."""
+    matrix of log-returns."""
     cols = [np.asarray(c, dtype=float) for c in price_columns]
     if not cols:
         return np.empty((0, 0))
@@ -91,9 +72,7 @@ def align_returns(price_columns: list[list[float]]) -> np.ndarray:
 
 
 def correlation_matrix(returns: np.ndarray, n: int | None = None) -> np.ndarray:
-    """Pearson correlation of the columns of ``returns``. Falls back to the
-    identity (independent) when there is too little data or a column is constant.
-    ``n`` overrides the output size when ``returns`` is empty."""
+    """Pearson correlation of the columns of ``returns``"""
     if returns.ndim != 2 or returns.shape[0] < 3:
         return np.eye(returns.shape[1] if returns.size else (n or 0))
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -106,9 +85,7 @@ def correlation_matrix(returns: np.ndarray, n: int | None = None) -> np.ndarray:
 
 def nearest_psd_cholesky(corr: np.ndarray) -> np.ndarray:
     """Lower-triangular Cholesky factor of the nearest positive-definite
-    correlation matrix. Clips negative eigenvalues, renormalises the diagonal back
-    to 1, and adds a small jitter if needed — so it never raises on a noisy
-    empirical matrix. ``z = L·ε`` then has the (repaired) correlation."""
+    correlation matrix."""
     a = np.atleast_2d(np.asarray(corr, dtype=float))
     nvar = a.shape[0]
     if nvar == 0:
@@ -130,20 +107,6 @@ def nearest_psd_cholesky(corr: np.ndarray) -> np.ndarray:
 
 def factor_decompose(corr: np.ndarray, group_ids: list[int]):
     """Single-factor-per-group + global-factor decomposition of ``corr``.
-
-    A pragmatic, data-driven realisation of the spec's factor model (mineral / T2 /
-    regional / industry drivers): each variable ``j`` loads on a **global** factor
-    (industry-wide co-movement) and on **one group factor** (its market class), with
-    the remainder idiosyncratic. Loadings are set so the implied correlation matches
-    the empirical *average* within-group and cross-group correlation:
-
-      * global loading ``g = sqrt(max(0, mean off-diagonal corr across all))``
-      * group loading  ``b_G = sqrt(max(0, mean within-group corr_G − g²))``
-      * idiosyncratic   ``s_j = sqrt(max(ε, 1 − g² − b_{G(j)}²))``
-
-    Returns ``(loadings [n × K], factor_sigma [K], idio_sigma [n])`` where column 0
-    is the global factor and the rest are the (ordered, distinct) group factors.
-    By construction each row's variances sum to 1, so ``z_j`` is unit-variance.
     """
     a = np.atleast_2d(np.asarray(corr, dtype=float))
     n = a.shape[0]
@@ -174,3 +137,52 @@ def factor_decompose(corr: np.ndarray, group_ids: list[int]):
         loadings[j, 1 + gi[groups[j]]] = b
         idio[j] = math.sqrt(max(1e-6, 1.0 - g * g - b * b))
     return loadings, np.ones(K), idio
+
+
+# fat tails & price dynamics
+
+def estimate_t_df(returns: np.ndarray) -> float:
+    """Method-of-moments Student-t degrees of freedom for the copula: from the
+    excess kurtosis κ of the (per-column standardised, pooled) returns,
+    ``ν = 6/κ + 4`` (the t-distribution's kurtosis relation). Thin tails (κ≤0) →
+    a large ν (≈ Gaussian). Clamped to ``[3, 100]``."""
+    a = np.atleast_2d(np.asarray(returns, dtype=float))
+    if a.shape[0] == 1 and returns.ndim == 1:
+        a = a.T
+    cols = []
+    for j in range(a.shape[1]):
+        c = a[:, j][np.isfinite(a[:, j])]
+        if c.size > 3 and c.std() > 0:
+            cols.append((c - c.mean()) / c.std())
+    if not cols:
+        return 100.0
+    pooled = np.concatenate(cols)
+    if pooled.size < 8:
+        return 100.0
+    kurt_excess = float(np.mean(pooled ** 4) - 3.0)
+    if kurt_excess <= 1e-6:
+        return 100.0
+    return float(min(100.0, max(3.0, 6.0 / kurt_excess + 4.0)))
+
+
+def fit_ar1(prices) -> tuple[float, float, float, float]:
+    """Fit an AR(1)/Ornstein-Uhlenbeck process to a log-price series by OLS."""
+    a = _clean_positive(prices)
+    mu, sigma = lognormal_params(prices)
+    if a.size < 4:
+        x0 = math.log(a[-1]) if a.size else mu
+        return 0.0, sigma, mu, x0
+    x = np.log(a)
+    rho, c = np.polyfit(x[:-1], x[1:], 1)        # x_t = c + rho·x_{t-1}
+    rho = float(np.clip(rho, 0.0, 0.9999))
+    phi = 1.0 - rho
+    theta = c / (1.0 - rho) if abs(1.0 - rho) > 1e-9 else float(x.mean())
+    resid = x[1:] - (c + rho * x[:-1])
+    step_sigma = float(resid.std(ddof=1)) if resid.size > 1 else sigma
+    return phi, step_sigma, float(theta), float(x[-1])
+
+
+def garch_omega(step_sigma: float, alpha: float, beta: float) -> float:
+    """GARCH(1,1)"""
+    persist = max(1e-6, 1.0 - (alpha + beta))
+    return max(1e-12, step_sigma * step_sigma * persist)

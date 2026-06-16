@@ -1,16 +1,4 @@
-"""
-Native Fortran Monte-Carlo profit simulator (fortran/analytics-engine → profit-sim)
-behind a thin adapter, mirroring app.adapters.analytics_engine.
-
-The Python core (app.services.profit_sim.simulate) stays as the oracle; this
-adapter prefers the native binary and falls back to Python on any failure, so the
-app works whether or not the engine is built. The binary is a pure stdin→stdout
-JSON filter: it receives the numeric-only, rectangular request built here (2-D
-arrays flattened row-major, since the hand-rolled JSON reader only parses flat
-arrays) and returns the SimMetrics JSON, which we re-wrap into a SimResult.
-"""
 from __future__ import annotations
-
 import json
 import logging
 import os
@@ -26,7 +14,7 @@ _BIN_NAME = "profit-sim.exe" if os.name == "nt" else "profit-sim"
 
 
 def _default_binary() -> Path:
-    # backend/app/adapters/profit_sim.py → repo root is four parents up
+    # backend/app/adapters/profit_sim.py
     repo_root = Path(__file__).resolve().parents[3]
     return repo_root / "fortran" / "analytics-engine" / "bin" / _BIN_NAME
 
@@ -41,14 +29,11 @@ def available() -> bool:
 
 
 def build_request(req: SimRequest) -> dict:
-    """Numeric-only, rectangular request for the engine. Per-variable arrays follow
-    the var order ``legs…, product`` last; ``qgrid`` / ``L`` / ``loadings`` are
-    flattened row-major to match the flat-array JSON reader."""
     p = req.params
     legs = req.legs
     nvars = len(legs) + 1
 
-    def col(attr):  # per-variable column: legs then product
+    def col(attr):
         return [getattr(l, attr) for l in legs] + [getattr(req.product, attr)]
 
     qgrid_flat: list[float] = []
@@ -69,12 +54,16 @@ def build_request(req: SimRequest) -> dict:
         "slippage": p.slippage, "haul_delay_prob": p.haul_delay_prob,
         "haul_delay_hours_mean": p.haul_delay_hours_mean, "holding_daily_rate": p.holding_daily_rate,
         "risk_lambda": p.risk_lambda,
+        "copula": p.copula, "t_df": p.t_df, "path_steps": p.path_steps, "garch": p.garch,
+        "garch_alpha": p.garch_alpha, "garch_beta": p.garch_beta,
         "broker_fee_pct": req.product.broker_fee_pct, "sales_tax_pct": req.product.sales_tax_pct,
         "product_qty": req.product.qty,
         "qty": [float(l.qty) for l in legs],
         "mu": col("mu"), "sigma": col("sigma"),
         "vol_mean": col("vol_mean"), "vol_sigma": col("vol_sigma"),
         "spread_mean": col("spread_mean"), "spread_sigma": col("spread_sigma"),
+        "ar_phi": col("ar_phi"), "step_sigma": col("step_sigma"), "theta": col("theta"),
+        "x0": col("x0"), "garch_omega": col("garch_omega"),
         "idio_sigma": req.idio_sigma or [0.0] * nvars,
         "factor_sigma": req.factor_sigma or [1.0] * n_factors,
         "qgrid": qgrid_flat,
@@ -84,7 +73,6 @@ def build_request(req: SimRequest) -> dict:
 
 
 def compute_native(req: SimRequest, *, timeout: float = 60.0) -> SimResult:
-    """Run the Fortran binary. Raises if it is missing or fails."""
     path = binary_path()
     if not path.is_file():
         raise FileNotFoundError(f"profit-sim binary not found at {path}")

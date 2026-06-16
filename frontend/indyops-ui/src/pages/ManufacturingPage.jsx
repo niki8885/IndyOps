@@ -932,7 +932,10 @@ function ChainTab() {
   const [error, setError]     = useState('')
   const [forceBuy, setForceBuy] = useState(new Set())   // nodes the user chose to skip making
   // IO-22: optional Monte-Carlo profit simulation run alongside the chain calc
-  const [sim, setSim] = useState({ on: false, n_iterations: 25000, dist_mode: 0, corr_mode: 0 })
+  const [sim, setSim] = useState({
+    on: false, n_iterations: 25000, dist_mode: 0, corr_mode: 0,
+    copula: 0, dynamics: 0,   // dynamics: 0 static / 1 AR(1) path / 2 AR(1)+GARCH
+  })
 
   // owned blueprints + per-node selection (product_type_id -> blueprint_id)
   const [ownedBPs, setOwnedBPs]   = useState([])
@@ -1059,6 +1062,9 @@ function ChainTab() {
             n_iterations: Number(sim.n_iterations) || 25000,
             dist_mode: Number(sim.dist_mode) || 0,
             corr_mode: Number(sim.corr_mode) || 0,
+            copula: Number(sim.copula) || 0,
+            path_steps: Number(sim.dynamics) > 0 ? 24 : 1,
+            garch: Number(sim.dynamics) === 2 ? 1 : 0,
           },
         } : {}),
         ...(activeStructures.length ? {
@@ -1431,6 +1437,15 @@ function ChainTab() {
             <select value={sim.corr_mode} onChange={e => setSim(s => ({ ...s, corr_mode: e.target.value }))}>
               <option value={0}>Cholesky corr.</option>
               <option value={1}>factor model</option>
+            </select>
+            <select value={sim.copula} onChange={e => setSim(s => ({ ...s, copula: e.target.value }))}>
+              <option value={0}>Gaussian copula</option>
+              <option value={1}>Student-t (tail dep.)</option>
+            </select>
+            <select value={sim.dynamics} onChange={e => setSim(s => ({ ...s, dynamics: e.target.value }))}>
+              <option value={0}>static (one-shot)</option>
+              <option value={1}>AR(1) path</option>
+              <option value={2}>AR(1)+GARCH path</option>
             </select>
           </>
         )}

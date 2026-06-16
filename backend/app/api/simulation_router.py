@@ -1,26 +1,10 @@
-"""
-Monte-Carlo profit-simulation endpoints (IO-22).
-
-The simulation itself is run **inline** from the chain / production calculators (a
-``simulate`` flag on ``/manufacturing/calculate-chain`` and ``/calculate``) via the
-``run_chain_simulation`` / ``run_calc_simulation`` helpers here — that is the
-"optionally run while costing a chain/production" flow. This router then exposes
-the stored runs: retrieval, per-run PDF, the project roll-up PDF, and strategy
-ranking (native Haskell risk-engine, Python fallback).
-
-Heavy compute lives in services.profit_sim (+ the native engines via the adapters);
-market history is fetched in adapters.sim_data; PDFs in services.sim_report_pdf.
-"""
 from __future__ import annotations
-
 import datetime
 from dataclasses import asdict
 from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-
 from app.adapters import profit_sim as sim_engine
 from app.adapters import risk_engine
 from app.core.database import SimulationRun, UserDB, get_db
@@ -38,15 +22,12 @@ _SUMMARY_KEYS = (
 )
 
 
-# ── request models ────────────────────────────────────────────────────────────
-
 class SimParamsIn(BaseModel):
-    """Simulation knobs (shared by the chain/production inline flag)."""
-    n_iterations: int = 25_000     # AC: 10k–50k; clamped to [1000, 200000]
+    n_iterations: int = 25_000  # AC: 10k–50k; clamped to [1000, 200000]
     seed: int = 42
     horizon_days: float = 1.0
-    corr_mode: int = 0             # 0 = Cholesky matrix, 1 = factor model
-    dist_mode: int = 0             # 0 = empirical (copula), 1 = lognormal
+    corr_mode: int = 0
+    dist_mode: int = 0
     participation_cap: float = 0.10
     shortfall_premium: float = 0.25
     slippage: float = 0.50
@@ -57,6 +38,10 @@ class SimParamsIn(BaseModel):
     risk_lambda: float = 1.0
     broker_fee_pct: float = 3.6
     sales_tax_pct: float = 2.0
+    copula: int = 0
+    t_df: float = 0.0
+    path_steps: int = 1
+    garch: int = 0
 
     def to_params(self) -> SimParams:
         return SimParams(
@@ -71,6 +56,10 @@ class SimParamsIn(BaseModel):
             haul_delay_hours_mean=float(self.haul_delay_hours_mean),
             holding_daily_rate=float(self.holding_daily_rate),
             slots=max(1, int(self.slots)), risk_lambda=float(self.risk_lambda),
+            copula=1 if self.copula == 1 else 0,
+            t_df=float(self.t_df),
+            path_steps=max(1, min(168, int(self.path_steps))),
+            garch=1 if self.garch == 1 else 0,
         )
 
 
@@ -79,7 +68,7 @@ class RankRequest(BaseModel):
     weights: Optional[dict[str, float]] = None
 
 
-# ── orchestration helpers (used by the inline flag + reusable) ──────────────────
+# orchestration helpers
 
 def summary(metrics: dict) -> dict:
     return {k: metrics.get(k) for k in _SUMMARY_KEYS}
@@ -138,7 +127,7 @@ def run_payload(run: SimulationRun) -> dict:
     }
 
 
-# ── endpoints ────────────────────────────────────────────────────────────────
+# endpoints
 
 def _run_or_404(db: Session, run_id: int, user_id: int) -> SimulationRun:
     run = db.query(SimulationRun).filter(
