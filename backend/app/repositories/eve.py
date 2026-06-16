@@ -3,6 +3,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
+from sqlalchemy import func
+
 from app.core.database_eve import (
     EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint,
     EveGroup,
@@ -130,6 +132,38 @@ def recipes_for_product(eve_db, product_type_id: int) -> list[dict]:
         {"blueprint_type_id": r.type_id, "activity_id": r.activity_id, "qty_per_run": r.quantity}
         for r in rows
     ]
+
+
+def product_for_blueprint(eve_db, blueprint_type_id: int) -> Optional[dict]:
+    """What a blueprint makes (manufacturing or reaction), or None. The reverse of
+    ``blueprint_for_product`` — used to key an owned blueprint to a chain node."""
+    row = (
+        eve_db.query(EveActivityProduct)
+        .filter(
+            EveActivityProduct.type_id == blueprint_type_id,
+            EveActivityProduct.activity_id.in_(INDUSTRY_ACTIVITIES),
+        )
+        .first()
+    )
+    return None if row is None else {
+        "product_type_id": row.product_type_id,
+        "activity_id": row.activity_id,
+        "qty_per_run": row.quantity,
+    }
+
+
+def types_by_name(eve_db, names: list[str]) -> dict[str, dict]:
+    """{lower(name): {"type_id","name"}} for exact case-insensitive resolution
+    (paste import). Skips blanks; one query."""
+    lowered = sorted({n.strip().lower() for n in names if n and n.strip()})
+    if not lowered:
+        return {}
+    rows = (
+        eve_db.query(EveType.type_id, EveType.type_name)
+        .filter(func.lower(EveType.type_name).in_(lowered))
+        .all()
+    )
+    return {name.lower(): {"type_id": tid, "name": name} for tid, name in rows}
 
 
 def bom_tree(eve_db, root_type_id: int, max_depth: int = 12) -> dict[int, dict]:

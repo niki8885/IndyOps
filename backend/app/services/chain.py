@@ -233,28 +233,32 @@ def _node_location(
         loc: LocationParams, is_reaction: bool,
         cat_id: Optional[int], group_name: Optional[str],
         eiv_unit: float, bpc_unit: float,
+        base_me_mult: Optional[float] = None, base_te_mult: Optional[float] = None,
 ) -> RecipeLocation:
     """Resolve one facility's effective ME/TE/cost for one node.
 
-    Rigs + EC role combine with the manual multipliers exactly like the single-job
+    Rigs + EC role combine with the base multipliers exactly like the single-job
     ``run_calculation``: ME/TE multiply ``(1−rig)(1−role)``; cost is a single
     percentage (max(manual, EC role) + rig cost) subtracted from the SCI portion.
-    Reactions ignore ME. A facility with no rig context (default path) reduces to
-    the old flat behaviour.
+    The base ME/TE is the owned blueprint's (``base_me_mult``/``base_te_mult``) when
+    given, else the facility's manual ``loc.me_mult``/``loc.te_mult``. Reactions
+    ignore ME. A facility with no rig context (default path) reduces to flat behaviour.
     """
+    bm = loc.me_mult if base_me_mult is None else base_me_mult
+    bt = loc.te_mult if base_te_mult is None else base_te_mult
     if loc.rigs or loc.is_ec:
         eff = effective_bonuses(list(loc.rigs), loc.band, cat_id, group_name)
         if is_reaction:
             me_mult = 1.0
         else:
             role = EC_MATERIAL_ROLE if loc.is_ec else 0.0
-            me_mult = loc.me_mult * (1 - eff.me_pct / 100) * (1 - role / 100)
-        te_mult = loc.te_mult * (1 - eff.te_pct / 100)
+            me_mult = bm * (1 - eff.me_pct / 100) * (1 - role / 100)
+        te_mult = bt * (1 - eff.te_pct / 100)
         base_cost_pct = max(loc.struct_discount * 100, EC_COST_ROLE if loc.is_ec else 0.0)
         struct_discount = min(0.9, (base_cost_pct + eff.cost_pct) / 100)
     else:
-        me_mult = 1.0 if is_reaction else loc.me_mult
-        te_mult = loc.te_mult
+        me_mult = 1.0 if is_reaction else bm
+        te_mult = bt
         struct_discount = loc.struct_discount
     return RecipeLocation(
         place_id=loc.place_id, place_name=loc.place_name,
@@ -272,6 +276,7 @@ def from_bom(
         adj_prices: dict[int, float],
         facilities,
         bpc_unit: Optional[dict[int, float]] = None,
+        node_overrides: Optional[dict[int, tuple[int, int]]] = None,
 ) -> ChainRequest:
     """Turn a repositories.eve.bom_tree + market prices into a ``ChainRequest``.
 
@@ -283,15 +288,21 @@ def from_bom(
 
     ``buy_prices`` is the market acquire cost per type (None = can't buy);
     ``adj_prices`` are ESI adjusted prices used for EIV (Σ base_qty·adj / qty_per_run).
-    Pure — no I/O — so it is unit-testable on its own.
+    ``node_overrides`` maps a product type_id to an owned blueprint's ``(me, te)`` %,
+    used as that node's base multiplier (rigs/role still layer on); ``bpc_unit`` maps
+    it to a BPC cost per output unit. Pure — no I/O — unit-testable on its own.
     """
     bpc_unit = bpc_unit or {}
+    node_overrides = node_overrides or {}
     if isinstance(facilities, LocationParams):
         facilities = [facilities]
     nodes: dict[int, Node] = {}
     for tid, nd in tree.items():
         cat_id = nd.get("category_id")
         group_name = nd.get("group_name")
+        ov = node_overrides.get(tid)
+        base_me_mult = (1 - ov[0] / 100) if ov else None
+        base_te_mult = (1 - ov[1] / 100) if ov else None
         recipes = []
         for rc in nd["recipes"]:
             activity = rc["activity"]
@@ -301,7 +312,8 @@ def from_bom(
                 inp["qty"] * adj_prices.get(inp["type_id"], 0.0) for inp in rc["inputs"]
             ) / qpr
             locs = [
-                _node_location(fac, is_reaction, cat_id, group_name, eiv_unit, bpc_unit.get(tid, 0.0))
+                _node_location(fac, is_reaction, cat_id, group_name, eiv_unit,
+                               bpc_unit.get(tid, 0.0), base_me_mult, base_te_mult)
                 for fac in facilities
                 if (fac.can_react if is_reaction else fac.can_man)
             ]

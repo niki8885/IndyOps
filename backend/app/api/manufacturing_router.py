@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.adapters import market
-from app.core.database import get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement
+from app.core.database import get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement, Blueprint
 from app.core.database_eve import (
     EveSessionLocal, EveType, EveRigBonus, EveGroup, EveSolarSystem,
 )
@@ -330,6 +330,11 @@ class ChainCalcRequest(BaseModel):
     # Nodes the user chose to skip making (force buy): their recipes are dropped so
     # the core can only buy them. Lets the chain be re-shaped from the graph.
     force_buy: List[int] = []
+    # Owned blueprints: apply their ME/TE (and a BPC's cost) per node. With
+    # use_owned_blueprints the backend auto-picks (BPO else best BPC); blueprint_selection
+    # (product_type_id -> blueprint_id) overrides the pick for a node.
+    use_owned_blueprints: bool = False
+    blueprint_selection: dict[int, int] = {}
     # The user's facilities. When given, each makeable node is built at the cheapest
     # eligible one (the core picks per node, using that facility's rigs).
     structures: List[ChainStructure] = []
@@ -504,6 +509,69 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
     )]
 
 
+def _blueprint_plan(body: ChainCalcRequest, db: Session, user_id: int, tree: dict):
+    """Pick an owned blueprint per makeable node and turn it into chain inputs.
+
+    Explicit ``blueprint_selection`` (product_type_id -> blueprint_id) wins; otherwise
+    ``use_owned_blueprints`` auto-picks (BPO, else best ME, else most runs). Returns
+    ``(node_overrides{tid:(me,te)}, bpc_unit{tid:per-unit cost}, chosen{tid:Blueprint})``.
+    """
+    if not body.use_owned_blueprints and not body.blueprint_selection:
+        return {}, {}, {}
+    type_ids = list(tree)
+    owned = (db.query(Blueprint)
+             .filter(Blueprint.user_id == user_id,
+                     Blueprint.product_type_id.in_(type_ids or [-1])).all())
+    by_product: dict[int, list] = defaultdict(list)
+    for bp in owned:
+        by_product[bp.product_type_id].append(bp)
+    by_id = {bp.id: bp for bp in owned}
+    selection = {int(k): int(v) for k, v in body.blueprint_selection.items()}
+
+    node_overrides: dict[int, tuple] = {}
+    bpc_unit: dict[int, float] = {}
+    chosen: dict[int, Blueprint] = {}
+    for tid, nd in tree.items():
+        if not nd["recipes"]:
+            continue
+        bp = None
+        if tid in selection:
+            cand = by_id.get(selection[tid])
+            if cand and cand.product_type_id == tid:
+                bp = cand
+        if bp is None and body.use_owned_blueprints and by_product.get(tid):
+            bp = max(by_product[tid], key=lambda b: (b.is_bpo, b.me, b.runs or 0))
+        if bp is None:
+            continue
+        chosen[tid] = bp
+        node_overrides[tid] = (bp.me, bp.te)
+        if not bp.is_bpo and bp.cost and bp.runs:
+            qpr = nd["recipes"][0]["qty_per_run"] or 1
+            bpc_unit[tid] = bp.cost / (bp.runs * qpr)
+    return node_overrides, bpc_unit, chosen
+
+
+def _bp_report(plan, chosen: dict) -> list[dict]:
+    """Per chosen blueprint: how many runs the plan needs, and whether a BPC's owned
+    runs cover it."""
+    runs_by_type: dict[int, int] = defaultdict(int)
+    for j in plan.jobs:
+        runs_by_type[j.type_id] += j.runs
+    report = []
+    for tid, bp in chosen.items():
+        needed = runs_by_type.get(tid, 0)
+        if needed == 0:
+            continue                       # node ended up bought, not made
+        owned_runs = None if bp.is_bpo else (bp.runs or 0) * (bp.quantity or 1)
+        report.append({
+            "type_id": tid, "blueprint_id": bp.id, "name": bp.name, "is_bpo": bp.is_bpo,
+            "me": bp.me, "te": bp.te, "runs_needed": needed, "runs_owned": owned_runs,
+            "shortfall": 0 if bp.is_bpo else max(0, needed - (owned_runs or 0)),
+        })
+    report.sort(key=lambda r: r["shortfall"], reverse=True)
+    return report
+
+
 @router.post("/calculate-chain")
 async def calculate_chain(
         body: ChainCalcRequest,
@@ -559,7 +627,10 @@ async def calculate_chain(
         adj = {}
 
     facilities = _build_facilities(body, db, current_user.id)
-    req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, facilities)
+    # Owned blueprints: per-node ME/TE + a BPC's cost folded into the build.
+    node_overrides, bpc_unit, chosen_bps = _blueprint_plan(body, db, current_user.id, tree)
+    req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, facilities,
+                   bpc_unit=bpc_unit, node_overrides=node_overrides)
 
     # Skip-making (force buy): drop those nodes' recipes so the core can only buy
     # them. Guard nodes that have nothing to buy — leave them makeable.
@@ -584,6 +655,8 @@ async def calculate_chain(
         "price_basis": body.price_basis,
         "price_source": {str(t): src for t, src in price_source.items()},
         "force_buy_skipped": forced_skipped,
+        "bp_report": _bp_report(plan, chosen_bps),
+        "blueprint_selection": {str(t): bp.id for t, bp in chosen_bps.items()},
     })
 
 

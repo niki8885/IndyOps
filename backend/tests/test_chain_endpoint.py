@@ -95,6 +95,21 @@ def test_chain_assignment_summarises_plan_by_facility():
     assert asg["savings_captured"] >= 0
 
 
+def test_bp_report_runs_needed_and_bpc_shortfall():
+    # W is made in 3 single-run jobs (max_runs 1, qty 3); a BPC with 2 runs → shortfall 1.
+    from types import SimpleNamespace
+    loc = RecipeLocation(1, "P", "manufacturing")
+    nodes = {
+        1: Node(1, "W", 1e9, (Recipe(1, 100, 1, 600, ((2, 1),), (loc,), 1),)),
+        2: Node(2, "M", 1.0),
+    }
+    plan = solve_chain(ChainRequest(1, 3, nodes))
+    bpc = SimpleNamespace(id=7, name="W BPC", is_bpo=False, me=10, te=20, runs=2, quantity=1)
+    rep = mr._bp_report(plan, {1: bpc})
+    assert rep and rep[0]["runs_needed"] == 3 and rep[0]["runs_owned"] == 2
+    assert rep[0]["shortfall"] == 1 and rep[0]["is_bpo"] is False
+
+
 def test_force_buy_drops_recipe_in_request():
     # Dropping a node's recipes (the force-buy path) leaves it buy-only.
     tree = {

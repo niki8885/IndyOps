@@ -66,3 +66,19 @@ def test_recipes_for_product_lists_both_activities(eve_session):
         {"blueprint_type_id": 1001, "activity_id": 11, "qty_per_run": 10}
     ]
     assert eve_repo.recipes_for_product(eve_session, 999) == []
+
+
+def test_product_for_blueprint_reverse_lookup(eve_session):
+    _seed_two_tier(eve_session)
+    assert eve_repo.product_for_blueprint(eve_session, 1000) == {
+        "product_type_id": 2000, "activity_id": 1, "qty_per_run": 1}
+    assert eve_repo.product_for_blueprint(eve_session, 1001)["activity_id"] == 11
+    assert eve_repo.product_for_blueprint(eve_session, 999) is None
+
+
+def test_types_by_name_exact_case_insensitive(eve_session):
+    _seed_two_tier(eve_session)
+    out = eve_repo.types_by_name(eve_session, ["t2 hull", "Moon Goo", "nope"])
+    assert out["t2 hull"]["type_id"] == 2000
+    assert out["moon goo"]["type_id"] == 4000
+    assert "nope" not in out
