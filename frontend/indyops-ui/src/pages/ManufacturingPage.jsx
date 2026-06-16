@@ -907,6 +907,7 @@ function ChainTab() {
     system_cost_index: 0, facility_tax_pct: 0, structure_discount_pct: 0,
     man_lines: 10, react_lines: 0, max_depth: 12,
     flag_unrealistic: true, unrealistic_ratio: 30,   // drop buys below 30% of adjusted
+    sell_fee_pct: 5.6,   // broker fee + sales tax taken off the sell side (≈ 3.6 + 2.0)
   })
 
   // ── (1) Buy-price region multi-select ──
@@ -1163,9 +1164,12 @@ function ChainTab() {
   const priceFlag = tid => priceFlags[tid] ?? priceFlags[String(tid)]
 
   const totalCost = result?.final_cost ?? plan?.total_cost ?? null
-  const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null
-  const profit    = totalSell != null && totalCost != null ? totalSell - totalCost : null
-  const margin    = profit != null && totalSell ? profit / totalSell * 100 : null
+  const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null   // gross market value
+  // Revenue is net of sell-side fees (broker + sales tax), like real selling — without
+  // this the margin runs ~5 points high vs tools that subtract them (e.g. Ravworks).
+  const netSell   = totalSell != null ? totalSell * (1 - (params.sell_fee_pct || 0) / 100) : null
+  const profit    = netSell != null && totalCost != null ? netSell - totalCost : null
+  const margin    = profit != null && netSell ? profit / netSell * 100 : null
 
   // estimated wall-clock build time: the dependency-staged schedule (global slot
   // caps) when available, else the busiest (facility, slot) line as a fallback.
@@ -1254,6 +1258,10 @@ function ChainTab() {
                   className={`btn btn-sm ${sellMethod === m ? 'btn-primary' : 'btn-ghost'}`}
                   style={{ padding: '2px 8px', fontSize: 11 }}>{m}</button>
               ))}
+              <span style={{ fontSize: 11, color: 'var(--text)', marginLeft: 4 }} title="Broker fee + sales tax taken off the sell side">−fee</span>
+              <input type="number" step="0.1" min="0" value={params.sell_fee_pct}
+                onChange={setP('sell_fee_pct')} style={{ width: 48, padding: '2px 4px', fontSize: 11 }} />
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>%</span>
             </div>
           </div>
 
@@ -1482,6 +1490,7 @@ function ChainTab() {
                 : sellPrice != null
                   ? <>
                       <IskStat label={`Sell (${sellMarket} ${sellMethod})`} value={totalSell} color="#4caf7d" bold />
+                      <IskStat label={`Net sell (−${params.sell_fee_pct || 0}%)`} value={netSell} color="#4caf7d" />
                       <IskStat label="Profit" value={profit} color={profit >= 0 ? '#4caf7d' : '#e05252'} bold />
                       <div>
                         <div style={statLabel}>Margin</div>

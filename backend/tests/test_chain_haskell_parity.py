@@ -62,6 +62,18 @@ def _req_shared_dag():
     })
 
 
+def _req_shared_made_dag():
+    # Shared *made* intermediate S feeding two made parents — exercises the topo
+    # make-order (reverse post-order). Both engines must sum S's demand identically.
+    return ChainRequest(1, 3, {
+        1: Node(1, "ROOT", 1e12, (_recipe([(2, 1), (3, 1)]),)),
+        2: Node(2, "A", 1e9, (_recipe([(4, 1)]),)),
+        3: Node(3, "B", 1e9, (_recipe([(4, 1)]),)),
+        4: Node(4, "S", 1e9, (_recipe([(5, 5)]),)),
+        5: Node(5, "RAW", 100.0),
+    })
+
+
 def _req_buy_beats_make():
     return ChainRequest(1, 4, {
         1: Node(1, "WIDGET", 100000.0, (_recipe([(2, 10)]),)),
@@ -112,6 +124,7 @@ REQUESTS = {
     "install_me_scc": _req_install_me_scc,
     "reaction": _req_reaction,
     "shared_dag": _req_shared_dag,
+    "shared_made_dag": _req_shared_made_dag,
     "buy_beats_make": _req_buy_beats_make,
     "messy_rationals": _req_messy_rationals,
     "multi_location": _req_multi_location,
