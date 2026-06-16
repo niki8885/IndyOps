@@ -1,0 +1,265 @@
+Summary,Work Type,Priority,Story point estimate,Sprint,Parent,Labels,Labels,Labels,Description
+"ESI integration spike (scopes, token store, error-limit)","Spike","High","3","S1","EVE Integration Platform","Backend","","","[IO-24]
+
+Time-box 1 день. Зафиксировать как делаем ESI: набор scopes (wallet, assets, skills, чтение), хранение токенов (шифрование refresh), стратегию против error-limit (420), кэш. Решение коммитим в docs/adr.
+
+Acceptance criteria:
+- [ ] В репо ADR с выбором scopes, схемой хранения токенов и обработкой rate/error-limit.
+- [ ] Проверен один живой OAuth-flow вручную (получен и обновлён токен).
+- [ ] Перечислены ESI-эндпоинты для IO-39/40/41 с лимитами."
+"Fees & taxes model (sales tax, broker, skills)","Story","High","5","S1","Trading & Commerce","Backend","","","[IO-25]
+
+Чистый сервис fees.py: эффективные sales tax и broker fee с учётом скиллов (Accounting, Broker Relations), standings, станция vs structure. Используется везде, где считается чистая прибыль.
+
+Acceptance criteria:
+- [ ] effective_sales_tax(skills, structure) и effective_broker_fee(...) дают корректные значения для известных кейсов (юнит-тесты с эталонами).
+- [ ] Сервис чистый (без I/O), покрыт тестами, конфиг-профиль читается из настроек пользователя.
+- [ ] net_profit(buy, sell, fees) отдаёт прибыль после всех сборов."
+"Market liquidity & volume analysis (port ref/volume)","Story","High","5","S1","Market Intelligence & Analytics","Backend","DataEng","","[IO-26]
+
+Порт ref/volume: суточные/недельные объёмы, глубина, оценка сколько реально продастся в день на тип/регион. Кормит спекуляции и demand.
+
+Acceptance criteria:
+- [ ] Для типа+региона возвращает avg daily volume, liquidity score и оценку дневной поглощаемости.
+- [ ] Данные из репозитория истории/маркета, логика в services/liquidity.py (чистая).
+- [ ] Тест на ранжирование ликвидности для набора типов."
+"Price-history store + backfill (Timescale)","Tech Debt","High","5","S8","Infrastructure & DevOps","Backend","DataEng","","[IO-27]
+
+Хранилище истории цен/объёмов как Timescale hypertable (price_history) + джоба backfill истории и инкрементального обновления. Фундамент всего forecasting.
+
+Acceptance criteria:
+- [ ] price_history создаётся как hypertable; есть backfill и инкрементальная джоба.
+- [ ] Для типа+региона доступен непрерывный ряд за заданный период.
+- [ ] Идемпотентность: повторный backfill не плодит дубли."
+"Inter-hub arbitrage finder (port hub_trading)","Story","High","8","S2","Trading & Commerce","Backend","","","[IO-28] · Depends: IO-25
+
+Порт ref/trade/hub_trading: для пары/набора хабов находит товары с максимальной маржой buy to sell с учётом налогов/брокеров (IO-25), объёма (IO-26) и грубой оценки перевозки (позже уточнит IO-50).
+
+Acceptance criteria:
+- [ ] Эндпоинт возвращает топ-N товаров с net-маржой, %-ROI и ограничением по дневному объёму.
+- [ ] Налоги и брокер из IO-25; неликвидные позиции отфильтрованы.
+- [ ] Сортировка по net-прибыли, воспроизводимо на фиксированном снапшоте (тест)."
+"Speculative trade candidate finder","Story","Medium","5","S2","Trading & Commerce","Backend","","","[IO-29] · Depends: IO-26
+
+Кандидаты под спекуляцию: аномалии цена/объём, просадки относительно скользящих, тонкие ордербуки. Без предсказаний, на статистике (хук на прогноз добавит IO-44).
+
+Acceptance criteria:
+- [ ] Возвращает список с метрикой потенциал/риск и причиной попадания.
+- [ ] Фильтры по мин. ликвидности (IO-26) и горизонту удержания.
+- [ ] Юнит-тест на детекцию заведомой аномалии в синтетике."
+"Trade analyzer: profit/hour + time-to-sell + forecast hook","Story","High","5","S3","Trading & Commerce","Backend","","","[IO-30] · Depends: IO-26 (forecast hook: IO-44)
+
+Обогащение анализатора: пересчёт прибыли в прибыль/час (через оценку времени продажи из IO-26), учёт времени закупки, плюс pluggable forecast-провайдер (сейчас наивный, в S9 подключается IO-44).
+
+Acceptance criteria:
+- [ ] Для сделки возвращается ISK/час и ожидаемое время реализации.
+- [ ] Forecast-провайдер за интерфейсом; без модели наивный фолбэк, ответ помечает источник прогноза.
+- [ ] Тест: ранжирование по ISK/час меняется при изменении времени продажи."
+"Item icons/images across UI (CCP image server + cache)","Story","Medium","3","S3","Intelligence, Reporting & Automation","Frontend","Backend","","[IO-31]
+
+Иконки типов/чертежей (CCP image server images.evetech.net) + лёгкий бэкенд-кэш/прокси, общий React-компонент TypeIcon.
+
+Acceptance criteria:
+- [ ] Компонент рендерит иконку по type_id с fallback-плейсхолдером.
+- [ ] Иконки кэшируются (нет шторма запросов к CCP при списках).
+- [ ] Подключено минимум в Manufacturing и Trading списках."
+"Trading page (arbitrage + speculation + analyzer)","Feature","Medium","5","S3","Trading & Commerce","Frontend","","","[IO-32] · Depends: IO-28;IO-29;IO-30
+
+Страница с тремя вкладками: арбитраж между хабами, спекуляции, анализатор сделки (ISK/час). Таблицы с сортировкой, иконки (IO-31).
+
+Acceptance criteria:
+- [ ] Видны результаты IO-28/29/30 с сортировкой и фильтрами.
+- [ ] Выбор хабов/региона и порогов прибыли работает.
+- [ ] Пустые/ошибочные состояния обработаны."
+"Production recommendation from BP library (what & how much)","Story","High","8","S4","Manufacturing & Production","Backend","","","[IO-33] · Depends: IO-17;IO-25
+
+Порт ref/MMBANK (production/profit analysis): по библиотеке чертежей (IO-17) ранжирует что производить и в каком количестве, по net-прибыли с учётом costing/chain и налогов (IO-25).
+
+Acceptance criteria:
+- [ ] Возвращает ранжированный список что произвести + кол-во с net-прибылью и маржой на единицу.
+- [ ] Учитывает доступные чертежи (IO-17), стоимость материалов и сборы (IO-25).
+- [ ] Лимиты по бюджету/слотам в параметрах; воспроизводимо на снапшоте (тест)."
+"Daily reactions profitability digest","Story","High","5","S4","Resource Acquisition & Refining","Backend","","","[IO-34] · Depends: IO-16
+
+Порт ref/MMBANK/reactions: дневная сводка какие реакции выгодны/невыгодны, чтобы занять реакционные слоты. Требует корректных reaction/rig/cost-index расчётов (IO-16).
+
+Acceptance criteria:
+- [ ] Возвращает по каждой реакции net-маржу/час и пометку выгодно/нет.
+- [ ] Сортировка по прибыли, фильтр по доступным слотам/материалам.
+- [ ] Значения сходятся с проверенными расчётами IO-16 (тест на эталоне)."
+"Blueprint research ROI ranking (ME/TE/invention)","Story","Medium","5","S5","Manufacturing & Production","Backend","","","[IO-35] · Depends: IO-12
+
+Ранжирование какие чертежи давать на исследование (ME/TE) и инвенцию по окупаемости: экономия на материалах/времени против стоимости и длительности research. Связано с IO-12.
+
+Acceptance criteria:
+- [ ] Для набора БП считает прирост прибыли от ME/TE и payback исследования.
+- [ ] Ранжирует БП по ROI исследования; учитывает текущий уровень ME/TE.
+- [ ] Тест: более выгодный по экономии материалов БП стоит выше."
+"Basket / set chain planner (multi-item make-vs-buy)","Story","Medium","8","S5","Manufacturing & Production","Backend","","","[IO-36]
+
+Расширение chain.py: make-vs-buy для корзины/набора из нескольких конечных предметов сразу, с агрегацией общих компонентов и общим деревом BOM.
+
+Acceptance criteria:
+- [ ] Принимает список предмет+кол-во, возвращает единый план make-vs-buy с агрегированными материалами.
+- [ ] Общие компоненты нескольких предметов объединяются в дереве.
+- [ ] Итоговая стоимость = сумме корректных под-планов (parity-тест с одиночными расчётами)."
+"Blueprint Portfolio Optimization (budget to max ROI, Haskell)","Feature","High","13","S13","Manufacturing & Production","Backend","Haskell","","[IO-37] · Depends: IO-33;IO-48
+
+Под заданный бюджет подобрать набор чертежей с максимальным ROI производства с учётом спроса (IO-48) и окупаемости. Оптимизатор (knapsack/ROI) на Haskell с parity к Python. Кандидат на сплит: Python-ядро + Haskell-порт.
+
+Acceptance criteria:
+- [ ] На вход бюджет, на выход набор БП с ожидаемым ROI и сроком окупаемости.
+- [ ] Учитывается спрос (IO-48) и капитал; решение не превышает бюджет.
+- [ ] Haskell-движок даёт тот же результат, что Python-ядро (parity-тест)."
+"ESI OAuth/SSO foundation (login, token store, refresh)","Story","High","8","S6","EVE Integration Platform","Backend","","","[IO-38] · Depends: IO-24
+
+Серверный OAuth2 с EVE SSO по решениям IO-24: login через EVE, обмен кода, хранение зашифрованного refresh, авто-refresh, привязка персонажа к пользователю.
+
+Acceptance criteria:
+- [ ] Пользователь логинится через EVE и привязывает персонажа; токен сохранён зашифрованным.
+- [ ] Access-токен обновляется автоматически по refresh без участия пользователя.
+- [ ] Scopes минимальны и совпадают с ADR из IO-24; токены не отдаются на фронт."
+"Pull wallet transactions via ESI","Story","High","5","S7","EVE Integration Platform","Backend","","","[IO-39] · Depends: IO-38
+
+Импорт транзакций кошелька из ESI в wallet_transaction (buy/sell, цена, объём, локация, время). Источник для demand (IO-48) и факт-аналитики.
+
+Acceptance criteria:
+- [ ] Транзакции импортируются инкрементально без дублей.
+- [ ] Доступна выборка по типу/периоду/направлению.
+- [ ] Обработка пагинации и error-limit ESI."
+"Pull assets (warehouse/hangars) via ESI","Story","Medium","5","S7","EVE Integration Platform","Backend","","","[IO-40] · Depends: IO-38
+
+Импорт активов (склад/ангары) из ESI в asset (тип, кол-во, локация, flag). Питает доступность материалов и оценку запасов.
+
+Acceptance criteria:
+- [ ] Активы персонажа импортируются с локациями и количествами.
+- [ ] Доступна агрегированная сводка остатков по типам/локациям.
+- [ ] Обновление перезаписывает устаревший снимок без дублей."
+"Pull character skills via ESI","Story","High","3","S6","EVE Integration Platform","Backend","","","[IO-41] · Depends: IO-38
+
+Подтягивание скиллов персонажа из ESI в character_skill (уровни, SP). Вход для skill-aware расчётов (IO-42).
+
+Acceptance criteria:
+- [ ] Скиллы персонажа сохраняются и обновляются по запросу/расписанию.
+- [ ] Доступен запрос уровня конкретного скилла для расчётов.
+- [ ] Обрабатываются истёкший токен и error-limit."
+"Skill-aware + facility-modifier production time/cost","Story","High","5","S7","Manufacturing & Production","Backend","","","[IO-42] · Depends: IO-41
+
+Учёт реальных скиллов (IO-41) и модификаторов завода/ригов (facility_bonus) во времени и стоимости производства/реакций: точные job-таймы под конкретного персонажа.
+
+Acceptance criteria:
+- [ ] Время работы считается с учётом industry-скиллов персонажа и бонусов структуры/ригов.
+- [ ] При отсутствии данных скиллов явный фолбэк на дефолты с пометкой.
+- [ ] Тест на эталоне: время совпадает с in-game для известной связки скиллы+завод."
+"Forecasting approach spike (ARIMA/GARCH/Kalman; Py vs Fortran; LSTM scope)","Spike","High","3","S8","Forecasting & Decision Support","Backend","","","[IO-43]
+
+Time-box 1 день. Выбрать стек прогнозирования: ARIMA/GARCH/Kalman/state-space (Python statsmodels/arch/pmdarima) vs Fortran; границы LSTM. Решение в ADR.
+
+Acceptance criteria:
+- [ ] ADR с выбором библиотек/языка и обоснованием.
+- [ ] Прогон по одному ряду минерала демонстрирует pipeline end-to-end.
+- [ ] Определён формат хранения прогнозов (forecast) и интерфейс провайдера."
+"Forecasting core: minerals (Trit/Pye/Mex) ARIMA+GARCH","Feature","High","8","S9","Forecasting & Decision Support","Backend","DataEng","","[IO-44] · Depends: IO-27;IO-43
+
+Ядро forecasting: прогноз цен Tritanium/Pyerite/Mexallon (ARIMA для уровня + GARCH для волатильности), горизонт N дней, квантильные выходы p10/p50/p90 в forecast.
+
+Acceptance criteria:
+- [ ] Для каждого минерала прогноз с p10/p50/p90 на горизонт.
+- [ ] Прогнозы сохраняются в forecast с моделью и временем расчёта.
+- [ ] Провайдер реализует интерфейс из IO-30/IO-43 (подключается в анализатор)."
+"Moon Goo + Kalman / state-space models","Story","Medium","5","S10","Forecasting & Decision Support","Backend","","","[IO-45] · Depends: IO-44
+
+Прогноз цен Moon Goo и внедрение Kalman filter / state-space моделей как альтернативы ARIMA для нестационарных рядов.
+
+Acceptance criteria:
+- [ ] Прогноз по набору Moon Goo с p10/p50/p90.
+- [ ] Доступна Kalman/state-space модель, сравнима с ARIMA по IO-47.
+- [ ] Выбор модели на тип конфигурируем."
+"PLEX forecasting (ARIMA/LSTM) (port ref/plex)","Story","Medium","5","S10","Forecasting & Decision Support","Backend","","","[IO-46] · Depends: IO-44
+
+Порт ref/plex: прогноз цены PLEX. ARIMA как база; LSTM опционально за фичефлагом (по решению IO-43).
+
+Acceptance criteria:
+- [ ] Прогноз PLEX с интервалами на горизонт.
+- [ ] LSTM-ветка изолирована фичефлагом и не ломает основной путь при выключении.
+- [ ] Точность измерена по IO-47."
+"Forecast backtesting & accuracy harness (MAPE/RMSE, walk-forward)","Tech Debt","High","5","S9","Forecasting & Decision Support","Backend","DataEng","","[IO-47] · Depends: IO-44
+
+Walk-forward бэктест и метрики точности (MAPE/RMSE/coverage интервалов) для всех моделей прогноза. Гейт доверия к forecasting.
+
+Acceptance criteria:
+- [ ] Прогон walk-forward по историческому ряду даёт MAPE/RMSE и покрытие интервалов.
+- [ ] Метрики сохраняются рядом с прогнозом (forecast.error) и доступны в API.
+- [ ] Регресс-тест: ухудшение метрик ниже порога заметно (фиксируется)."
+"Demand forecasting (volume history + own sales)","Story","Medium","5","S8","Forecasting & Decision Support","Backend","DataEng","","[IO-48] · Depends: IO-26;IO-39
+
+Прогноз спроса (сколько реально уйдёт) на базе истории объёмов рынка (IO-26) и собственных продаж (IO-39). Вход для портфеля (IO-37) и Strategic Planner.
+
+Acceptance criteria:
+- [ ] Для типа+региона выдаёт оценку дневного/недельного спроса с интервалом.
+- [ ] Использует объёмы рынка и, при наличии, собственные транзакции.
+- [ ] Считается бэктест ошибки спроса (метрики в стиле IO-47)."
+"Optimal buy-window for minerals","Story","Medium","5","S10","Resource Acquisition & Refining","Backend","","","[IO-49] · Depends: IO-44
+
+На базе прогнозов (IO-44) определяет окно закупки минералов/прочего: когда ожидается локальный минимум и стоит ли ждать. Связано с IO-13.
+
+Acceptance criteria:
+- [ ] Для минерала выдаёт рекомендацию покупать сейчас/ждать до ~дата с уверенностью.
+- [ ] Учитывает горизонт потребности и интервалы прогноза.
+- [ ] Тест на синтетике с известным минимумом."
+"Transport / logistics cost model (routes, freight, m3)","Story","High","5","S15","Trading & Commerce","Backend","DataEng","","[IO-50]
+
+Модель перевозки: маршруты/прыжки, оценка фрахта (isk/m3 + collateral), объём m3 грузов. Фундамент supply chain.
+
+Acceptance criteria:
+- [ ] Для пары локаций и груза (m3/стоимость) возвращает оценку стоимости перевозки.
+- [ ] Поддержаны курьерские ставки (freight_rate) и расчёт по объёму.
+- [ ] Тест на известном маршруте/объёме."
+"Supply chain optimization (buy/produce/sell + tax/broker/transport)","Feature","High","8","S15","Trading & Commerce","Backend","","","[IO-51] · Depends: IO-25;IO-50
+
+Детерминированный оптимизатор: где купить / где произвести / где продать с учётом налогов/брокеров (IO-25) и транспорта (IO-50). Максимизация net-прибыли по цепочке.
+
+Acceptance criteria:
+- [ ] Для предмета/набора выдаёт план buy/make/sell по локациям с net-прибылью.
+- [ ] В расчёт включены сборы (IO-25) и перевозка (IO-50).
+- [ ] Сравнение всё купить vs оптимальный план показывает выигрыш (тест)."
+"Production scheduling at scale (10 chars/120 slots/300 jobs)","Feature","High","13","S14","Manufacturing & Production","Backend","","","[IO-52] · Depends: IO-42;IO-20
+
+Расширение assignment.py/scheduling: что и когда запускать на 10 персонажах / 120 слотах / 300 работах, с учётом skill-aware таймов (IO-42) и приоритетов; вход из IO-20.
+
+Acceptance criteria:
+- [ ] Для 300 работ строится расписание по 120 слотам/10 чарам без переполнения слотов.
+- [ ] Учитываются длительности с учётом скиллов (IO-42) и приоритеты/дедлайны.
+- [ ] Решение находится за приемлемое время (async job); результат воспроизводим."
+"Stochastic supply chain (probabilistic: failures, delays, price drift)","Feature","Medium","13","S16","Forecasting & Decision Support","Backend","Fortran","","[IO-53] · Depends: IO-51;IO-22
+
+Вероятностные цепочки: Monte-Carlo поверх chain.py (Fortran RNG): срыв закупок, задержки логистики, дрейф цен во время производства, дефициты. Выдаёт распределение прибыли/риск, а не точку.
+
+Acceptance criteria:
+- [ ] Результат: распределение прибыли (p10/p50/p90) и вероятность убытка по плану.
+- [ ] Моделируются срывы закупок, задержки и ценовой дрейф с настраиваемыми распределениями.
+- [ ] Детерминированный кейс (нулевая дисперсия) сходится с IO-51 (parity)."
+"Strategic Production Planner (collect to scenarios to optimize to portfolio)","Feature","High","13","S17","Forecasting & Decision Support","Backend","Fortran","Haskell","[IO-54] · Depends: IO-37;IO-44;IO-22;IO-52
+
+Капстон: задаёшь капитал (100B), слоты (50), горизонт (30д), риск (средний), система собирает рынок, строит тысячи сценариев (Fortran), оптимизирует производство (Haskell), выдаёт портфель товаров.
+
+Acceptance criteria:
+- [ ] На вход капитал/слоты/горизонт/риск, на выход портфель товаров с ожидаемой прибылью и риском.
+- [ ] Под капотом: сбор рынка + Fortran-сценарии + Haskell-оптимизация (async job).
+- [ ] Портфель уважает ограничения капитала/слотов; результат воспроизводим при фиксированном seed."
+"Scheduled daily digest delivery","Story","Medium","5","S11","Intelligence, Reporting & Automation","Backend","","","[IO-55] · Depends: IO-34;IO-28
+
+Воркер-джоба + канал доставки дневной сводки (реакции IO-34 + топ торговых возможностей IO-28) на расписании.
+
+Acceptance criteria:
+- [ ] Дайджест формируется по расписанию и доставляется выбранным каналом.
+- [ ] Содержит реакции (IO-34) и топ-возможности (IO-28).
+- [ ] Сбой одного источника не валит весь дайджест (graceful)."
+"Alerts / notifications (price, forecast, idle slots)","Story","Low","5","S12","Intelligence, Reporting & Automation","Backend","","","[IO-56] · Depends: IO-44
+
+Алерты по порогам: цена пробила уровень, forecast-сигнал, простаивающие слоты. Подписки на правила.
+
+Acceptance criteria:
+- [ ] Пользователь задаёт правило (порог/сигнал) и получает уведомление при срабатывании.
+- [ ] Поддержаны типы: цена, forecast-сигнал, idle-слот.
+- [ ] Нет дублей уведомлений по одному событию."

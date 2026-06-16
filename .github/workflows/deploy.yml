@@ -52,13 +52,21 @@ jobs:
           ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
           ./build/spec
 
-      # Likewise build the Fortran analytics-engine and run its cross-language
-      # parity test, so a logic regression (not just a compile error) blocks the
-      # deploy before the engine ships in the image.
+      - name: Build + test risk-engine
+        working-directory: haskell/risk-engine
+        run: |
+          mkdir -p bin build
+          ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/risk-engine
+          ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
+          ./build/spec
+
+      # Likewise build the Fortran engines and run their cross-language parity
+      # tests, so a logic regression (not just a compile error) blocks the deploy
+      # before the engines ship in the image.
       - name: Install gfortran
         run: sudo apt-get update && sudo apt-get install -y gfortran
 
-      - name: Build analytics-engine
+      - name: Build analytics-engine + profit-sim
         working-directory: fortran/analytics-engine
         run: sh build.sh
 
@@ -67,6 +75,18 @@ jobs:
         run: pytest tests/test_analytics_fortran_parity.py
         env:
           ANALYTICS_ENGINE_BIN: ${{ github.workspace }}/fortran/analytics-engine/bin/analytics-engine
+
+      - name: Run profit-sim parity test
+        working-directory: backend
+        run: pytest tests/test_profit_sim_fortran_parity.py
+        env:
+          PROFIT_SIM_BIN: ${{ github.workspace }}/fortran/analytics-engine/bin/profit-sim
+
+      - name: Run risk-engine parity test
+        working-directory: backend
+        run: pytest tests/test_risk_engine_haskell_parity.py
+        env:
+          RISK_ENGINE_BIN: ${{ github.workspace }}/haskell/risk-engine/bin/risk-engine
 
   # -------------------------------------------------------------------------
   # 1. Build Docker images and push to GHCR
