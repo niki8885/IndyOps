@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
 REACTION_TYPES = (FacilityType.ATHANOR, FacilityType.TATARA)
 
+MAX_CHAIN_QTY = 100_000
+MAX_CHAIN_JOBS = 20_000
+
 
 def _activity_caps(facility_type) -> tuple[bool, bool]:
     """(can_manufacture, can_react) for a facility type. Engineering complexes only
@@ -388,6 +391,9 @@ class ChainCalcRequest(BaseModel):
     # Nodes the user chose to skip making (force buy): their recipes are dropped so
     # the core can only buy them. Lets the chain be re-shaped from the graph.
     force_buy: List[int] = []
+    # Nodes the user chose to build even if buying is cheaper (force make): their buy
+    # price is dropped so the core must make them. Symmetric to force_buy.
+    force_make: List[int] = []
     # Owned blueprints: apply their ME/TE (and a BPC's cost) per node. With
     # use_owned_blueprints the backend auto-picks (BPO else best BPC); blueprint_selection
     # (product_type_id -> blueprint_id) overrides the pick for a node.
@@ -681,6 +687,8 @@ async def calculate_chain(
         raise HTTPException(404, f"No build tree for type_id {body.product_type_id}")
     if not tree[body.product_type_id]["recipes"]:
         raise HTTPException(400, "Target product has no manufacturing/reaction recipe")
+    if body.qty < 1 or body.qty > MAX_CHAIN_QTY:
+        raise HTTPException(400, f"qty must be between 1 and {MAX_CHAIN_QTY:,}")
 
     type_ids = list(tree)
     eff_region_ids = body.region_ids if body.region_ids else [body.region_id]
@@ -743,7 +751,8 @@ async def calculate_chain(
     # Skip-making (force buy): drop those nodes' recipes so the core can only buy
     # them. Guard nodes that have nothing to buy — leave them makeable.
     forced_skipped: list[int] = []
-    for tid in set(body.force_buy):
+    force_buy_ids = set(body.force_buy)
+    for tid in force_buy_ids:
         n = req.nodes.get(tid)
         if not n or not n.recipes:
             continue
@@ -752,7 +761,27 @@ async def calculate_chain(
             continue
         req.nodes[tid] = replace(n, recipes=())
 
+    # Force-make: drop the buy option so the core must build it. force_buy wins on conflict.
+    forced_make_skipped: list[int] = []
+    for tid in set(body.force_make) - force_buy_ids:
+        n = req.nodes.get(tid)
+        if not n:
+            continue
+        if not n.recipes:
+            forced_make_skipped.append(tid)        # nothing to make → can't force
+            continue
+        req.nodes[tid] = replace(n, buy_price=None)
+
     plan, engine = chain_engine.solve(req)   # native Haskell core, falls back to Python
+
+    # Guard against runaway plans: a deep capital chain at high qty emits an enormous
+    # number of job-chunks, which blows up the response JSON, the inline simulation and
+    # the browser (the "everything froze" at qty=1000). Fail fast with a clear message
+    # instead of melting the server.
+    if len(plan.jobs) > MAX_CHAIN_JOBS:
+        raise HTTPException(
+            400, f"Plan too large: {len(plan.jobs):,} production jobs. Reduce the quantity "
+                 f"(deep reaction/capital chains grow very fast with qty).")
 
     # Capacity schedule: lay the jobs into dependency-ordered stages within the
     # character's job slots. Slots are a single per-character total (man_lines /
@@ -771,6 +800,7 @@ async def calculate_chain(
         "price_source": {str(t): src for t, src in price_source.items()},
         "price_flags": {str(t): fl for t, fl in price_flags.items()},
         "force_buy_skipped": forced_skipped,
+        "force_make_skipped": forced_make_skipped,
         "bp_report": _bp_report(plan, chosen_bps),
         "blueprint_selection": {str(t): bp.id for t, bp in chosen_bps.items()},
     }

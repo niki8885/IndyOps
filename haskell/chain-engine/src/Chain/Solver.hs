@@ -42,7 +42,7 @@ goDecide nodes stack tid = do
     Just d -> pure d
     Nothing -> case M.lookup tid nodes of
       Nothing ->
-        ins (NodeDecision tid (show tid) "unobtainable" Nothing Nothing Nothing Nothing Nothing 0)
+        ins (NodeDecision tid (show tid) "unobtainable" Nothing Nothing Nothing Nothing Nothing 0 Nothing)
       Just node -> do
         best <- if S.member tid stack
                   then pure Nothing
@@ -80,7 +80,7 @@ decideFrom node best =
       choices = [("buy", b) | b <- maybeToList unitBuy]
              ++ [("make", mk) | mk <- maybeToList unitMake]
   in case choices of
-       [] -> NodeDecision tid name "unobtainable" Nothing unitBuy unitMake Nothing Nothing 0
+       [] -> NodeDecision tid name "unobtainable" Nothing unitBuy unitMake Nothing Nothing 0 act
        _  ->
          let (kind, unit) = minimumBy (comparing snd) choices   -- first min: buy beats make on tie
              saved = case (unitBuy, unitMake) of
@@ -91,10 +91,16 @@ decideFrom node best =
                    Just (_, r, p) -> (Just r, Just p)
                    Nothing        -> (Nothing, Nothing)
                | otherwise = (Nothing, Nothing)
-         in NodeDecision tid name kind (Just unit) unitBuy unitMake ri pid saved
+         in NodeDecision tid name kind (Just unit) unitBuy unitMake ri pid saved act
   where
     tid = ndTypeId node
     name = ndName node
+    -- activity of the make recipe (even when bought) — 11 = reaction (no ME/TE).
+    act = case best of
+      Just (_, r, _) -> Just (rcActivity (ndRecipes node !! r))
+      Nothing        -> case ndRecipes node of
+                          (r0 : _) -> Just (rcActivity r0)
+                          []       -> Nothing
 
 -- phase 2: plan
 

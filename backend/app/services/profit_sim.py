@@ -463,22 +463,43 @@ def rank_strategies(items: list[RankInput], weights: Optional[dict[str, float]] 
 
 @dataclass
 class TypeHistory:
-    """Raw market history for one type (oldest-first, time-aligned by the caller)."""
+    """Raw market history for one type (oldest-first, time-aligned by the caller).
+
+    ``anchor_buy``/``anchor_sell`` are the *deterministic resolved* acquire/sell prices
+    the chain plan actually used; the marginals are recentred on them (see
+    ``_leg_marginals``). ``last_buy``/``last_sell`` are the last history point (a
+    fallback when there is no anchor)."""
     buy: list[float] = field(default_factory=list)
     sell: list[float] = field(default_factory=list)
     volume: list[float] = field(default_factory=list)
     group_id: int = 0
     last_buy: Optional[float] = None
     last_sell: Optional[float] = None
+    anchor_buy: Optional[float] = None
+    anchor_sell: Optional[float] = None
 
 
 def _leg_marginals(side_hist: list[float], point: Optional[float], default_sigma: float):
-    """(mu, sigma, qgrid) for one side."""
+    """(mu, sigma, qgrid) for one side, with the LEVEL anchored to ``point``.
+
+    History drives the *shape* (volatility); the *level* is recentred so the grid's mean
+    equals the deterministic resolved price the plan used. ESI history can sit at a very
+    different level than that price (e.g. daily-low ≈ ask for an illiquid item vs the bid
+    the plan paid), and sampling the raw history would bias E[cost]/E[revenue] away from
+    the deterministic plan — the simulation then reads as systematically pessimistic
+    (materials) or rosy. A risk sim should centre on the point estimate, not move it."""
     mu, sigma = market_model.lognormal_params(side_hist)
     grid = market_model.quantile_grid(side_hist)
-    if sigma == 0.0 and point and point > 0:  # no usable history → point price
-        mu, sigma = math.log(point), default_sigma
-        grid = [float(point)] * QGRID_POINTS
+    if sigma == 0.0:                              # no usable history → flat point price
+        if point and point > 0:
+            return math.log(point), default_sigma, [float(point)] * QGRID_POINTS
+        return mu, sigma, grid
+    if point and point > 0 and grid:             # anchor the level to the plan's price
+        gmean = sum(grid) / len(grid)
+        if gmean > 0:
+            scale = point / gmean
+            grid = [g * scale for g in grid]
+            mu += math.log(scale)
     return mu, sigma, grid
 
 
@@ -518,7 +539,7 @@ def request_from_legs(label: str, leg_specs: list[tuple[int, int]], product_type
     group_ids: list[int] = []
     for tid, qty in leg_specs:
         h = hist.get(tid) or TypeHistory()
-        mu, sigma, grid = _leg_marginals(h.buy, h.last_buy, default_sigma)
+        mu, sigma, grid = _leg_marginals(h.buy, h.anchor_buy or h.last_buy, default_sigma)
         series = h.buy if h.buy else ([h.last_buy] if h.last_buy else [])
         phi, step_sigma, theta, x0, omega = _fit_process(series, mu, sigma, params)
         legs.append(LegInput(
@@ -533,7 +554,7 @@ def request_from_legs(label: str, leg_specs: list[tuple[int, int]], product_type
         group_ids.append(h.group_id)
 
     ph = hist.get(product_type_id) or TypeHistory()
-    pmu, psigma, pgrid = _leg_marginals(ph.sell, ph.last_sell, default_sigma)
+    pmu, psigma, pgrid = _leg_marginals(ph.sell, ph.anchor_sell or ph.last_sell, default_sigma)
     pseries = ph.sell if ph.sell else ([ph.last_sell] if ph.last_sell else [])
     pphi, pstep, ptheta, px0, pomega = _fit_process(pseries, pmu, psigma, params)
     product = ProductInput(
