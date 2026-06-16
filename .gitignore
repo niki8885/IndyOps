@@ -17,3 +17,8 @@ coverage.xml
 .env
 .env.local
 .env.*.local
+
+# TLS origin cert/key live on the server only (mounted into the frontend container)
+certs/
+*.pem
+*.key

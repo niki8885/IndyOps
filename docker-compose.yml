@@ -54,6 +54,12 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # Cloudflare Origin Certificate, placed on the host (NOT in git). nginx serves
+      # TLS on :443 from these; required for Cloudflare SSL mode "Full (strict)".
+      # The files must exist before this deploy or nginx will fail to start.
+      - ./certs:/etc/nginx/certs:ro
     depends_on:
       - backend
     networks:
