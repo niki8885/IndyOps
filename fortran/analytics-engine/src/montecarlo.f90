@@ -300,7 +300,11 @@ contains
                         else
                             sg = step_sigma(j)
                         end if
-                        xpath(j) = xpath(j) + ar_phi(j) * (theta(j) - xpath(j)) + sg * z(j)
+                        ! Martingale (Itô) drift correction: −½σ² per step keeps exp(x)
+                        ! centred on the anchor instead of inflating by exp(½Στσ²) (the
+                        ! volatility-drag bug). Mirrors profit_sim._path_prices exactly.
+                        xpath(j) = xpath(j) + ar_phi(j) * (theta(j) - xpath(j)) &
+                                - 0.5_real64 * sg * sg + sg * z(j)
                         prev_eps(j) = z(j)
                         prev_sig(j) = sg
                     end do

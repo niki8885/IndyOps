@@ -126,6 +126,57 @@ def test_force_buy_drops_recipe_in_request():
     assert not plan.jobs
 
 
+def test_bpc_cost_folds_into_make_cost_and_total():
+    """Manual blueprint (BPC) cost raises the in-house cost and the plan total by exactly
+    the per-unit cost × units produced, and shows up on the job's bpc_cost."""
+    tree = {
+        1: {"name": "W", "category_id": None, "group_name": None,
+            "recipes": [{"activity": 1, "blueprint_type_id": 100, "qty_per_run": 1,
+                         "base_time": 600, "max_runs": 10, "inputs": [{"type_id": 2, "qty": 4}]}]},
+        2: {"name": "RAW", "category_id": None, "group_name": None, "recipes": []},
+    }
+    buy = {1: None, 2: 10.0}                      # target can only be made
+    base = solve_chain(from_bom(1, 3, tree, buy, {}, LocationParams(1, "P")))
+    withbp = solve_chain(from_bom(1, 3, tree, buy, {}, LocationParams(1, "P"),
+                                  bpc_unit={1: 1000.0}))           # 1000/unit × 3 units = 3000
+    assert float(withbp.total_cost) == float(base.total_cost) + 3000.0
+    assert sum(float(j.bpc_cost) for j in withbp.jobs if j.type_id == 1) == 3000.0
+
+
+def test_reactions_off_force_buys_reaction_nodes():
+    """The reactions-off path (router scans the tree for reaction-activity nodes and adds
+    them to force_buy): the reaction component is bought, so its deeper reaction inputs
+    (moon goo) are not produced and never reach the shopping list."""
+    from dataclasses import replace
+    REACTION = 11
+    tree = {
+        2000: {"name": "Hull", "category_id": None, "group_name": None,
+               "recipes": [{"activity": 1, "blueprint_type_id": 100, "qty_per_run": 1,
+                            "base_time": 600, "max_runs": 10,
+                            "inputs": [{"type_id": 3000, "qty": 4}, {"type_id": 34, "qty": 100}]}]},
+        3000: {"name": "Comp", "category_id": None, "group_name": None,
+               "recipes": [{"activity": REACTION, "blueprint_type_id": 101, "qty_per_run": 1,
+                            "base_time": 3600, "max_runs": 100, "inputs": [{"type_id": 4000, "qty": 2}]}]},
+        34: {"name": "Trit", "category_id": None, "group_name": None, "recipes": []},
+        4000: {"name": "Moon", "category_id": None, "group_name": None, "recipes": []},
+    }
+    buy = {2000: None, 3000: 5000.0, 34: 5.0, 4000: 100.0}
+    req = from_bom(2000, 1, tree, buy, {}, LocationParams(1, "P"))
+
+    # Mirror calculate_chain's reaction-detection predicate (target excluded).
+    react_ids = {tid for tid, nd in tree.items()
+                 if tid != 2000 and nd["recipes"]
+                 and all(rc["activity"] == REACTION for rc in nd["recipes"])}
+    assert react_ids == {3000}
+    for tid in react_ids:                                   # force-buy them
+        req.nodes[tid] = replace(req.nodes[tid], recipes=())
+
+    plan = solve_chain(req)
+    assert plan.decisions[3000].decision == "buy"           # reaction comp bought, not made
+    shop_ids = {s.type_id for s in plan.shopping_list}
+    assert 3000 in shop_ids and 4000 not in shop_ids        # buy the comp; moon goo not sourced
+
+
 def test_full_left_arm_pipeline(eve_session, monkeypatch):
     _seed(eve_session)
     tree = eve_repo.bom_tree(eve_session, 2000)
