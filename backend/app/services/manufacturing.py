@@ -37,6 +37,8 @@ class CalcInput:
     material_role_pct: float = 0.0  # structure role ME (e.g. EC −1%)
     time_role_pct: float = 0.0  # structure role TE
     windows: int = 1  # parallel production slots, each `runs` runs
+    sales_tax_pct: float = 0.0  # transaction tax on the sell (selling char's Accounting)
+    skill_time_mult: float = 1.0  # producing char's Industry/Adv-Industry time multiplier
 
 
 # ── outputs ─────────────────────────────────────────────────────────────────
@@ -124,11 +126,13 @@ def run_calculation(inp: CalcInput) -> CalcResult:
 
     total_output = inp.product_qty_per_run * inp.runs * w
     gross_sell = total_output * inp.output_price
-    net_sell = gross_sell * (1 - inp.broker_fee_pct / 100)
+    # Sell-side fees: broker fee + transaction (sales) tax both reduce revenue.
+    net_sell = gross_sell * (1 - (inp.broker_fee_pct + inp.sales_tax_pct) / 100)
 
-    # rig and structure-role bonuses stack multiplicatively, like EVE
+    # rig and structure-role bonuses stack multiplicatively, like EVE; the producing
+    # character's skill time multiplier folds on top (Industry / Advanced Industry).
     mat_mult = (1 - inp.material_bonus_pct / 100) * (1 - inp.material_role_pct / 100)
-    time_mult = (1 - inp.time_bonus_pct / 100) * (1 - inp.time_role_pct / 100)
+    time_mult = (1 - inp.time_bonus_pct / 100) * (1 - inp.time_role_pct / 100) * inp.skill_time_mult
 
     mat_rows: list[MaterialRow] = []
     total_mat_cost = 0.0

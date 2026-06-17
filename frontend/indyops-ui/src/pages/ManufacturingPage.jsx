@@ -127,6 +127,10 @@ function CalculatorTab() {
   const [bpInfo, setBpInfo]         = useState(null)     // blueprint info from API
   const [facilities, setFacilities] = useState([])
   const [projects, setProjects]     = useState([])
+  // Character selection: producer (job-time skills) + seller (sell-side fees).
+  const [characters, setCharacters]   = useState([])
+  const [produceCharId, setProduceCharId] = useState('')
+  const [sellCharId, setSellCharId]   = useState('')
 
   const [params, setParams] = useState({
     runs: 1, windows: 1, me: 0, te: 0,
@@ -175,6 +179,7 @@ function CalculatorTab() {
 
   useEffect(() => {
     get('/facilities').then(setFacilities).catch(() => {})
+    get('/characters').then(setCharacters).catch(() => {})
     get('/organisations').then(async orgs => {
       const all = []
       for (const o of orgs) {
@@ -254,6 +259,8 @@ function CalculatorTab() {
         material_prices: Object.entries(matPrices)
           .filter(([, v]) => v !== '')
           .map(([type_id, unit_cost]) => ({ type_id: Number(type_id), unit_cost: Number(unit_cost) })),
+        produce_character_id: produceCharId ? Number(produceCharId) : null,
+        sell_character_id: sellCharId ? Number(sellCharId) : null,
       })
       setResult(res)
     } catch (e) { setError(e.message) }
@@ -496,6 +503,24 @@ function CalculatorTab() {
               {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
           </div>
+          {characters.length > 0 && (
+            <div>
+              <CLabel>Producing char <Hint>job time from Industry / Adv. Industry</Hint></CLabel>
+              <select value={produceCharId} onChange={e => setProduceCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+          )}
+          {characters.length > 0 && (
+            <div>
+              <CLabel>Selling char <Hint>sales tax + broker fee from skills/standings</Hint></CLabel>
+              <select value={sellCharId} onChange={e => setSellCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+          )}
           <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
           <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
           <NumField label="Structure Bonus %" value={params.structure_bonus_pct} onChange={setP('structure_bonus_pct')} step={0.1} />
@@ -928,6 +953,14 @@ function ChainTab() {
   const [singleFacilityId, setSingleFacilityId] = useState('')
   // facilityChecks: { [id]: { checked: bool, man: number, react: number } }
   const [facilityChecks, setFacilityChecks] = useState({})
+  // Live reaction cost index per reaction-facility id (from ESI by system). Reaction
+  // jobs cost on this index, not the facility's stored manufacturing SCI.
+  const [reactSci, setReactSci] = useState({})
+  // Character selection: producer drives job time (Industry/Adv-Industry); seller drives
+  // sell-side fees (Accounting sales tax + Broker Relations/standings broker fee).
+  const [characters, setCharacters] = useState([])
+  const [produceCharId, setProduceCharId] = useState('')
+  const [sellCharId, setSellCharId] = useState('')
 
   // advanced: manual multi-location structures (used when facilityMode='none')
   const [structures, setStructures] = useState([])
@@ -961,7 +994,28 @@ function ChainTab() {
       setFacilityChecks(checks)
     }).catch(() => {})
     get('/blueprints').then(setOwnedBPs).catch(() => {})
+    get('/characters').then(setCharacters).catch(() => {})
   }, [])
+
+  // Resolve the live reaction cost index for each reaction facility's system (one call
+  // per unique system), so the table shows the index reaction jobs actually cost on.
+  useEffect(() => {
+    const reactFacs = facilities.filter(f => REACTION_FAC.has(f.facility_type) && f.system_name)
+    const systems = [...new Set(reactFacs.map(f => f.system_name))]
+    if (!systems.length) return
+    let cancelled = false
+    Promise.all(systems.map(sys =>
+      get(`/eve/industry/cost-index?system_name=${encodeURIComponent(sys)}`)
+        .then(r => [sys, r?.reaction]).catch(() => [sys, null])
+    )).then(pairs => {
+      if (cancelled) return
+      const bySys = Object.fromEntries(pairs)
+      const map = {}
+      reactFacs.forEach(f => { if (bySys[f.system_name] != null) map[f.id] = bySys[f.system_name] })
+      setReactSci(map)
+    })
+    return () => { cancelled = true }
+  }, [facilities])
 
   // auto-fill global params when single facility selected
   useEffect(() => {
@@ -1070,6 +1124,8 @@ function ChainTab() {
         max_depth: Number(params.max_depth),
         force_buy: [...fb],
         force_make: [...fm],
+        produce_character_id: produceCharId ? Number(produceCharId) : null,
+        sell_character_id: sellCharId ? Number(sellCharId) : null,
         simulate: !!sim.on,
         project_id: null,
         ...(sim.on ? {
@@ -1211,7 +1267,10 @@ function ChainTab() {
   const totalSell = sellPriceEff != null && plan ? sellPriceEff * plan.target_qty : null   // gross market value
   // Revenue is net of sell-side fees (broker fee + sales tax), like real selling —
   // without this the margin runs ~5 points high vs tools that subtract them (Ravworks).
-  const sellFeePct = (Number(params.broker_fee_pct) || 0) + (Number(params.sales_tax_pct) || 0)
+  // A chosen selling character's skill/standings fees take over the manual fields.
+  const sellFeePct = result?.sell_character
+    ? (result.sell_character.broker_fee_pct + result.sell_character.sales_tax_pct)
+    : (Number(params.broker_fee_pct) || 0) + (Number(params.sales_tax_pct) || 0)
   const netSell   = totalSell != null ? totalSell * (1 - sellFeePct / 100) : null
   const profit    = netSell != null && totalCost != null ? netSell - totalCost : null
   const margin    = profit != null && netSell ? profit / netSell * 100 : null
@@ -1352,6 +1411,36 @@ function ChainTab() {
           </label>
         </div>
 
+        {/* ── character selection: producer (time/skills) + seller (fees/standings) ── */}
+        {characters.length > 0 && (
+          <div style={{ padding: '12px 16px', display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
+            <div>
+              <CLabel>Producing character <Hint>recalcs job time from Industry / Advanced Industry</Hint></CLabel>
+              <select value={produceCharId} onChange={e => setProduceCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <CLabel>Selling character <Hint>sales tax (Accounting) + broker fee (Broker Relations + standings)</Hint></CLabel>
+              <select value={sellCharId} onChange={e => setSellCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+            {result?.produce_character && (
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>
+                ⏱ time ×{result.produce_character.man_time_mult} mfg / ×{result.produce_character.react_time_mult} react
+              </span>
+            )}
+            {result?.sell_character && (
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>
+                💰 sales {result.sell_character.sales_tax_pct}% · broker {result.sell_character.broker_fee_pct}%
+              </span>
+            )}
+          </div>
+        )}
+
         {/* ── job slots: a single per-character total, shared across all structures ── */}
         <div style={{ padding: '12px 16px', display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
           <NumField label="Manufacturing slots" value={params.man_lines} onChange={setP('man_lines')} min={0} />
@@ -1427,8 +1516,14 @@ function ChainTab() {
                           </td>
                           <td style={{ color: fc.checked ? 'var(--text-white)' : 'var(--text)', whiteSpace: 'nowrap' }}>{f.name}</td>
                           <td style={{ fontSize: 11, color: 'var(--text)' }}>{facilityActivity(f.facility_type)}</td>
-                          <td style={{ fontSize: 12, color: 'var(--text)' }}>
-                            {f.system_cost_index != null ? (f.system_cost_index * 100).toFixed(3) : '—'}
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}
+                              title={REACTION_FAC.has(f.facility_type) && reactSci[f.id] != null
+                                ? 'Reaction cost index (live from ESI)' : undefined}>
+                            {(() => {
+                              const isReact = REACTION_FAC.has(f.facility_type)
+                              const frac = isReact && reactSci[f.id] != null ? reactSci[f.id] : f.system_cost_index
+                              return frac != null ? (frac * 100).toFixed(3) : '—'
+                            })()}
                           </td>
                           <td style={{ fontSize: 12, color: 'var(--text)' }}>{f.tax != null ? f.tax : '—'}</td>
                           <td style={{ fontSize: 12, color: '#4caf7d' }}

@@ -17,6 +17,10 @@ _GNF_REGION = "C-J6MT"
 _ADJ_CACHE: dict = {"data": None, "ts": 0.0}
 _ADJ_TTL = 3600
 
+_ESI_SYSTEMS_URL = "https://esi.evetech.net/latest/industry/systems/?datasource=tranquility"
+_COST_IDX_CACHE: dict = {"data": None, "ts": 0.0}
+_COST_IDX_TTL = 3600  # the table updates ~daily
+
 
 def esi_adjusted_prices() -> dict:
     """ESI adjusted prices keyed by type_id (cached 1h). Raises on HTTP error."""
@@ -29,6 +33,28 @@ def esi_adjusted_prices() -> dict:
     _ADJ_CACHE["data"] = data
     _ADJ_CACHE["ts"] = now
     return data
+
+
+def esi_cost_indices() -> dict:
+    """Full ESI industry cost-index table keyed by solar_system_id (cached 1h).
+
+    ``{system_id: {"manufacturing": 0.04, "reaction": 0.02, ...}}`` — fractions.
+    Raises on HTTP error.
+    """
+    now = _time.time()
+    if _COST_IDX_CACHE["data"] is not None and now - _COST_IDX_CACHE["ts"] < _COST_IDX_TTL:
+        return _COST_IDX_CACHE["data"]
+    resp = requests.get(_ESI_SYSTEMS_URL, timeout=_TIMEOUT, headers=_HEADERS)
+    resp.raise_for_status()
+    table = {
+        entry["solar_system_id"]: {
+            ci["activity"]: ci["cost_index"] for ci in entry.get("cost_indices", [])
+        }
+        for entry in resp.json()
+    }
+    _COST_IDX_CACHE["data"] = table
+    _COST_IDX_CACHE["ts"] = now
+    return table
 
 
 def fuzzwork_aggregates(region: int, type_ids: list[int]) -> dict:

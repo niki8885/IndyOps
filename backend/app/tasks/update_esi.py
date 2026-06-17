@@ -13,6 +13,7 @@ from app.core.database import (
     EsiAsset,
     EsiContract,
     EsiIndustryJob,
+    EsiStanding,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,15 @@ def _map_contract(cid, c):
     }
 
 
+def _map_standing(cid, s):
+    return {
+        "character_id": cid,
+        "from_id": s.get("from_id"),
+        "from_type": s.get("from_type"),
+        "standing": s.get("standing"),
+    }
+
+
 def _map_job(cid, j):
     return {
         "character_id": cid,
@@ -190,12 +200,18 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         _replace(db, EsiIndustryJob, cid, rows)
         return len(rows)
 
+    def _standings():
+        rows = [_map_standing(cid, s) for s in esi.fetch_standings(cid, token)]
+        _replace(db, EsiStanding, cid, rows)
+        return len(rows)
+
     step("affiliation", _affiliation)
     step("wallet", _wallet)
     step("skills", _skills)
     step("assets", _assets)
     step("contracts", _contracts)
     step("industry_jobs", _jobs)
+    step("standings", _standings)
 
     char.last_sync_at = datetime.datetime.utcnow()
     db.commit()

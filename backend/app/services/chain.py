@@ -10,6 +10,11 @@ from app.services.facility_bonus import EC_COST_ROLE, EC_MATERIAL_ROLE, RigBonus
 MANUFACTURING = 1
 REACTION = 11
 
+# EVE caps a single industry job at 30 days of run time. We split a node's runs into
+# jobs by this duration (not the blueprint's maxProductionLimit, which in practice is
+# well above what 30 days allows for the items players actually batch).
+MAX_JOB_SECONDS = 30 * 24 * 3600
+
 # The core runs on exact rationals: every contract float is re-seeded as an exact
 # *decimal* Fraction (Fraction(str(x))) so there is no rounding/accumulation error
 # down a deep build tree, and results match the Haskell port (haskell/chain-engine)
@@ -198,6 +203,19 @@ def _adj_time(base: int, runs: int, te_mult: Fraction) -> int:
     return math.ceil(base * runs * te_mult)
 
 
+def _runs_per_job(recipe: "Recipe", loc: "RecipeLocation", total_runs: int) -> int:
+    """Max runs that fit in one job under EVE's 30-day job-duration limit.
+
+    Uses the effective per-run time (base × TE multiplier); falls back to the whole
+    batch when the recipe carries no per-run time. Mirrors ``Chain.Solver.runsPerJob``
+    in the Haskell engine exactly (same exact-rational floor) so the two stay in parity.
+    """
+    per_run = recipe.base_time * loc.te_mult
+    if recipe.base_time and per_run > 0:
+        return max(1, int(MAX_JOB_SECONDS // per_run))
+    return total_runs
+
+
 # contract assembly: SDE tree + prices → request
 
 @dataclass(frozen=True)
@@ -220,6 +238,7 @@ class LocationParams:
     me_mult: float = 1.0
     te_mult: float = 1.0
     sci: float = 0.0
+    react_sci: Optional[float] = None  # reaction cost index; falls back to ``sci`` when None
     tax: float = 0.0
     scc: float = 0.04
     struct_discount: float = 0.0
@@ -238,6 +257,7 @@ def _node_location(
         eiv_unit: float, bpc_unit: float,
         base_me_mult: Optional[float] = None, base_te_mult: Optional[float] = None,
         meta_group_id: Optional[int] = None,
+        time_mult_man: float = 1.0, time_mult_react: float = 1.0,
 ) -> RecipeLocation:
     """Resolve one facility's effective ME/TE/cost for one node.
 
@@ -247,6 +267,8 @@ def _node_location(
     The base ME/TE is the owned blueprint's (``base_me_mult``/``base_te_mult``) when
     given, else the facility's manual ``loc.me_mult``/``loc.te_mult``. Reactions
     ignore ME. A facility with no rig context (default path) reduces to flat behaviour.
+    ``time_mult_man``/``time_mult_react`` are the producing character's skill time
+    multipliers (Industry/Advanced Industry), folded onto TE per activity.
     """
     bm = loc.me_mult if base_me_mult is None else base_me_mult
     bt = loc.te_mult if base_te_mult is None else base_te_mult
@@ -265,10 +287,14 @@ def _node_location(
         me_mult = 1.0 if is_reaction else bm
         te_mult = bt
         struct_discount = loc.struct_discount
+    # Producing character's skill time bonus (Industry/Advanced Industry).
+    te_mult = te_mult * (time_mult_react if is_reaction else time_mult_man)
+    # Reactions use the system's *reaction* cost index, not the manufacturing one.
+    sci = loc.react_sci if (is_reaction and loc.react_sci is not None) else loc.sci
     return RecipeLocation(
         place_id=loc.place_id, place_name=loc.place_name,
         slot_kind="reaction" if is_reaction else "manufacturing",
-        me_mult=me_mult, te_mult=te_mult, sci=loc.sci, tax=loc.tax, scc=loc.scc,
+        me_mult=me_mult, te_mult=te_mult, sci=sci, tax=loc.tax, scc=loc.scc,
         struct_discount=struct_discount, eiv_unit=eiv_unit, bpc_unit=bpc_unit,
     )
 
@@ -282,6 +308,8 @@ def from_bom(
         facilities,
         bpc_unit: Optional[dict[int, float]] = None,
         node_overrides: Optional[dict[int, tuple[int, int]]] = None,
+        time_mult_man: float = 1.0,
+        time_mult_react: float = 1.0,
 ) -> ChainRequest:
     """Turn a repositories.eve.bom_tree + market prices into a ``ChainRequest``.
 
@@ -320,7 +348,8 @@ def from_bom(
             locs = [
                 _node_location(fac, is_reaction, cat_id, group_name, eiv_unit,
                                bpc_unit.get(tid, 0.0), base_me_mult, base_te_mult,
-                               meta_group_id=meta_group_id)
+                               meta_group_id=meta_group_id,
+                               time_mult_man=time_mult_man, time_mult_react=time_mult_react)
                 for fac in facilities
                 if (fac.can_react if is_reaction else fac.can_man)
             ]
@@ -454,7 +483,7 @@ def _plan(req: ChainRequest, decisions: dict[int, NodeDecision]):
             continue
 
         total_runs = -(-need // recipe.qty_per_run)  # exact integer ceil-div
-        cap = recipe.max_runs or total_runs
+        cap = _runs_per_job(recipe, loc, total_runs)
         consumed: dict[int, int] = defaultdict(int)
 
         rem = total_runs
