@@ -416,6 +416,50 @@ function Results({ res }) {
         </table>
       </Panel>
 
+      {res.optimal_basket && res.optimal_basket.status !== 'empty' && (
+        <Panel title="Optimal basket — min-cost ore mix (joint products, OR-Tools)">
+          {res.optimal_basket.total_cost != null && (
+            <div style={{ fontSize: 14, color: 'var(--text-white)', marginBottom: 8 }}>
+              Cheapest full basket: <b style={{ color: 'var(--accent)' }}>{fmtIsk(res.optimal_basket.total_cost)} ISK</b> delivered
+              <span style={{ fontSize: 11, color: 'var(--text)' }}> · {res.optimal_basket.status}</span>
+            </div>
+          )}
+          {res.optimal_basket.uncoverable?.length > 0 && (
+            <div style={{ fontSize: 11, color: '#c8a951', marginBottom: 6 }}>⚠ no source for: {res.optimal_basket.uncoverable.join(', ')}</div>
+          )}
+          <table>
+            <thead><tr><th>Buy</th><th>Type</th><th>Source</th><th>Units</th><th>Unit</th><th>Total</th></tr></thead>
+            <tbody>
+              {res.optimal_basket.buys.map((b, i) => (
+                <tr key={i}>
+                  <td style={{ color: 'var(--text-white)' }}>{b.name}</td>
+                  <td style={{ fontSize: 11, color: 'var(--text)' }}>{b.kind}</td>
+                  <td>{b.source}</td>
+                  <td>{fmtNum(b.units)}</td>
+                  <td>{isk(b.unit_cost)}</td>
+                  <td>{fmtIsk(b.total_cost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {res.optimal_basket.coverage?.length > 0 && (
+            <table style={{ marginTop: 8 }}>
+              <thead><tr><th>Mineral</th><th>Needed</th><th>Produced</th><th>Surplus</th></tr></thead>
+              <tbody>
+                {res.optimal_basket.coverage.map(c => (
+                  <tr key={c.type_id}>
+                    <td style={{ color: 'var(--text-white)' }}>{c.name}</td>
+                    <td>{fmtNum(c.needed)}</td>
+                    <td>{fmtNum(c.produced)}</td>
+                    <td style={{ color: c.surplus > 0 ? '#c8a951' : 'var(--text)' }}>{c.surplus > 0 ? '+' : ''}{fmtNum(c.surplus)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Panel>
+      )}
+
       <Panel title="Per-mineral best path">
         <table>
           <thead><tr><th>Mineral</th><th>Qty</th><th>Buy direct</th><th>Via ore (refine)</th><th>Recommended</th></tr></thead>

@@ -1,26 +1,5 @@
 """
-Pure ore-acquisition comparison maths (IO-13).
-
-Answers: *for a basket of minerals I need at a target system, what is the cheapest
-way to acquire each — buy the mineral, buy raw ore and refine, or buy compressed ore
-and refine — once transport and refining yield/tax are included?*
-
-Three delivered-cost layers per candidate, per source:
-
-  * **mineral**   delivered cost/unit = price + volume · isk_per_m³
-  * **ore**       delivered cost/unit of ore = price + volume · isk_per_m³; refining
-                  one unit yields a *basket* of minerals worth ``refined_value``.
-
-An ore makes several minerals at once, so its cost is shared across them by **market
-value** (value-based allocation). The effective cost of mineral *M* obtained via ore
-*O* collapses to ``ref_price[M] / ratio_O`` where ``ratio_O = refined_value / ore_cost``
-— i.e. an ore that refines to 1.3× its delivered cost makes *every* one of its
-minerals 30% cheaper than the reference price.
-
-No DB / HTTP: the router resolves prices (Fuzzwork hubs + C-J scrape, buy/sell basis,
-scam-guard), volumes (SDE), transport rates (delivery service) and the refining yield
-(``refining.compute_yield``), then feeds plain numbers in. Stdlib only — unit-testable.
-See [[indyops-service-layering]] and [[indyops-chain-calculator]].
+Pure ore-acquisition comparison maths
 """
 from __future__ import annotations
 
@@ -35,34 +14,34 @@ class Need:
     """A mineral the user wants delivered to the target system."""
     type_id: int
     name: str
-    qty: float = 0.0          # 0 → per-unit comparison only (no basket totals)
+    qty: float = 0.0
 
 
 @dataclass(frozen=True)
 class Source:
-    """A buy location. ``cost_per_m3`` is the transport rate from here to target."""
-    key: str                  # stable id used to index ``item_prices``
-    label: str                # display name (region / 'C-J6MT')
+    """A buy location."""
+    key: str
+    label: str
     cost_per_m3: float = 0.0
 
 
 @dataclass(frozen=True)
 class OreInfo:
-    """An ore candidate and its perfect (100%) per-batch mineral yield."""
+    """An ore candidate and its perfect"""
     type_id: int
     name: str
     compressed: bool
     portion_size: int
-    materials: tuple[dict, ...]   # ({type_id, name, quantity}, …) per portion_size batch
+    materials: tuple[dict, ...]
 
 
-# ── outputs ─────────────────────────────────────────────────────────────────--
+# outputs
 
 @dataclass
 class Cell:
     source: str
     price: Optional[float]
-    delivered: Optional[float]            # price + volume · isk_per_m³
+    delivered: Optional[float]  # price + volume · isk_per_m³
     flag: Optional[dict] = None
 
 
@@ -71,7 +50,7 @@ class ItemRow:
     """One row of the big comparison table (a mineral or an ore), priced per source."""
     type_id: int
     name: str
-    kind: str                             # 'mineral' | 'ore'
+    kind: str
     compressed: bool
     volume: Optional[float]
     cells: list[Cell]
@@ -80,24 +59,23 @@ class ItemRow:
 
 @dataclass
 class OreEval:
-    """Whether refining one ore (bought at one source) beats buying its minerals."""
     type_id: int
     name: str
     compressed: bool
     source: str
-    cost_per_unit: Optional[float]        # delivered ore cost / unit
-    refined_value_per_unit: float         # Σ outputs · ref_price
-    ratio: Optional[float]                # value / cost
+    cost_per_unit: Optional[float]
+    refined_value_per_unit: float
+    ratio: Optional[float]
     margin_pct: Optional[float]
     profitable: Optional[bool]
-    outputs: list[dict] = field(default_factory=list)   # [{type_id,name,qty_per_unit}]
+    outputs: list[dict] = field(default_factory=list)
 
 
 @dataclass
 class PathOption:
-    kind: str                             # 'mineral' | 'ore'
+    kind: str
     source: str
-    effective_cost: Optional[float]       # ISK per unit of the mineral, delivered
+    effective_cost: Optional[float]
     via_type_id: Optional[int] = None
     via_name: Optional[str] = None
     detail: Optional[str] = None
@@ -116,10 +94,10 @@ class MineralPlan:
 
 @dataclass
 class StrategyTotal:
-    strategy: str                         # buy_minerals | buy_ore_refine | optimal_mix
+    strategy: str
     label: str
     total_cost: Optional[float]
-    covered: int                          # minerals with a usable price under this strategy
+    covered: int
     missing: list[str] = field(default_factory=list)
 
 
@@ -135,16 +113,11 @@ class ComparisonResult:
     recommendation: dict
 
 
-# ── gas inputs/outputs (compressed vs regular, no refining) ───────────────────
+# gas inputs/outputs (compressed vs regular, no refining)
 
 @dataclass(frozen=True)
 class GasInfo:
-    """A harvestable gas and its compressed variant.
-
-    ``units_per_compressed`` is how many *regular* gas units one compressed unit
-    decompresses into (perfect, from the SDE). Effective usable units then apply the
-    user's decompression loss: ``units_per_compressed × (1 − loss)``.
-    """
+    """A harvestable gas and its compressed variant."""
     reg_type_id: int
     reg_name: str
     reg_volume: Optional[float] = None
@@ -165,7 +138,7 @@ class GasPlan:
     reg_best: Optional[PathOption] = None
     comp_best: Optional[PathOption] = None
     recommended: Optional[PathOption] = None
-    cells: list[dict] = field(default_factory=list)     # per-source reg/comp effective costs
+    cells: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -189,25 +162,19 @@ def _round(v: Optional[float], n: int = 2) -> Optional[float]:
 
 
 def compare(
-    *,
-    target: str,
-    basis: str,
-    needs: list[Need],
-    sources: list[Source],
-    item_prices: dict[str, dict[int, Optional[float]]],
-    volumes: dict[int, Optional[float]],
-    ores: list[OreInfo],
-    effective_yield: float,
-    mineral_ref_price: dict[int, Optional[float]],
-    flags: Optional[dict] = None,
+        *,
+        target: str,
+        basis: str,
+        needs: list[Need],
+        sources: list[Source],
+        item_prices: dict[str, dict[int, Optional[float]]],
+        volumes: dict[int, Optional[float]],
+        ores: list[OreInfo],
+        effective_yield: float,
+        mineral_ref_price: dict[int, Optional[float]],
+        flags: Optional[dict] = None,
 ) -> ComparisonResult:
-    """Build the full ore/compressed/mineral comparison + per-mineral recommendation.
-
-    ``item_prices[source_key][type_id]`` is the acquire price already resolved for the
-    chosen ``basis`` (None if unavailable). ``mineral_ref_price[type_id]`` values an
-    ore's refined output (typically the cheapest delivered mineral price). ``flags``
-    optionally maps ``(source_key, type_id) → {…}`` for scam/low-liquidity badges.
-    """
+    """Build the full ore/compressed/mineral comparison + per-mineral recommendation."""
     flags = flags or {}
     need_ids = [n.type_id for n in needs]
     need_by_id = {n.type_id: n for n in needs}
@@ -370,16 +337,16 @@ def compare(
 
 
 def compare_gas(
-    *,
-    target: str,
-    basis: str,
-    needs: list[Need],                              # type_id = the *regular* gas
-    sources: list[Source],
-    item_prices: dict[str, dict[int, Optional[float]]],   # regular + compressed type ids
-    volumes: dict[int, Optional[float]],
-    gas_infos: list[GasInfo],
-    decompression_loss: float = 0.05,
-    flags: Optional[dict] = None,
+        *,
+        target: str,
+        basis: str,
+        needs: list[Need],  # type_id = the *regular* gas
+        sources: list[Source],
+        item_prices: dict[str, dict[int, Optional[float]]],  # regular + compressed type ids
+        volumes: dict[int, Optional[float]],
+        gas_infos: list[GasInfo],
+        decompression_loss: float = 0.05,
+        flags: Optional[dict] = None,
 ) -> GasComparisonResult:
     """Compare buying each gas **compressed vs regular**, transport + decompression
     loss included, and recommend the cheaper form per gas.

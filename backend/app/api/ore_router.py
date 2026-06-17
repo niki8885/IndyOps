@@ -34,6 +34,7 @@ from app.repositories import eve as eve_repo
 from app.services import delivery as dsvc
 from app.services import facility_bonus
 from app.services import ore_acquisition as oa
+from app.services import ore_basket
 from app.services import pricing
 from app.services import skills as skills_svc
 from app.services.refining import RefineSetup, RigYield, compute_yield, reprocess
@@ -608,6 +609,41 @@ async def compare_acquisition(
         flags=flags,
     )
 
+    # ----- optimal basket (min-cost ore mix) when quantities are given --------
+    # True joint-product optimisation: one ore covers several minerals, so this beats
+    # the per-mineral table whenever byproducts overlap. LP via OR-Tools.
+    optimal_basket = None
+    if any(n.qty and n.qty > 0 for n in body.needs):
+        options: list[ore_basket.BuyOption] = []
+        for s in sources:
+            for n in body.needs:
+                px = item_prices[s.key].get(n.type_id)
+                if px is not None:
+                    cost = px + (volumes.get(n.type_id) or 0.0) * s.cost_per_m3
+                    options.append(ore_basket.BuyOption(
+                        key=f"m{n.type_id}@{s.key}", kind="mineral", type_id=n.type_id,
+                        name=names.get(n.type_id, str(n.type_id)), source=s.label,
+                        cost_per_unit=cost, yields={n.type_id: 1.0}))
+            for o in ore_rows:
+                px = item_prices[s.key].get(o["type_id"])
+                if px is None:
+                    continue
+                info = ore_yields.get(o["type_id"], {})
+                ps = info.get("portion_size") or 1
+                y = {m["type_id"]: (m["quantity"] or 0) / ps * ry.effective_yield
+                     for m in info.get("materials", []) if m["type_id"] in set(mineral_ids)}
+                if not y:
+                    continue
+                cost = px + (volumes.get(o["type_id"]) or 0.0) * s.cost_per_m3
+                options.append(ore_basket.BuyOption(
+                    key=f"o{o['type_id']}@{s.key}", kind="ore", type_id=o["type_id"],
+                    name=o["name"], source=s.label, cost_per_unit=cost, yields=y))
+        try:
+            optimal_basket = asdict(ore_basket.optimize_basket(needs, options))
+        except Exception as exc:  # ortools missing / solver issue — non-fatal
+            logger.warning("basket optimisation failed: %s", exc)
+            warnings.append(f"basket optimisation skipped: {exc}")
+
     # ----- optional volatility / liquidity alerts -----------------------------
     alerts: dict[int, dict] = {}
     if body.volatility_alert:
@@ -622,6 +658,7 @@ async def compare_acquisition(
         "alerts": alerts,
         "warnings": warnings,
         "ore_candidates": len(ores),
+        "optimal_basket": optimal_basket,
     })
     return payload
 
