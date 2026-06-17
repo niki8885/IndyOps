@@ -10,12 +10,16 @@ from app.adapters import market
 from app.api.inventory_router import _split_off, _get_item_or_404, _accessible_org_ids, _resolve_eve_type
 from app.core.database import (
     get_db, Delivery, InventoryItem, Projects, StockMovement, Employee, UserDB,
+    EsiContract, LinkedCharacter,
 )
 from app.core.database_eve import EveSessionLocal, EveSolarSystem
 from app.core.security import get_current_user
 from app.services import delivery as dsvc
 
 router = APIRouter()
+
+# ESI contract statuses that mean the courier delivered the goods → auto-complete.
+FINISHED_STATUSES = {"finished", "finished_issuer", "finished_contractor"}
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +109,8 @@ class DeliveryOut(BaseModel):
     comment: Optional[str]
     status: str
     items_snapshot: Optional[list]
+    tracked: bool = False                       # a matching ESI contract exists
+    contract_status: Optional[str] = None       # representative ESI contract status
     created_at: datetime.datetime
     completed_at: Optional[datetime.datetime]
 
@@ -141,6 +147,66 @@ def _get_delivery_or_404(db: Session, delivery_id: int, user_id: int) -> Deliver
     if not d:
         raise HTTPException(status_code=404, detail="Delivery not found")
     return d
+
+
+# ── ESI-contract matching (the delivery code is embedded in the contract title) ──
+
+def _match_contracts(db: Session, user_id: int, codes: list[str]) -> dict[str, list[EsiContract]]:
+    """Map each delivery code → the user's ESI contracts whose title contains it."""
+    codes = [c for c in codes if c]
+    if not codes:
+        return {}
+    char_ids = [cid for (cid,) in db.query(LinkedCharacter.character_id).filter(
+        LinkedCharacter.user_id == user_id).all()]
+    if not char_ids:
+        return {}
+    contracts = db.query(EsiContract).filter(EsiContract.character_id.in_(char_ids)).all()
+    out: dict[str, list[EsiContract]] = {}
+    for c in contracts:
+        title = c.title or ""
+        for code in codes:
+            if code in title:
+                out.setdefault(code, []).append(c)
+    return out
+
+
+def _annotate(d: Delivery, matches: dict[str, list[EsiContract]]) -> None:
+    """Attach transient `tracked` / `contract_status` to a Delivery for output."""
+    found = matches.get(d.code, [])
+    d.tracked = bool(found)
+    if not found:
+        d.contract_status = None
+    elif any(c.status in FINISHED_STATUSES for c in found):
+        d.contract_status = "finished"
+    else:
+        latest = max(found, key=lambda c: c.date_issued or datetime.datetime.min)
+        d.contract_status = latest.status
+
+
+def _apply_complete(db: Session, d: Delivery, now: datetime.datetime) -> None:
+    """Move the delivery's lots to the destination and release them."""
+    target = d.target_place or d.target_system
+    for lot in db.query(InventoryItem).filter(InventoryItem.delivery_id == d.id).all():
+        lot.place = target
+        lot.delivery_id = None
+        lot.updated_at = now
+    d.status = "completed"
+    d.completed_at = now
+
+
+def _apply_fail(db: Session, d: Delivery, user_id: int, now: datetime.datetime) -> None:
+    """Write off the delivery's lots (goods lost)."""
+    for lot in db.query(InventoryItem).filter(InventoryItem.delivery_id == d.id).all():
+        db.add(StockMovement(
+            user_id=user_id, project_id=lot.project_id,
+            eve_type_id=lot.eve_type_id, name=lot.name,
+            quantity=lot.quantity, direction="out",
+            unit_cost=lot.price, total_cost=round((lot.price or 0) * lot.quantity, 2),
+            reason=f"Delivery {d.code} failed",
+        ))
+        db.delete(lot)
+    d.status = "failed"
+    d.completed_at = now
 
 
 def _compute_costs(eve_db: Session, body: CalcRequest) -> dict:
@@ -350,7 +416,37 @@ async def list_deliveries(
         q = q.filter(Delivery.project_id == project_id)
     if status_filter:
         q = q.filter(Delivery.status == status_filter)
-    return q.order_by(Delivery.created_at.desc()).all()
+    rows = q.order_by(Delivery.created_at.desc()).all()
+    matches = _match_contracts(db, current_user.id, [d.code for d in rows])
+    for d in rows:
+        _annotate(d, matches)
+    return rows
+
+
+@router.post("/sync", response_model=List[DeliveryOut])
+async def sync_contracts(
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Reconcile pending deliveries against the sender's ESI contracts.
+
+    A pending delivery whose matching contract is *finished* is auto-completed
+    (items move to target). Other contract states are left alone — too many
+    situations to guess. Returns the full, annotated delivery list.
+    """
+    rows = db.query(Delivery).filter(
+        Delivery.user_id == current_user.id).order_by(Delivery.created_at.desc()).all()
+    matches = _match_contracts(db, current_user.id, [d.code for d in rows])
+    now = datetime.datetime.utcnow()
+    for d in rows:
+        if d.status == "pending":
+            found = matches.get(d.code, [])
+            if any(c.status in FINISHED_STATUSES for c in found):
+                _apply_complete(db, d, now)
+    db.commit()
+    for d in rows:
+        _annotate(d, matches)
+    return rows
 
 
 @router.get("/{delivery_id}", response_model=DeliveryOut)
@@ -359,7 +455,9 @@ async def get_delivery(
         current_user: UserDB = Depends(get_current_user),
         db: Session = Depends(get_db),
 ):
-    return _get_delivery_or_404(db, delivery_id, current_user.id)
+    d = _get_delivery_or_404(db, delivery_id, current_user.id)
+    _annotate(d, _match_contracts(db, current_user.id, [d.code]))
+    return d
 
 
 @router.patch("/{delivery_id}/status", response_model=DeliveryOut)
@@ -375,29 +473,11 @@ async def update_status(
     if body.status not in ("completed", "failed"):
         raise HTTPException(status_code=400, detail="status must be 'completed' or 'failed'")
 
-    lots = db.query(InventoryItem).filter(InventoryItem.delivery_id == d.id).all()
     now = datetime.datetime.utcnow()
-
     if body.status == "completed":
-        # Move the lots to the destination location and release them.
-        target = d.target_place or d.target_system
-        for lot in lots:
-            lot.place = target
-            lot.delivery_id = None
-            lot.updated_at = now
-    else:  # failed → goods are written off
-        for lot in lots:
-            db.add(StockMovement(
-                user_id=current_user.id, project_id=lot.project_id,
-                eve_type_id=lot.eve_type_id, name=lot.name,
-                quantity=lot.quantity, direction="out",
-                unit_cost=lot.price, total_cost=round((lot.price or 0) * lot.quantity, 2),
-                reason=f"Delivery {d.code} failed",
-            ))
-            db.delete(lot)
-
-    d.status = body.status
-    d.completed_at = now
+        _apply_complete(db, d, now)
+    else:
+        _apply_fail(db, d, current_user.id, now)
     db.commit()
     db.refresh(d)
     return d

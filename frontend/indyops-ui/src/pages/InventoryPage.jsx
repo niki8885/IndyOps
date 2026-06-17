@@ -719,7 +719,10 @@ function DeliveryTab() {
   }, [place, orgId])
 
   function loadDeliveries() {
-    get('/deliveries').then(setDeliveries).catch(() => {})
+    // sync reconciles pending deliveries against the sender's ESI contracts
+    // (finished → auto-complete) and returns the annotated list.
+    post('/deliveries/sync').then(setDeliveries)
+      .catch(() => get('/deliveries').then(setDeliveries).catch(() => {}))
   }
 
   // ── selection ────────────────────────────────────────────
@@ -1006,7 +1009,15 @@ function DeliveryTab() {
                   return (
                     <tr key={d.id}>
                       <td style={{ color: 'var(--text-white)', fontFamily: 'monospace', fontSize: 12 }}>{d.code}</td>
-                      <td><span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: st.bg, color: st.color }}>{st.label}</span></td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: st.bg, color: st.color }}>{st.label}</span>
+                        {d.tracked && (
+                          <span title={d.contract_status ? `contract: ${d.contract_status}` : 'ESI contract found'}
+                            style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '2px 5px', borderRadius: 3, background: '#10243d', color: '#3a9bd6' }}>
+                            🔗 TRACKED
+                          </span>
+                        )}
+                      </td>
                       <td style={{ fontSize: 12 }}>{d.mode === 'jf' ? `JF ${d.jf_ship || ''}` : 'Regular'}</td>
                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{projName(d.project_id)}</td>
                       <td style={{ color: 'var(--text)', fontSize: 12 }}>{d.target_system || '—'}</td>
