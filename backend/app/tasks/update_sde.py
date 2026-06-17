@@ -19,6 +19,7 @@ from app.core.database_eve import (
     EveGroup,
     EveMarketGroup,
     EveType,
+    EveTypeMaterial,
     EveMetaType,
     EveBlueprint,
     EveActivityTime,
@@ -30,6 +31,7 @@ from app.core.database_eve import (
     EveSolarSystem,
     EveStation,
     EveRigBonus,
+    EveReprocessingRig,
 )
 
 logger = logging.getLogger(__name__)
@@ -269,6 +271,28 @@ def update_meta_types(db) -> int:
     return _upsert_chunks(db, build, raw)
 
 
+def update_type_materials(db) -> int:
+    """invTypeMaterials — reprocessing/refining yields (ore → minerals, and more)."""
+    raw = _dedup(_download_csv("invTypeMaterials"), "typeID", "materialTypeID")
+
+    def build(batch):
+        values = [
+            {
+                "type_id": _coerce(r, "typeID", int),
+                "material_type_id": _coerce(r, "materialTypeID", int),
+                "quantity": _coerce(r, "quantity", int),
+            }
+            for r in batch
+        ]
+        stmt = pg_insert(EveTypeMaterial).values(values)
+        return stmt.on_conflict_do_update(
+            index_elements=["type_id", "material_type_id"],
+            set_={"quantity": stmt.excluded["quantity"]},
+        )
+
+    return _upsert_chunks(db, build, raw)
+
+
 def update_blueprints(db) -> int:
     raw = _download_csv("industryBlueprints")
 
@@ -438,6 +462,96 @@ def update_rig_bonuses(db) -> int:
     return _upsert_chunks(db, build, rows)
 
 
+def _reprocessing_yield_attr_ids() -> set[int]:
+    """Resolve the dgm attribute id(s) carrying a reprocessing-yield bonus, by name.
+
+    We don't hardcode a numeric attributeID (it has shifted between SDE releases and
+    differs from the engineering ME/TE ids). Instead match dgmAttributeTypes names
+    that mean "reprocessing yield" — robust across releases. Returns ``set()`` if the
+    table can't be read, so the step degrades to importing no rigs rather than wrong
+    ones.
+    """
+    try:
+        attrs = _download_csv("dgmAttributeTypes")
+    except Exception as exc:
+        logger.warning("dgmAttributeTypes download failed: %s", exc)
+        return set()
+    ids: set[int] = set()
+    for r in attrs:
+        name = (r.get("attributeName") or "").lower()
+        if "reprocess" in name and any(k in name for k in ("yield", "multiplier", "efficiency", "bonus")):
+            aid = _coerce(r, "attributeID", int)
+            if aid is not None:
+                ids.add(aid)
+    return ids
+
+
+def update_reprocessing_rigs(db) -> int:
+    """Pivot reprocessing-rig yield bonuses out of dgmTypeAttributes.
+
+    Mirrors :func:`update_rig_bonuses`: pivot the (name-discovered) yield attribute
+    plus the shared hi/low/null security modifiers, then keep only the Standup
+    reprocessing rigs (type name contains "Reprocessing") so structures and ordinary
+    items are excluded.
+    """
+    yield_attrs = _reprocessing_yield_attr_ids()
+    if not yield_attrs:
+        logger.warning("no reprocessing-yield attribute found in dgmAttributeTypes — skipping rigs")
+        return 0
+    wanted = yield_attrs | {_RIG_ATTR_HI, _RIG_ATTR_LOW, _RIG_ATTR_NULL}
+
+    raw = _download_csv("dgmTypeAttributes")
+    pivot: dict[int, dict[int, float]] = {}
+    for r in raw:
+        aid = _coerce(r, "attributeID", int)
+        if aid not in wanted:
+            continue
+        tid = _coerce(r, "typeID", int)
+        if tid is None:
+            continue
+        val = _coerce(r, "valueFloat", float)
+        if val is None:
+            val = _coerce(r, "valueInt", float)
+        pivot.setdefault(tid, {})[aid] = val
+
+    # candidate types carry a yield bonus; restrict to the reprocessing rigs by name
+    cand_ids = [t for t, a in pivot.items() if any(k in a for k in yield_attrs)]
+    if not cand_ids:
+        return 0
+    names = {tid: nm for tid, nm in
+             db.query(EveType.type_id, EveType.type_name).filter(EveType.type_id.in_(cand_ids)).all()}
+    groups = {tid: gid for tid, gid in
+              db.query(EveType.type_id, EveType.group_id).filter(EveType.type_id.in_(cand_ids)).all()}
+
+    rows = []
+    for tid in cand_ids:
+        if "reprocessing" not in (names.get(tid) or "").lower():
+            continue
+        a = pivot[tid]
+        bonus = next((abs(a[k]) for k in yield_attrs if a.get(k)), None)
+        rows.append({
+            "type_id": tid,
+            "group_id": groups.get(tid),
+            "yield_bonus": bonus,
+            "hisec_mod": a.get(_RIG_ATTR_HI),
+            "lowsec_mod": a.get(_RIG_ATTR_LOW),
+            "nullsec_mod": a.get(_RIG_ATTR_NULL),
+        })
+
+    if not rows:
+        return 0
+
+    def build(batch):
+        stmt = pg_insert(EveReprocessingRig).values(batch)
+        return stmt.on_conflict_do_update(
+            index_elements=["type_id"],
+            set_={c: stmt.excluded[c] for c in
+                  ("group_id", "yield_bonus", "hisec_mod", "lowsec_mod", "nullsec_mod")},
+        )
+
+    return _upsert_chunks(db, build, rows)
+
+
 def update_regions(db) -> int:
     raw = _download_csv("mapRegions")
 
@@ -563,6 +677,7 @@ STEPS: list[tuple[str, Any]] = [
     ("groups", update_groups),
     ("market_groups", update_market_groups),
     ("types", update_types),
+    ("type_materials", update_type_materials),
     ("meta_types", update_meta_types),
     ("blueprints", update_blueprints),
     ("activity_times", update_activity_times),
@@ -570,6 +685,7 @@ STEPS: list[tuple[str, Any]] = [
     ("activity_products", update_activity_products),
     ("activity_skills", update_activity_skills),
     ("rig_bonuses", update_rig_bonuses),
+    ("reprocessing_rigs", update_reprocessing_rigs),
     ("regions", update_regions),
     ("constellations", update_constellations),
     ("solar_systems", update_solar_systems),

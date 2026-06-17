@@ -6,6 +6,7 @@ import { get, post } from '../api/client'
 
 const NAV = [
   { to: '/manufacturing', label: 'Manufacturing'  },
+  { to: '/ore',           label: 'Ore & Refining' },
   { to: '/inventory',     label: 'Inventory'      },
   { to: '/market',        label: 'Market'         },
   { to: '/analysis',      label: 'Analysis'       },

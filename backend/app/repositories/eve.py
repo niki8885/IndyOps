@@ -7,12 +7,16 @@ from sqlalchemy import func
 
 from app.core.database_eve import (
     EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint,
-    EveGroup, EveMetaType,
+    EveGroup, EveMetaType, EveTypeMaterial, EveReprocessingRig,
 )
 
 MANUFACTURING = 1
 REACTION = 11
 INDUSTRY_ACTIVITIES = (MANUFACTURING, REACTION)
+
+# SDE classification constants (stable across releases).
+CATEGORY_ASTEROID = 25   # invCategories: ore / compressed ore live here
+GROUP_MINERAL = 18       # invGroups: the eight minerals + Morphite
 
 
 @dataclass
@@ -175,6 +179,188 @@ def types_by_name(eve_db, names: list[str]) -> dict[str, dict]:
         .all()
     )
     return {name.lower(): {"type_id": tid, "name": name} for tid, name in rows}
+
+
+# ── Reprocessing / ore-acquisition reads ────────────────────────────────────
+
+def mineral_catalog(eve_db) -> list[dict]:
+    """Published minerals (group 18: Tritanium … Megacyte + Morphite), with volume."""
+    rows = (
+        eve_db.query(EveType.type_id, EveType.type_name, EveType.volume)
+        .filter(EveType.group_id == GROUP_MINERAL, EveType.published.is_(True))
+        .order_by(EveType.type_id)
+        .all()
+    )
+    return [{"type_id": tid, "name": name, "volume": vol} for tid, name, vol in rows]
+
+
+def ore_catalog(eve_db, compressed: Optional[bool] = None) -> list[dict]:
+    """Published ore types (Asteroid category) that have a reprocessing yield.
+
+    ``compressed``: True → only "Compressed …" variants, False → only raw ore,
+    None → both. ``portion_size`` is the reprocess batch size for the yields.
+    """
+    q = (
+        eve_db.query(EveType.type_id, EveType.type_name, EveType.volume,
+                     EveType.portion_size, EveType.group_id, EveGroup.group_name)
+        .join(EveGroup, EveType.group_id == EveGroup.group_id)
+        .filter(EveGroup.category_id == CATEGORY_ASTEROID, EveType.published.is_(True))
+        .filter(EveType.type_id.in_(eve_db.query(EveTypeMaterial.type_id).distinct()))
+        .order_by(EveType.type_name)
+    )
+    out = []
+    for tid, name, vol, portion, gid, gname in q.all():
+        is_comp = (name or "").lower().startswith("compressed")
+        if compressed is True and not is_comp:
+            continue
+        if compressed is False and is_comp:
+            continue
+        out.append({
+            "type_id": tid, "name": name, "volume": vol,
+            "portion_size": portion or 1, "group_id": gid,
+            "group_name": gname, "compressed": is_comp,
+        })
+    return out
+
+
+def ores_yielding(eve_db, mineral_type_ids: list[int],
+                  compressed: Optional[bool] = None) -> list[dict]:
+    """Ore types whose reprocessing yield includes any of ``mineral_type_ids``."""
+    if not mineral_type_ids:
+        return []
+    ore_ids = [
+        r[0] for r in eve_db.query(EveTypeMaterial.type_id)
+        .filter(EveTypeMaterial.material_type_id.in_(mineral_type_ids))
+        .distinct().all()
+    ]
+    if not ore_ids:
+        return []
+    q = (
+        eve_db.query(EveType.type_id, EveType.type_name, EveType.volume,
+                     EveType.portion_size, EveType.group_id, EveGroup.group_name)
+        .join(EveGroup, EveType.group_id == EveGroup.group_id)
+        .filter(EveGroup.category_id == CATEGORY_ASTEROID, EveType.published.is_(True))
+        .filter(EveType.type_id.in_(ore_ids))
+        .order_by(EveType.type_name)
+    )
+    out = []
+    for tid, name, vol, portion, gid, gname in q.all():
+        is_comp = (name or "").lower().startswith("compressed")
+        if compressed is True and not is_comp:
+            continue
+        if compressed is False and is_comp:
+            continue
+        out.append({
+            "type_id": tid, "name": name, "volume": vol,
+            "portion_size": portion or 1, "group_id": gid,
+            "group_name": gname, "compressed": is_comp,
+        })
+    return out
+
+
+def reprocessing_yields(eve_db, type_ids: list[int]) -> dict[int, dict]:
+    """{type_id: {"portion_size", "materials": [{type_id, name, quantity}]}}.
+
+    ``materials`` is the perfect (100%) mineral output for one ``portion_size`` batch.
+    Batched: one EveTypeMaterial query + one name lookup (no N+1).
+    """
+    if not type_ids:
+        return {}
+    rows = (
+        eve_db.query(EveTypeMaterial)
+        .filter(EveTypeMaterial.type_id.in_(type_ids))
+        .all()
+    )
+    portions = {
+        tid: (ps or 1)
+        for tid, ps in eve_db.query(EveType.type_id, EveType.portion_size)
+        .filter(EveType.type_id.in_(type_ids)).all()
+    }
+    mat_ids = list({r.material_type_id for r in rows})
+    names = type_names(eve_db, mat_ids)
+    out: dict[int, dict] = {tid: {"portion_size": portions.get(tid, 1), "materials": []}
+                            for tid in type_ids}
+    for r in rows:
+        out.setdefault(r.type_id, {"portion_size": portions.get(r.type_id, 1), "materials": []})
+        out[r.type_id]["materials"].append({
+            "type_id": r.material_type_id,
+            "name": names.get(r.material_type_id, str(r.material_type_id)),
+            "quantity": r.quantity,
+        })
+    return out
+
+
+# Harvestable gas is identified by stable name patterns (category/group ids have
+# shifted between SDE releases). Fullerene gas + booster gas (Cyto/Mykoserocin).
+GAS_NAME_PATTERNS = ("Fullerite-%", "% Cytoserocin", "% Mykoserocin")
+
+
+def gas_catalog(eve_db) -> list[dict]:
+    """Harvestable gases paired with their compressed variant.
+
+    ``units_per_compressed`` = regular units one compressed unit decompresses into
+    (from the compressed type's invTypeMaterials → base gas). None if the SDE has no
+    such row, in which case the UI offers only the regular form for that gas.
+    """
+    from sqlalchemy import or_
+    conds = [EveType.type_name.ilike(p) for p in GAS_NAME_PATTERNS]
+    rows = (
+        eve_db.query(EveType.type_id, EveType.type_name, EveType.volume)
+        .filter(or_(*conds), EveType.published.is_(True))
+        .order_by(EveType.type_name)
+        .all()
+    )
+    regs = [(tid, name, vol) for tid, name, vol in rows
+            if not (name or "").lower().startswith("compressed")]
+
+    # compressed variants, matched by "Compressed <name>"
+    comp_lookup = {f"compressed {name.lower()}": tid for tid, name, _ in regs}
+    comp_rows = (
+        eve_db.query(EveType.type_id, EveType.type_name, EveType.volume)
+        .filter(func.lower(EveType.type_name).in_(list(comp_lookup) or ["-"]))
+        .all()
+    )
+    comp_by_name = {name.lower(): (tid, name, vol) for tid, name, vol in comp_rows}
+    yld = reprocessing_yields(eve_db, [tid for tid, _, _ in comp_rows])
+
+    out = []
+    for tid, name, vol in regs:
+        c = comp_by_name.get(f"compressed {name.lower()}")
+        entry = {"reg_type_id": tid, "reg_name": name, "reg_volume": vol,
+                 "comp_type_id": None, "comp_name": None, "comp_volume": None,
+                 "units_per_compressed": None}
+        if c:
+            cid, cname, cvol = c
+            entry.update(comp_type_id=cid, comp_name=cname, comp_volume=cvol)
+            y = yld.get(cid)
+            if y and y["materials"]:
+                base = next((m for m in y["materials"] if m["type_id"] == tid), y["materials"][0])
+                ps = y["portion_size"] or 1
+                entry["units_per_compressed"] = (base["quantity"] or 0) / ps
+        out.append(entry)
+    return out
+
+
+def reprocessing_rigs(eve_db) -> list[dict]:
+    """All structure reprocessing-yield rigs, with name + yield bonus + sec modifiers."""
+    rows = (
+        eve_db.query(EveReprocessingRig, EveType.type_name)
+        .outerjoin(EveType, EveReprocessingRig.type_id == EveType.type_id)
+        .order_by(EveType.type_name)
+        .all()
+    )
+    return [
+        {
+            "type_id": rb.type_id,
+            "name": name or str(rb.type_id),
+            "group_id": rb.group_id,
+            "yield_bonus": rb.yield_bonus,
+            "hisec_mod": rb.hisec_mod,
+            "lowsec_mod": rb.lowsec_mod,
+            "nullsec_mod": rb.nullsec_mod,
+        }
+        for rb, name in rows
+    ]
 
 
 def bom_tree(eve_db, root_type_id: int, max_depth: int = 12) -> dict[int, dict]:
