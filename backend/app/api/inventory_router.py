@@ -62,6 +62,7 @@ class InventoryOut(BaseModel):
     flow: Optional[str] = "input"
     item_status: Optional[str] = "in_stock"
     sale_price: Optional[float] = None
+    delivery_id: Optional[int] = None
     created_at: datetime.datetime
     updated_at: Optional[datetime.datetime]
 
@@ -430,6 +431,17 @@ class UseRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class SplitRequest(BaseModel):
+    quantity: int  # units to carve off into a new stack
+
+    @field_validator("quantity")
+    @classmethod
+    def qty_positive(cls, v):
+        if v <= 0:
+            raise ValueError("quantity must be > 0")
+        return v
+
+
 def _split_off(db: Session, item: InventoryItem, qty: Optional[int]) -> InventoryItem:
     """
     Return the InventoryItem representing `qty` units to act on. If qty < the
@@ -473,6 +485,29 @@ async def sell_item(
     db.commit()
     db.refresh(target)
     return target
+
+
+@router.post("/{item_id}/split", response_model=List[InventoryOut])
+async def split_item(
+        item_id: int,
+        body: SplitRequest,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Split a lot into two stacks: the original keeps the remainder, a new lot
+    holds `quantity`. Returns [original, new]."""
+    item = _get_item_or_404(db, item_id, current_user.id)
+    if item.delivery_id is not None:
+        raise HTTPException(status_code=400, detail="Item is reserved by a delivery — cannot split")
+    if body.quantity >= item.quantity:
+        raise HTTPException(status_code=400, detail=f"Split quantity must be less than {item.quantity}")
+
+    clone = _split_off(db, item, body.quantity)
+    clone.item_status = item.item_status  # _split_off defaults to in_stock; keep source status
+    db.commit()
+    db.refresh(item)
+    db.refresh(clone)
+    return [item, clone]
 
 
 @router.post("/{item_id}/use", response_model=InventoryOut)

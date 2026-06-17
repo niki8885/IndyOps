@@ -205,3 +205,39 @@ def esi_region_history_full(region_id: int, type_id: int) -> Optional[list]:
         data = None
     _HIST_FULL_CACHE[cache_key] = (now, data)
     return data
+
+
+# ── ESI route (gate path between two solar systems) ─────────────────────────
+# Used by the Delivery feature to auto-fill the gate-jump count for a regular
+# (non-JF) shipment. Routes are static, so a long cache is fine.
+_ROUTE_CACHE: dict = {}
+_ROUTE_TTL = 24 * 3600
+_ESI_ROUTE_URL = "https://esi.evetech.net/latest/route/{origin}/{destination}/"
+
+
+def esi_route(origin_id: int, destination_id: int, flag: str = "shortest") -> Optional[list[int]]:
+    """
+    Ordered solar-system IDs from origin to destination (inclusive of both ends).
+
+    ``flag`` ∈ {shortest, secure, insecure}. Gate-jump count = ``len(route) - 1``.
+    Returns None on failure (e.g. unreachable / ESI down) so the caller can fall
+    back to manual entry. Cached 24h.
+    """
+    cache_key = (origin_id, destination_id, flag)
+    now = _time.time()
+    hit = _ROUTE_CACHE.get(cache_key)
+    if hit and now - hit[0] < _ROUTE_TTL:
+        return hit[1]
+    route: Optional[list[int]] = None
+    try:
+        r = requests.get(
+            _ESI_ROUTE_URL.format(origin=origin_id, destination=destination_id),
+            params={"flag": flag, "datasource": "tranquility"},
+            headers=_HEADERS, timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+        route = [int(s) for s in r.json()]
+    except Exception as exc:
+        logger.warning("esi route %s->%s failed: %s", origin_id, destination_id, exc)
+    _ROUTE_CACHE[cache_key] = (now, route)
+    return route

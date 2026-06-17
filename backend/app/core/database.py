@@ -262,6 +262,10 @@ class InventoryItem(Base):
     item_status = Column(String(12), nullable=False, default="in_stock")  # in_stock | used | sold
     sale_price = Column(Float, nullable=True)  # ISK per unit when sold
 
+    # Set while a lot is attached to a pending delivery (it stays visible in the
+    # warehouse). Cleared on delivery completion; the lot is deleted on failure.
+    delivery_id = Column(Integer, ForeignKey("deliveries.id"), nullable=True, index=True)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
 
@@ -292,6 +296,62 @@ class StockMovement(Base):
     owner = relationship("UserDB", backref="stock_movements")
     project = relationship("Projects", backref="stock_movements")
     job = relationship("ProductionJob", backref="stock_movements")
+
+
+class Delivery(Base):
+    """A shipment of warehouse stock from one location to a target system.
+
+    Created in ``pending``; the chosen inventory lots stay in the warehouse but
+    carry this delivery's id. On ``completed`` the lots move to the target
+    location; on ``failed`` they are deleted. ``items_snapshot`` preserves the
+    contents for display once the live lots are gone."""
+    __tablename__ = "deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+
+    source_place = Column(String(200), nullable=True)   # origin warehouse / system
+    source_system = Column(String(200), nullable=True)  # solar system the haul starts in
+    target_system = Column(String(200), nullable=True)  # destination solar system
+    target_place = Column(String(200), nullable=True)   # where lots land on completion
+
+    mode = Column(String(10), nullable=False, default="regular")  # regular | jf
+    sender_character = Column(String(200), nullable=True)
+    sender_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+
+    # regular (gate freighter)
+    jumps = Column(Integer, nullable=True)
+    isk_per_jump_m3 = Column(Float, nullable=True)
+
+    # jf (jump freighter)
+    jf_ship = Column(String(40), nullable=True)         # Ark | Rhea | Nomad | Anshar
+    isotope_name = Column(String(60), nullable=True)
+    isotope_type_id = Column(Integer, nullable=True)
+    light_years = Column(Float, nullable=True)
+    isotopes_per_ly = Column(Float, nullable=True)
+    trips = Column(Integer, nullable=True)
+    round_trip = Column(Boolean, nullable=False, default=False)
+    isotope_price = Column(Float, nullable=True)
+    total_isotopes = Column(BigInteger, nullable=True)
+
+    total_volume = Column(Float, nullable=True)
+    total_value = Column(Float, nullable=True)   # collateral = ISK value of goods
+    est_cost = Column(Float, nullable=True)      # computed shipping cost
+    cost = Column(Float, nullable=False, default=0)  # contract reward (0 for now)
+
+    code = Column(String(10), nullable=False, index=True)
+    comment = Column(Text, nullable=True)
+    status = Column(String(10), nullable=False, default="pending", index=True)  # pending|completed|failed
+    items_snapshot = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    owner = relationship("UserDB", backref="deliveries")
+    project = relationship("Projects", backref="deliveries")
+    organisation = relationship("Organisation", backref="deliveries")
 
 
 class TrackedPlace(Base):
@@ -580,6 +640,45 @@ _MIGRATIONS = [
     "DROP INDEX IF EXISTS ix_track_prices_type_id",
     "DROP INDEX IF EXISTS ix_track_prices_place_id",
     "DROP INDEX IF EXISTS ix_track_prices_timestamp",
+    # deliveries (Inventory → Delivery feature) + the inventory link column
+    """CREATE TABLE IF NOT EXISTS deliveries (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        organisation_id INTEGER REFERENCES organisations(id),
+        project_id INTEGER REFERENCES projects(id),
+        source_place VARCHAR(200),
+        source_system VARCHAR(200),
+        target_system VARCHAR(200),
+        target_place VARCHAR(200),
+        mode VARCHAR(10) NOT NULL DEFAULT 'regular',
+        sender_character VARCHAR(200),
+        sender_employee_id INTEGER REFERENCES employees(id),
+        jumps INTEGER,
+        isk_per_jump_m3 DOUBLE PRECISION,
+        jf_ship VARCHAR(40),
+        isotope_name VARCHAR(60),
+        isotope_type_id INTEGER,
+        light_years DOUBLE PRECISION,
+        isotopes_per_ly DOUBLE PRECISION,
+        trips INTEGER,
+        round_trip BOOLEAN NOT NULL DEFAULT FALSE,
+        isotope_price DOUBLE PRECISION,
+        total_isotopes BIGINT,
+        total_volume DOUBLE PRECISION,
+        total_value DOUBLE PRECISION,
+        est_cost DOUBLE PRECISION,
+        cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+        code VARCHAR(10) NOT NULL,
+        comment TEXT,
+        status VARCHAR(10) NOT NULL DEFAULT 'pending',
+        items_snapshot JSON,
+        created_at TIMESTAMP DEFAULT NOW(),
+        completed_at TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_deliveries_user_id ON deliveries (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_deliveries_status ON deliveries (status)",
+    "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS delivery_id INTEGER REFERENCES deliveries(id)",
+    "CREATE INDEX IF NOT EXISTS ix_inventory_delivery_id ON inventory (delivery_id)",
 ]
 
 
