@@ -1,20 +1,21 @@
 import { useState, useEffect } from 'react'
-import { get, post, del } from '../api/client'
+import { get, post, patch, del } from '../api/client'
 import SystemSearch from '../components/SystemSearch'
 
 const PRICE_METHODS = ['Buy', 'Split', 'Sell']
 
 export default function InventoryPage() {
   const [tab, setTab] = useState(0)
+  const TABS = ['Warehouse', 'Parse & Import', 'Delivery']
   return (
     <div>
       <h2 style={{ marginBottom: 20 }}>Inventory</h2>
       <div className="tabs">
-        {['Warehouse', 'Parse & Import'].map((t, i) => (
+        {TABS.map((t, i) => (
           <button key={i} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
         ))}
       </div>
-      {tab === 0 ? <WarehouseTab /> : <ParseTab />}
+      {tab === 0 ? <WarehouseTab /> : tab === 1 ? <ParseTab /> : <DeliveryTab />}
     </div>
   )
 }
@@ -78,6 +79,15 @@ function WarehouseTab() {
     catch (e) { setError(e.message) }
   }
 
+  async function splitItem(item) {
+    const p = prompt(`Split "${item.name}" ×${item.quantity.toLocaleString()}\nUnits to move into a new stack (1…${(item.quantity - 1).toLocaleString()}):`, Math.floor(item.quantity / 2))
+    if (p == null) return
+    const qty = Math.floor(Number(p))
+    if (!qty || qty <= 0 || qty >= item.quantity) { setError(`Split qty must be between 1 and ${item.quantity - 1}`); return }
+    try { await post(`/inventory/${item.id}/split`, { quantity: qty }); load() }
+    catch (e) { setError(e.message) }
+  }
+
   const flowBadge = f => (
     <span style={{
       fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3, marginLeft: 6,
@@ -88,6 +98,7 @@ function WarehouseTab() {
 
   const ItemActions = ({ item }) => (
     <span style={{ whiteSpace: 'nowrap' }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => splitItem(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Split stack" disabled={item.quantity < 2}>✂️</button>
       <button className="btn btn-ghost btn-sm" onClick={() => sell(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Sell (record price)">💰</button>
       <button className="btn btn-ghost btn-sm" onClick={() => useItem(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Write off / internal use">🔧</button>
       <button className="btn btn-danger btn-sm" onClick={() => remove(item.id)} title="Delete">✕</button>
@@ -628,6 +639,399 @@ function ParseTab() {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/* ════════════════════════════ DELIVERY ════════════════════════════ */
+
+const JF_SHIPS = [
+  { ship: 'Ark',    iso: 'Helium Isotopes' },
+  { ship: 'Rhea',   iso: 'Nitrogen Isotopes' },
+  { ship: 'Nomad',  iso: 'Hydrogen Isotopes' },
+  { ship: 'Anshar', iso: 'Oxygen Isotopes' },
+]
+
+const STATUS_STYLE = {
+  pending:   { bg: '#2a2410', color: '#c8a951', label: 'PENDING' },
+  completed: { bg: '#0e2a1a', color: '#4caf7d', label: 'COMPLETED' },
+  failed:    { bg: '#2e1414', color: '#d66', label: 'FAILED' },
+}
+
+function DeliveryTab() {
+  const [orgs, setOrgs]           = useState([])
+  const [projects, setProjects]   = useState([])
+  const [chars, setChars]         = useState([])
+  const [warehouses, setWarehouses] = useState([])
+  const [items, setItems]         = useState([])
+  const [deliveries, setDeliveries] = useState([])
+
+  // builder
+  const [orgId, setOrgId]         = useState('')
+  const [projectId, setProjectId] = useState('')
+  const [place, setPlace]         = useState('')
+  const [selected, setSelected]   = useState({})        // { item_id: qtyString }
+  const [fromSystem, setFromSystem] = useState('')
+  const [targetSystem, setTargetSystem] = useState('')
+  const [mode, setMode]           = useState('regular') // regular | jf
+  const [jumps, setJumps]         = useState('')        // '' = auto via ESI
+  const [iskPerJumpM3, setIskPerJumpM3] = useState(1000)
+  const [jfShip, setJfShip]       = useState('Ark')
+  const [isotopesPerLy, setIsotopesPerLy] = useState(400)
+  const [isotopePrice, setIsotopePrice]   = useState(0)
+  const [roundTrip, setRoundTrip] = useState(false)
+  const [sender, setSender]       = useState('')
+
+  const [calc, setCalc]           = useState(null)
+  const [calcing, setCalcing]     = useState(false)
+  const [sending, setSending]     = useState(false)
+  const [sendResult, setSendResult] = useState(null)
+  const [error, setError]         = useState('')
+
+  // ── loaders ──────────────────────────────────────────────
+  useEffect(() => {
+    get('/organisations').then(async os => {
+      setOrgs(os)
+      const all = []
+      for (const o of os) {
+        try { all.push(...(await get(`/projects?org_id=${o.id}`)).map(p => ({ ...p, orgName: o.name }))) } catch {}
+      }
+      setProjects(all)
+    }).catch(() => {})
+    get('/organisations/me/characters').then(setChars).catch(() => {})
+    loadDeliveries()
+  }, [])
+
+  useEffect(() => {
+    const url = orgId ? `/deliveries/warehouses?organisation_id=${orgId}` : '/deliveries/warehouses'
+    get(url).then(setWarehouses).catch(() => setWarehouses([]))
+    setPlace(''); setItems([]); setSelected({})
+  }, [orgId])
+
+  useEffect(() => {
+    if (!place) { setItems([]); return }
+    const p = new URLSearchParams({ place, item_status: 'in_stock' })
+    if (orgId) p.set('organisation_id', orgId)
+    get(`/inventory?${p}`).then(rows => {
+      setItems(rows.filter(r => !r.delivery_id))   // hide lots already in a delivery
+      setSelected({})
+    }).catch(() => setItems([]))
+  }, [place, orgId])
+
+  function loadDeliveries() {
+    get('/deliveries').then(setDeliveries).catch(() => {})
+  }
+
+  // ── selection ────────────────────────────────────────────
+  const selectedItems = items.filter(i => selected[i.id] != null)
+  const totalVolume = selectedItems.reduce((s, i) => s + (i.volume || 0) * Number(selected[i.id] || 0), 0)
+  const totalValue  = selectedItems.reduce((s, i) => s + (i.price  || 0) * Number(selected[i.id] || 0), 0)
+
+  function toggle(item) {
+    setSelected(s => {
+      const n = { ...s }
+      if (n[item.id] != null) delete n[item.id]
+      else n[item.id] = item.quantity
+      return n
+    })
+  }
+  function setQty(item, v) {
+    const q = Math.max(0, Math.min(Number(v) || 0, item.quantity))
+    setSelected(s => ({ ...s, [item.id]: q }))
+  }
+
+  // ── cost calc (debounced) ────────────────────────────────
+  function calcBody() {
+    return {
+      mode,
+      source_system: fromSystem || place,
+      target_system: targetSystem,
+      total_volume: totalVolume,
+      total_value: totalValue,
+      jumps: jumps === '' ? null : Number(jumps),
+      isk_per_jump_m3: Number(iskPerJumpM3) || 0,
+      jf_ship: jfShip,
+      isotopes_per_ly: Number(isotopesPerLy) || 0,
+      isotope_price: Number(isotopePrice) || 0,
+      round_trip: roundTrip,
+    }
+  }
+
+  useEffect(() => {
+    if (totalVolume <= 0 || !targetSystem) { setCalc(null); return }
+    setCalcing(true)
+    const t = setTimeout(async () => {
+      try { setCalc(await post('/deliveries/calc', calcBody())) }
+      catch (e) { setError(e.message) }
+      finally { setCalcing(false) }
+    }, 450)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, fromSystem, targetSystem, totalVolume, jumps, iskPerJumpM3, jfShip, isotopesPerLy, isotopePrice, roundTrip])
+
+  // ── send ─────────────────────────────────────────────────
+  async function send() {
+    if (selectedItems.length === 0) { setError('Select at least one item'); return }
+    if (!targetSystem) { setError('Pick a target system'); return }
+    setSending(true); setError('')
+    try {
+      const d = await post('/deliveries', {
+        organisation_id: orgId ? Number(orgId) : null,
+        project_id: projectId ? Number(projectId) : null,
+        source_place: place || null,
+        source_system: fromSystem || place || null,
+        target_system: targetSystem,
+        target_place: targetSystem,
+        mode,
+        sender_character: sender || null,
+        items: selectedItems.map(i => ({ item_id: i.id, quantity: Number(selected[i.id]) })),
+        ...calcBody(),
+      })
+      setSendResult(d)
+      setSelected({}); setCalc(null)
+      get(`/inventory?${new URLSearchParams({ place, item_status: 'in_stock', ...(orgId ? { organisation_id: orgId } : {}) })}`)
+        .then(rows => setItems(rows.filter(r => !r.delivery_id))).catch(() => {})
+      loadDeliveries()
+    } catch (e) { setError(e.message) }
+    finally { setSending(false) }
+  }
+
+  async function setStatus(d, status) {
+    const verb = status === 'completed' ? 'mark COMPLETED (items move to target)' : 'mark FAILED (items will be deleted)'
+    if (!confirm(`Delivery ${d.code}: ${verb}?`)) return
+    try { await patch(`/deliveries/${d.id}/status`, { status }); loadDeliveries() }
+    catch (e) { setError(e.message) }
+  }
+  async function removeDelivery(d) {
+    if (!confirm(`Delete delivery ${d.code}?${d.status === 'pending' ? '\nIts items return to the warehouse.' : ''}`)) return
+    try { await del(`/deliveries/${d.id}`); loadDeliveries() }
+    catch (e) { setError(e.message) }
+  }
+
+  const projName = id => projects.find(p => p.id === id)?.name || '—'
+  const visibleProjects = orgId ? projects.filter(p => String(p.organisation_id) === String(orgId)) : projects
+  const curIso = JF_SHIPS.find(s => s.ship === jfShip)?.iso
+
+  return (
+    <div>
+      {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
+
+      {/* ── BUILDER ── */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 600, marginBottom: 14 }}>New delivery</div>
+
+        {/* origin */}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+          <div style={{ minWidth: 170 }}>
+            <L>Organisation</L>
+            <select value={orgId} onChange={e => setOrgId(e.target.value)}>
+              <option value="">All organisations</option>
+              {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          </div>
+          <div style={{ minWidth: 170 }}>
+            <L>Warehouse (from)</L>
+            <select value={place} onChange={e => setPlace(e.target.value)}>
+              <option value="">— pick location —</option>
+              {warehouses.map(w => <option key={w} value={w}>{w}</option>)}
+            </select>
+          </div>
+          <div style={{ minWidth: 170 }}>
+            <L>From system (routing)</L>
+            <SystemSearch value={fromSystem} onChange={setFromSystem} placeholder={place || 'origin system…'} />
+          </div>
+          <div style={{ minWidth: 170 }}>
+            <L>Project (optional)</L>
+            <select value={projectId} onChange={e => setProjectId(e.target.value)}>
+              <option value="">No project</option>
+              {visibleProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* items */}
+        {place && (
+          items.length === 0
+            ? <div className="empty-state" style={{ padding: 14 }}>No shippable items at this location</div>
+            : (
+              <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 14 }}>
+                <table>
+                  <thead><tr><th></th><th>Item</th><th>Available</th><th>Ship qty</th><th>Vol/unit</th><th>Volume</th><th>Value</th></tr></thead>
+                  <tbody>
+                    {items.map(i => {
+                      const on = selected[i.id] != null
+                      const q = Number(selected[i.id] || 0)
+                      return (
+                        <tr key={i.id} style={{ background: on ? 'var(--surface2)' : '' }}>
+                          <td><input type="checkbox" checked={on} onChange={() => toggle(i)} /></td>
+                          <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{i.name}</td>
+                          <td>{i.quantity.toLocaleString()}</td>
+                          <td style={{ minWidth: 110 }}>
+                            <input type="number" min="0" max={i.quantity} value={on ? q : ''} disabled={!on}
+                              onChange={e => setQty(i, e.target.value)} placeholder="—" style={{ width: 100 }} />
+                          </td>
+                          <td style={{ color: 'var(--text)', fontSize: 12 }}>{i.volume != null ? i.volume + ' m³' : '—'}</td>
+                          <td style={{ color: 'var(--text)', fontSize: 12 }}>{on && i.volume ? fmtVol(i.volume * q) : '—'}</td>
+                          <td style={{ color: 'var(--accent)', fontSize: 12 }}>{on && i.price ? fmtIsk(i.price * q) : '—'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )
+        )}
+
+        {/* destination + mode */}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
+          <div style={{ minWidth: 200 }}>
+            <L>Target system</L>
+            <SystemSearch value={targetSystem} onChange={setTargetSystem} placeholder="destination…" />
+          </div>
+          <div>
+            <L>Mode</L>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {['regular', 'jf'].map(m => (
+                <button key={m} className={`btn btn-sm ${mode === m ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setMode(m)}>
+                  {m === 'jf' ? 'Jump Freighter' : 'Regular'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ minWidth: 180 }}>
+            <L>Sender character</L>
+            {chars.length > 0
+              ? <select value={sender} onChange={e => setSender(e.target.value)}>
+                  <option value="">— none —</option>
+                  {chars.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+              : <input value={sender} onChange={e => setSender(e.target.value)} placeholder="character name…" />}
+          </div>
+        </div>
+
+        {/* mode params */}
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+          {mode === 'regular' ? (
+            <>
+              <div style={{ width: 130 }}>
+                <L>Jumps (blank = auto)</L>
+                <input type="number" min="0" value={jumps} onChange={e => setJumps(e.target.value)}
+                  placeholder={calc?.jumps_auto ? `auto ${calc.jumps}` : 'auto'} />
+              </div>
+              <div style={{ width: 140 }}>
+                <L>ISK / jump / m³</L>
+                <input type="number" min="0" value={iskPerJumpM3} onChange={e => setIskPerJumpM3(e.target.value)} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ width: 150 }}>
+                <L>Jump freighter</L>
+                <select value={jfShip} onChange={e => setJfShip(e.target.value)}>
+                  {JF_SHIPS.map(s => <option key={s.ship} value={s.ship}>{s.ship}</option>)}
+                </select>
+              </div>
+              <div style={{ alignSelf: 'center', fontSize: 12, color: 'var(--text)' }}>
+                fuel: <b style={{ color: 'var(--accent)' }}>{curIso}</b>
+              </div>
+              <div style={{ width: 120 }}>
+                <L>Isotopes / ly</L>
+                <input type="number" min="0" value={isotopesPerLy} onChange={e => setIsotopesPerLy(e.target.value)} />
+              </div>
+              <div style={{ width: 140 }}>
+                <L>Isotope price (ISK)</L>
+                <input type="number" min="0" value={isotopePrice} onChange={e => setIsotopePrice(e.target.value)} />
+              </div>
+              <label style={{ fontSize: 12, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'center' }}>
+                <input type="checkbox" checked={roundTrip} onChange={e => setRoundTrip(e.target.checked)} /> round trip
+              </label>
+            </>
+          )}
+        </div>
+
+        {/* summary + send */}
+        <div style={{ display: 'flex', gap: 14, marginTop: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Stat label="Items" value={selectedItems.length} />
+          <Stat label="Volume" value={totalVolume > 0 ? fmtVol(totalVolume) : '—'} />
+          <Stat label="Collateral" value={totalValue > 0 ? fmtIsk(totalValue) : '—'} />
+          {mode === 'jf' && calc && <Stat label="Light years" value={calc.light_years ?? '—'} />}
+          {mode === 'jf' && calc && <Stat label="Trips / isotopes" value={`${calc.trips ?? 0} / ${(calc.total_isotopes ?? 0).toLocaleString()}`} />}
+          {mode === 'regular' && calc && <Stat label="Jumps" value={calc.jumps ?? '—'} />}
+          <Stat label="Ship cost" value={calcing ? '…' : calc ? `${fmtIsk(calc.est_cost)} (${fmtIsk(calc.cost_per_m3)}/m³)` : '—'} />
+          <button className="btn btn-primary" onClick={send} disabled={sending || selectedItems.length === 0 || !targetSystem} style={{ marginLeft: 'auto' }}>
+            {sending ? 'Sending…' : '📦 Send to pending'}
+          </button>
+        </div>
+        {calc?.warnings?.length > 0 && (
+          <div className="warning-box" style={{ marginTop: 10 }}>{calc.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}</div>
+        )}
+      </div>
+
+      {/* send result */}
+      {sendResult && (
+        <div style={{ background: '#0e2a1a', border: '1px solid #2e6b44', borderRadius: 6, padding: '14px 18px', marginBottom: 16 }}>
+          <div style={{ color: '#4caf7d', fontWeight: 600, fontSize: 14, marginBottom: 8 }}>
+            ✓ Delivery {sendResult.code} created — pending
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 11, color: 'var(--text)', whiteSpace: 'nowrap' }}>Contract comment:</span>
+            <code style={{ flex: 1, fontSize: 11, background: 'var(--surface3)', padding: '5px 10px', borderRadius: 4, color: 'var(--text-white)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {sendResult.comment}
+            </code>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard.writeText(sendResult.comment)}>Copy</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setSendResult(null)}>✕</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── DELIVERIES TABLE ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 15, color: 'var(--text-white)' }}>Deliveries</h3>
+        <button className="btn btn-ghost btn-sm" onClick={loadDeliveries}>Refresh</button>
+      </div>
+      {deliveries.length === 0
+        ? <div className="empty-state">No deliveries yet</div>
+        : (
+          <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Code</th><th>Status</th><th>Mode</th><th>Project</th><th>Target</th>
+                  <th>Volume</th><th>Collateral</th><th>Ship cost</th><th>Items</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {deliveries.map(d => {
+                  const st = STATUS_STYLE[d.status] || STATUS_STYLE.pending
+                  return (
+                    <tr key={d.id}>
+                      <td style={{ color: 'var(--text-white)', fontFamily: 'monospace', fontSize: 12 }}>{d.code}</td>
+                      <td><span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: st.bg, color: st.color }}>{st.label}</span></td>
+                      <td style={{ fontSize: 12 }}>{d.mode === 'jf' ? `JF ${d.jf_ship || ''}` : 'Regular'}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{projName(d.project_id)}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{d.target_system || '—'}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{d.total_volume ? fmtVol(d.total_volume) : '—'}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{d.total_value ? fmtIsk(d.total_value) : '—'}</td>
+                      <td style={{ color: 'var(--accent)', fontSize: 12 }}>{d.est_cost ? fmtIsk(d.est_cost) : '—'}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{(d.items_snapshot || []).length}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {d.status === 'pending' && (
+                          <>
+                            <button className="btn btn-ghost btn-sm" title="Mark completed" onClick={() => setStatus(d, 'completed')} style={{ marginRight: 3, padding: '3px 7px' }}>✅</button>
+                            <button className="btn btn-ghost btn-sm" title="Mark failed" onClick={() => setStatus(d, 'failed')} style={{ marginRight: 3, padding: '3px 7px' }}>❌</button>
+                          </>
+                        )}
+                        <button className="btn btn-ghost btn-sm" title="Copy comment" onClick={() => navigator.clipboard.writeText(d.comment || '')} style={{ marginRight: 3, padding: '3px 7px' }}>📋</button>
+                        <button className="btn btn-danger btn-sm" title="Delete" onClick={() => removeDelivery(d)}>✕</button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      }
     </div>
   )
 }
