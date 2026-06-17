@@ -7,6 +7,7 @@ import RegisterPage from './pages/RegisterPage'
 import Layout from './pages/Layout'
 import InventoryPage from './pages/InventoryPage'
 import ManufacturingPage from './pages/ManufacturingPage'
+import OreAcquisitionPage from './pages/OreAcquisitionPage'
 import OrganisationsHub from './pages/OrganisationsHub'
 import PersonalFilePage from './pages/PersonalFilePage'
 
@@ -26,6 +27,7 @@ export default function App() {
             <Route element={<Layout />}>
               <Route index element={<Navigate to="/manufacturing" replace />} />
               <Route path="/manufacturing" element={<ManufacturingPage />} />
+              <Route path="/ore"           element={<OreAcquisitionPage />} />
               <Route path="/inventory"     element={<InventoryPage />} />
               <Route path="/market"        element={
                 <Suspense fallback={<div className="empty-state">Loading market…</div>}>

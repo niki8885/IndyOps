@@ -17,6 +17,21 @@ SKILL_ADVANCED_INDUSTRY = 3388  # −3%/level job time (manufacturing + reaction
 SKILL_ACCOUNTING = 16622        # −11%/level sales (transaction) tax
 SKILL_BROKER_RELATIONS = 3446   # −0.30%/level broker fee
 
+# ── reprocessing / refining skills ────────────────────────────────────────────
+SKILL_REPROCESSING = 3385             # +3%/level reprocessing yield
+SKILL_REPROCESSING_EFFICIENCY = 3389  # +2%/level reprocessing yield
+# Ore-specific *Processing* skills (+2%/level, applies only to that ore family).
+SKILL_ORE_PROCESSING = {
+    "Veldspar": 12180, "Scordite": 12181, "Pyroxeres": 12182, "Plagioclase": 12183,
+    "Omber": 12184, "Kernite": 12185, "Jaspet": 12186, "Hemorphite": 12187,
+    "Hedbergite": 12188, "Gneiss": 12189, "Dark Ochre": 12190, "Crokite": 12192,
+    "Bistot": 12193, "Arkonor": 12194, "Mercoxit": 12195, "Spodumain": 12191,
+    "Ice": 18025,
+}
+_REPROCESSING_PER_LVL = 0.03
+_REPROCESSING_EFF_PER_LVL = 0.02
+_ORE_PROCESSING_PER_LVL = 0.02
+
 # Job-time reductions per skill level (fraction of base time).
 _INDUSTRY_PER_LVL = 0.04
 _ADV_INDUSTRY_PER_LVL = 0.03
@@ -63,6 +78,28 @@ def broker_fee_pct(skills: Mapping[int, int],
            - BROKER_PER_FACTION_STANDING_PCT * max(0.0, faction_standing)
            - BROKER_PER_CORP_STANDING_PCT * max(0.0, corp_standing))
     return max(BROKER_MIN_PCT, fee)
+
+
+def reprocessing_skill_mult(reprocessing_lvl: int, efficiency_lvl: int,
+                            ore_specific_lvl: int = 0) -> float:
+    """Multiplicative skill bonus to reprocessing yield, stacked like EVE:
+    ``(1+0.03·Reprocessing)·(1+0.02·ReprocessingEfficiency)·(1+0.02·OreSpecific)``.
+    Perfect skills (5/5/5) give ×1.15·1.10·1.10 ≈ ×1.391."""
+    return ((1 + _REPROCESSING_PER_LVL * max(0, reprocessing_lvl))
+            * (1 + _REPROCESSING_EFF_PER_LVL * max(0, efficiency_lvl))
+            * (1 + _ORE_PROCESSING_PER_LVL * max(0, ore_specific_lvl)))
+
+
+def reprocessing_yield_mult(skills: Mapping[int, int],
+                            ore_specific_skill_id: int | None = None) -> float:
+    """Reprocessing skill multiplier from a ``{skill_id: level}`` map. Looks up the
+    general Reprocessing/Reprocessing Efficiency levels and, if given, the supplied
+    ore-specific Processing skill."""
+    return reprocessing_skill_mult(
+        _lvl(skills, SKILL_REPROCESSING),
+        _lvl(skills, SKILL_REPROCESSING_EFFICIENCY),
+        _lvl(skills, ore_specific_skill_id) if ore_specific_skill_id else 0,
+    )
 
 
 @dataclass(frozen=True)
