@@ -527,6 +527,19 @@ class EsiIndustryJob(Base):
     probability = Column(Float, nullable=True)
 
 
+class EsiStanding(Base):
+    """A character's NPC standing (toward a faction / npc_corp / agent). Used to
+    estimate the broker-fee reduction a selling character gets."""
+    __tablename__ = "esi_standings"
+    __table_args__ = (UniqueConstraint("character_id", "from_id", name="uq_esi_standing"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    from_id = Column(Integer, nullable=False)
+    from_type = Column(String(20), nullable=True)  # 'faction' | 'npc_corp' | 'agent'
+    standing = Column(Float, nullable=True)
+
+
 def get_db():
     db = SessionLocal()
     try:

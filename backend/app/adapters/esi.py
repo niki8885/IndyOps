@@ -246,3 +246,8 @@ def fetch_industry_jobs(character_id: int, token: str) -> list:
         token,
         params={"include_completed": "true"},
     )
+
+
+def fetch_standings(character_id: int, token: str) -> list:
+    """NPC standings (faction / npc_corp / agent) for the character."""
+    return _esi_get(f"/characters/{character_id}/standings/", token)

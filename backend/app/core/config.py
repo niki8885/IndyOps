@@ -34,6 +34,7 @@ ESI_SCOPES = [
     "esi-assets.read_assets.v1",
     "esi-contracts.read_character_contracts.v1",
     "esi-industry.read_character_jobs.v1",
+    "esi-characters.read_standings.v1",
 ]
 
 ESI_USER_AGENT = os.getenv(

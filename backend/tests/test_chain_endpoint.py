@@ -96,7 +96,7 @@ def test_chain_assignment_summarises_plan_by_facility():
 
 
 def test_bp_report_runs_needed_and_bpc_shortfall():
-    # W is made in 3 single-run jobs (max_runs 1, qty 3); a BPC with 2 runs → shortfall 1.
+    # W needs 3 runs (qty 3); a BPC with 2 runs → shortfall 1 regardless of job batching.
     from types import SimpleNamespace
     loc = RecipeLocation(1, "P", "manufacturing")
     nodes = {

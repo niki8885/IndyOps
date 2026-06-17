@@ -49,3 +49,22 @@ def test_t1_cruiser_counts_only_the_basic_rig():
     ]
     eff = effective_bonuses(rigs, "null", _CAT_SHIP, "Cruiser", meta_group_id=None)
     assert eff.me_pct == pytest.approx(2.0 * 2.1)        # basic only
+
+
+LARGE = "Standup L-Set Basic Large Ship Manufacturing Material Efficiency"
+CAPITAL = "Standup L-Set Capital Ship Manufacturing Efficiency"
+
+
+def test_large_rig_applies_to_battleship_not_capital():
+    """The reported bug: a Raven (Battleship) was matched by a Capital rig. A Large
+    Ship rig must cover battleship-class hulls and a Capital rig must not."""
+    assert rig_applies(LARGE, _CAT_SHIP, "Battleship", meta_group_id=None) is True
+    assert rig_applies(LARGE, _CAT_SHIP, "Dreadnought", meta_group_id=None) is False
+
+
+def test_capital_rig_applies_to_capitals_not_battleship():
+    assert rig_applies(CAPITAL, _CAT_SHIP, "Dreadnought", meta_group_id=None) is True
+    assert rig_applies(CAPITAL, _CAT_SHIP, "Carrier", meta_group_id=None) is True
+    assert rig_applies(CAPITAL, _CAT_SHIP, "Capital Industrial Ship", meta_group_id=None) is True
+    # Raven is a Battleship — the Capital rig must NOT apply (the original bug).
+    assert rig_applies(CAPITAL, _CAT_SHIP, "Battleship", meta_group_id=None) is False

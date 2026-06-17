@@ -64,4 +64,7 @@ ENV RISK_ENGINE_BIN=/usr/local/bin/risk-engine
 EXPOSE 8000
 
 # Apply migrations (best-effort; create_all is the fallback) then serve.
-CMD ["sh", "-c", "python -m app.migrate; uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# --proxy-headers + --forwarded-allow-ips=* so uvicorn trusts the X-Forwarded-Proto
+# set by nginx; without it FastAPI's trailing-slash redirects are emitted as http://
+# behind the HTTPS edge and the browser blocks them as mixed content.
+CMD ["sh", "-c", "python -m app.migrate; uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]

@@ -12,7 +12,7 @@ from app.core import config
 from app.core.database import (
     get_db, SessionLocal, UserDB,
     LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob,
-    InventoryItem, ProductionJob,
+    EsiStanding, InventoryItem, ProductionJob,
 )
 from app.core.database_eve import EveSessionLocal, EveType, EveStation
 from app.core.schemas import ProductionStatus
@@ -185,7 +185,7 @@ def _char_out(c: LinkedCharacter) -> dict:
     }
 
 
-@router.get("/", summary="List my linked EVE characters")
+@router.get("", summary="List my linked EVE characters")
 async def list_characters(
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -226,7 +226,7 @@ async def delete_character(
 ):
     char = _owned_char(db, char_id, current_user)
     cid = char.character_id
-    for model in (EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob):
+    for model in (EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob, EsiStanding):
         db.query(model).filter(model.character_id == cid).delete(synchronize_session=False)
     db.delete(char)
     db.commit()

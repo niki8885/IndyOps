@@ -28,6 +28,18 @@ adjQty base runs meMult = max runs (fromInteger (ceiling (fromIntegral (base * r
 adjTime :: Int -> Int -> Rational -> Int
 adjTime base runs teMult = fromInteger (ceiling (fromIntegral (base * runs) * teMult))
 
+-- EVE caps a single industry job at 30 days of run time. We split runs by this limit
+-- (not the blueprint maxProductionLimit). Mirrors chain._runs_per_job exactly.
+maxJobSeconds :: Rational
+maxJobSeconds = 2592000
+
+runsPerJob :: Recipe -> RecipeLocation -> Int -> Int
+runsPerJob recipe loc totalRuns =
+  let perRun = fromIntegral (rcBaseTime recipe) * locTeMult loc
+  in if rcBaseTime recipe > 0 && perRun > 0
+       then max 1 (fromInteger (floor (maxJobSeconds / perRun)))
+       else totalRuns
+
 -- phase 1: decide
 
 type Memo = M.Map Int NodeDecision
@@ -141,7 +153,7 @@ plan req decs = (jobs, shopping, total)
                  recipe = ndRecipes node !! fromMaybe 0 (dRecipeIndex dec)
                  loc = chooseLoc recipe (dPlaceId dec)
                  totalRuns = ceiling (fromIntegral need / fromIntegral (rcQtyPerRun recipe) :: Rational)
-                 cap = fromMaybe totalRuns (rcMaxRuns recipe)
+                 cap = runsPerJob recipe loc totalRuns
                  (newJobs, consumed) = foldl' (mkJob node recipe loc) ([], M.empty) (splitRuns cap totalRuns)
                  (demand', shop') = M.foldlWithKey' (pushConsume dec) (demand, shop) consumed
              in (demand', jacc ++ newJobs, shop')

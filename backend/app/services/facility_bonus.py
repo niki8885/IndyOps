@@ -77,8 +77,13 @@ def _ship_size(group_name: Optional[str]) -> Optional[str]:
         return "small"
     if any(k in g for k in ("cruiser", "battlecruiser")):
         return "medium"
-    if any(k in g for k in ("battleship", "freighter", "dreadnought", "carrier",
-                            "capital", "titan", "supercarrier", "industrial ship")):
+    # Capital-class hulls are their own rig family — checked *before* "large" because a
+    # "capital industrial ship" (Rorqual) carries both words. Capital Ship Manufacturing
+    # rigs cover only these; Large Ship rigs cover battleship-class hulls only.
+    if any(k in g for k in ("dreadnought", "carrier", "supercarrier", "titan", "capital",
+                            "force auxiliary")):
+        return "capital"
+    if any(k in g for k in ("battleship", "freighter", "industrial ship")):
         return "large"
     return None
 
@@ -145,6 +150,9 @@ def _base_rig_applies(n: str, cat_id: Optional[int], group_name: Optional[str],
         if cat_id != _CAT_SHIP:
             return False
         size = _ship_size(group_name)
+        # "capital" first: a Capital Ship Manufacturing rig must not match a battleship
+        # (large) just because it lacks the word "large".
+        if "capital" in n: return size == "capital"
         if "small" in n:  return size == "small"
         if "medium" in n: return size == "medium"
         if "large" in n:  return size == "large"
