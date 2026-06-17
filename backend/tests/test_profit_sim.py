@@ -248,6 +248,86 @@ def test_path_mode_runs_with_and_without_garch():
         assert m.n_batches >= 2
 
 
+def _anchored_hist(level_mult: float):
+    """History whose RAW level sits ``level_mult`` away from the anchor — so a path that
+    centres on the history (the old bug) lands far from the deterministic price, while a
+    correctly anchored path lands on the anchor regardless of where history sits."""
+    rng = np.random.default_rng(11)
+
+    def ou(level, n=80, vol=0.04, spread=0.03):
+        x, b, s = math.log(level), [], []
+        for _ in range(n):
+            x = 0.85 * x + 0.15 * math.log(level) + rng.standard_normal() * vol
+            b.append(math.exp(x)); s.append(math.exp(x) * (1 + spread))
+        return b, s
+
+    b1, s1 = ou(100.0 * level_mult)
+    b2, s2 = ou(2000.0 * level_mult)
+    # anchors = the deterministic resolved prices the plan used (independent of history level)
+    return {
+        1: ps.TypeHistory(buy=b1, sell=s1, volume=[8000] * 80, last_buy=b1[-1],
+                          anchor_buy=100.0, anchor_sell=103.0),
+        2: ps.TypeHistory(buy=b2, sell=s2, volume=[3000] * 80, last_sell=s2[-1],
+                          anchor_buy=2000.0, anchor_sell=2060.0),
+    }
+
+
+def _means(hist, **pk):
+    req = ps.request_from_legs("a", [(1, 10)], 2, 5, hist, 250.0, 7200,
+                               ps.SimParams(n_iterations=40_000, seed=4, dist_mode=0,
+                                            slippage=0.5, **pk),
+                               broker_fee_pct=3.6, sales_tax_pct=2.0)
+    m = ps.simulate(req).metrics
+    return m.breakdown["material_cost"]["mean"], m.breakdown["revenue"]["mean"]
+
+
+def test_path_mode_anchored_to_deterministic_price():
+    """Regression for the 'too pessimistic / too optimistic with GARCH-ARIMA' bug. The
+    AR(1)/OU(+GARCH) path must centre on the deterministic resolved price (anchor), not on
+    the raw-history level, and must not inflate via volatility drag. So E[material] ≈
+    10·100 and E[revenue] ≈ 5·2060 even when the raw history sits at 3× those prices —
+    and the path means track the static (one-shot) means closely."""
+    hist = _anchored_hist(level_mult=3.0)         # raw history at 3× the anchor
+    s_mat, s_rev = _means(hist)                            # static (anchored) baseline
+    for garch in (0, 1):
+        p_mat, p_rev = _means(hist, path_steps=24, garch=garch)
+        assert p_mat == pytest.approx(s_mat, rel=0.08)    # path tracks static, not history
+        assert p_rev == pytest.approx(s_rev, rel=0.08)
+        assert p_mat == pytest.approx(1000.0, rel=0.10)   # anchored to 10·100, not 10·300
+        assert p_rev == pytest.approx(5 * 2060.0, rel=0.10)
+
+
+def test_path_mode_mean_stable_across_horizon():
+    """Volatility-drag guard: with the martingale (−½σ²) correction the expected price is a
+    martingale, so E[material]/E[revenue] stay ~flat as the horizon lengthens (only the
+    dispersion grows). Before the fix, exponentiating a drift-free log walk inflated the
+    mean by exp(½Στσ²) — here that would blow the long-horizon means well past any tol."""
+    hist = _anchored_hist(level_mult=1.0)
+    m24, r24 = _means(hist, path_steps=24, garch=1)
+    m96, r96 = _means(hist, path_steps=96, garch=1)
+    assert m96 == pytest.approx(m24, rel=0.06)
+    assert r96 == pytest.approx(r24, rel=0.06)
+
+
+def test_path_mode_robust_to_sparse_high_vol_history():
+    """Whole-model robustness: a sparse, wildly volatile history (<4 points → the per-step
+    vol falls back to the level dispersion / cap) used to make the product price — priced
+    at the terminal step — so heavy-tailed that its Monte-Carlo mean stopped converging,
+    swinging E[revenue] many-fold run-to-run (the reported 'too optimistic for some'). The
+    terminal-σ cap bounds the horizon variance, so even at the longest horizon the means
+    stay anchored to the deterministic price (10·100 material, 5·2060 revenue)."""
+    hist = {
+        1: ps.TypeHistory(buy=[50, 400, 90], sell=[55, 420, 95], volume=[200] * 3,
+                          last_buy=90, anchor_buy=100.0, anchor_sell=106.0),
+        2: ps.TypeHistory(buy=[800, 5000, 2000], sell=[820, 5200, 2100], volume=[50] * 3,
+                          last_sell=2100, anchor_buy=2000.0, anchor_sell=2060.0),
+    }
+    for steps in (24, 168):
+        mat, rev = _means(hist, path_steps=steps, garch=1)
+        assert mat == pytest.approx(1000.0, rel=0.12)
+        assert rev == pytest.approx(5 * 2060.0, rel=0.12)
+
+
 def test_auto_t_df_estimated_from_data():
     hist = _hist_set()
     req = ps.request_from_legs("h", [(1, 10)], 2, 5, hist, 250.0, 7200,

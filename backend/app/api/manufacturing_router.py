@@ -23,7 +23,7 @@ from app.adapters import sim_data
 from app.api import simulation_router as sim_router
 from app.api.simulation_router import SimParamsIn
 from app.repositories import eve as eve_repo
-from app.services.chain import LocationParams, PlannedJob, from_bom
+from app.services.chain import REACTION, LocationParams, PlannedJob, from_bom
 from app.services.costing import plan_fifo
 from app.services.facility_bonus import (
     EC_COST_ROLE, EC_MATERIAL_ROLE, RigBonus, band_of, effective_bonuses,
@@ -415,6 +415,18 @@ class ChainCalcRequest(BaseModel):
     # Nodes the user chose to build even if buying is cheaper (force make): their buy
     # price is dropped so the core must make them. Symmetric to force_buy.
     force_make: List[int] = []
+    # Manual blueprint (BPC) cost. ``bpc_cost`` is the TOTAL ISK of the *target's*
+    # blueprint for this build (invention/BPC purchase), amortised over the produced
+    # quantity; default 0 (already owned / negligible). ``bpc_cost_per_unit`` is an
+    # advanced per-node override (product_type_id -> ISK per output unit) for costing
+    # intermediate blueprints. Both fold into the make cost and the sim's fixed cost, and
+    # WIN over any owned-blueprint estimate.
+    bpc_cost: float = 0.0
+    bpc_cost_per_unit: dict[int, float] = {}
+    # Reactions. True (default) = produce reaction intermediates in-house when cheaper.
+    # False = buy reaction components from market instead of running reactions (every
+    # reaction-activity node is force-bought; a reaction with no buy price stays makeable).
+    include_reactions: bool = True
     # Owned blueprints: apply their ME/TE (and a BPC's cost) per node. With
     # use_owned_blueprints the backend auto-picks (BPO else best BPC); blueprint_selection
     # (product_type_id -> blueprint_id) overrides the pick for a node.
@@ -841,6 +853,12 @@ async def calculate_chain(
     for tid, me_te in body.me_te_overrides.items():
         if isinstance(me_te, (list, tuple)) and len(me_te) == 2:
             node_overrides[int(tid)] = (int(me_te[0]), int(me_te[1]))
+    # Manual blueprint (BPC) cost — wins over the owned-blueprint estimate. The target's
+    # total is amortised over the produced quantity; per-unit entries apply directly.
+    if body.bpc_cost and body.qty > 0:
+        bpc_unit[body.product_type_id] = body.bpc_cost / body.qty
+    for tid, per_unit in body.bpc_cost_per_unit.items():
+        bpc_unit[int(tid)] = float(per_unit)
     req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, facilities,
                    bpc_unit=bpc_unit, node_overrides=node_overrides,
                    time_mult_man=tm_man, time_mult_react=tm_react)
@@ -849,6 +867,16 @@ async def calculate_chain(
     # them. Guard nodes that have nothing to buy — leave them makeable.
     forced_skipped: list[int] = []
     force_buy_ids = set(body.force_buy)
+    # Reactions off → buy every reaction-activity node instead of producing it (except the
+    # target itself: "no reactions" can't mean "don't build the thing you asked for").
+    reaction_node_ids: set[int] = set()
+    if not body.include_reactions:
+        reaction_node_ids = {
+            tid for tid, nd in tree.items()
+            if tid != body.product_type_id and nd.get("recipes")
+            and all(rc["activity"] == REACTION for rc in nd["recipes"])
+        }
+        force_buy_ids |= reaction_node_ids
     for tid in force_buy_ids:
         n = req.nodes.get(tid)
         if not n or not n.recipes:
@@ -898,6 +926,10 @@ async def calculate_chain(
         "price_flags": {str(t): fl for t, fl in price_flags.items()},
         "force_buy_skipped": forced_skipped,
         "force_make_skipped": forced_make_skipped,
+        "include_reactions": body.include_reactions,
+        # reaction nodes actually bought (force-buy succeeded), vs. left makeable (no buy price)
+        "reactions_bought": sorted(reaction_node_ids - set(forced_skipped)),
+        "bpc_cost_applied": {str(t): float(c) for t, c in bpc_unit.items() if c},
         "bp_report": _bp_report(plan, chosen_bps),
         "blueprint_selection": {str(t): bp.id for t, bp in chosen_bps.items()},
         "produce_character": _profile_out(produce_profile),

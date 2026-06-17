@@ -935,6 +935,8 @@ function ChainTab() {
     flag_unrealistic: true, unrealistic_ratio: 30,   // drop buys below 30% of adjusted
     broker_fee_pct: 3.6,   // sell-side broker fee
     sales_tax_pct: 2.0,    // sell-side sales tax
+    bpc_cost: 0,           // manual blueprint cost for the target (total ISK; 0 = owned/free)
+    include_reactions: true, // false = buy reaction components instead of running reactions
   })
 
   // ── (1) Buy-price region multi-select ──
@@ -1124,6 +1126,8 @@ function ChainTab() {
         max_depth: Number(params.max_depth),
         force_buy: [...fb],
         force_make: [...fm],
+        bpc_cost: Number(params.bpc_cost) || 0,
+        include_reactions: params.include_reactions !== false,
         produce_character_id: produceCharId ? Number(produceCharId) : null,
         sell_character_id: sellCharId ? Number(sellCharId) : null,
         simulate: !!sim.on,
@@ -1385,6 +1389,17 @@ function ChainTab() {
           <NumField label="Final ME" value={params.final_me} onChange={setP('final_me')} step={1} min={0} max={10} />
           <NumField label="Final TE" value={params.final_te} onChange={setP('final_te')} step={1} min={0} max={20} />
           <NumField label="Max depth" value={params.max_depth} onChange={setP('max_depth')} min={1} max={20} />
+          <NumField label="Blueprint cost (target)" value={params.bpc_cost} onChange={setP('bpc_cost')}
+                    step={1000000} min={0} placeholder="0" />
+          <div>
+            <CLabel>Reactions <Hint>make or buy</Hint></CLabel>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginTop: 5,
+              color: 'var(--text-white)' }}>
+              <input type="checkbox" checked={params.include_reactions !== false}
+                onChange={e => setParams(p => ({ ...p, include_reactions: e.target.checked }))} />
+              Run reactions in-house
+            </label>
+          </div>
           <div>
             <CLabel>Blueprints <Hint>use ME/TE you own</Hint></CLabel>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginTop: 5,

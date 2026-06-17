@@ -238,7 +238,14 @@ def _path_prices(req: SimRequest, rng: np.random.Generator, n: int, m: int, nvar
             sig = np.sqrt(np.maximum(sig2, 1e-300))
         else:
             sig = step_sig[None, :] + np.zeros((n, nvars))
-        x = x + ar_phi[None, :] * (theta[None, :] - x) + sig * eps_t
+        # Martingale (Itô) drift correction. Exponentiating a log-price random walk
+        # inflates E[price] by exp(½·Στσ²) (volatility drag / Jensen's inequality), so
+        # the simulated mean drifts away from the deterministic anchor — explosively over
+        # a long horizon. That is the GARCH/AR-path bug: revenue balloons (reads "too
+        # optimistic") or material cost balloons (reads "too pessimistic"), depending only
+        # on the raw-history shape. Subtracting ½σ_t² each step makes exp(x) a martingale
+        # so E[price] stays on the anchor and only the *dispersion* grows with the horizon.
+        x = x + ar_phi[None, :] * (theta[None, :] - x) - 0.5 * sig ** 2 + sig * eps_t
         prev_eps, prev_sig = eps_t, sig
         if tau == 0:
             x_step1 = x.copy()
@@ -503,13 +510,42 @@ def _leg_marginals(side_hist: list[float], point: Optional[float], default_sigma
     return mu, sigma, grid
 
 
-def _fit_process(series: list[float], mu_fb: float, sigma_fb: float, params: SimParams):
-    """AR(1)/OU + GARCH(1,1)"""
+# Absolute per-step log-return volatility cap. The AR(1) fit on a sparse history can return
+# the price-*level* dispersion (or the 0.30 default) as the per-step vol. 0.5 (≈50%/step)
+# is far above any real EVE daily vol yet bounds the worst single-step case.
+_MAX_STEP_SIGMA = 0.5
+
+# Cap on the *terminal* log-price standard deviation over the whole path. The product is
+# priced at the final step, so its accumulated variance ≈ H·σ²; a bad sparse fit (σ near
+# the cap above) over a long horizon makes that price so heavy-tailed its Monte-Carlo mean
+# stops converging — long-horizon E[revenue] then swings wildly run-to-run. Bounding the
+# per-step σ by ``_MAX_TERMINAL_SD/√H`` keeps the total holding-horizon uncertainty sane
+# (price 1σ band ≈ [0.3×, 3.3×]) regardless of horizon, so the path mean is reliable.
+# Real fitted vols (a few %/step) sit far below this, so genuine risk is untouched — only
+# the pathological sparse-data case is clamped. Request-build only → no parity impact.
+_MAX_TERMINAL_SD = 1.2
+
+
+def _fit_process(series: list[float], mu_fb: float, sigma_fb: float, params: SimParams,
+                 anchor: Optional[float] = None):
+    """AR(1)/OU + GARCH(1,1) process params for the price path.
+
+    History supplies only the *shape* — persistence ``phi`` and per-step vol
+    ``step_sigma``. The *level* (``theta``/``x0``) is anchored to the deterministic
+    resolved price the plan used, exactly like the static marginal anchoring
+    (``_leg_marginals``): a risk sim must centre on the point estimate, not on the raw
+    history level, which can sit far from the price the plan paid. Without this the path
+    drifts to the history level and (with the un-corrected exponentiation) explodes."""
     phi, step_sigma, theta, x0 = market_model.fit_ar1(series)
     if step_sigma <= 0.0:
         step_sigma = sigma_fb if sigma_fb > 0 else 0.30
+    # Cap per-step vol absolutely, then by the horizon so terminal dispersion stays bounded.
+    horizon = max(1, int(params.path_steps))
+    step_sigma = min(step_sigma, _MAX_STEP_SIGMA, _MAX_TERMINAL_SD / math.sqrt(horizon))
     if not series:
         theta, x0 = mu_fb, mu_fb
+    if anchor and anchor > 0:                    # centre the path on the plan's price
+        theta = x0 = math.log(anchor)
     omega = market_model.garch_omega(step_sigma, params.garch_alpha, params.garch_beta)
     return phi, step_sigma, theta, x0, omega
 
@@ -539,9 +575,10 @@ def request_from_legs(label: str, leg_specs: list[tuple[int, int]], product_type
     group_ids: list[int] = []
     for tid, qty in leg_specs:
         h = hist.get(tid) or TypeHistory()
-        mu, sigma, grid = _leg_marginals(h.buy, h.anchor_buy or h.last_buy, default_sigma)
+        anchor = h.anchor_buy or h.last_buy
+        mu, sigma, grid = _leg_marginals(h.buy, anchor, default_sigma)
         series = h.buy if h.buy else ([h.last_buy] if h.last_buy else [])
-        phi, step_sigma, theta, x0, omega = _fit_process(series, mu, sigma, params)
+        phi, step_sigma, theta, x0, omega = _fit_process(series, mu, sigma, params, anchor=anchor)
         legs.append(LegInput(
             type_id=tid, qty=int(qty), mu=mu, sigma=sigma, qgrid=grid,
             vol_mean=float(np.mean(h.volume)) if h.volume else 0.0,
@@ -554,9 +591,10 @@ def request_from_legs(label: str, leg_specs: list[tuple[int, int]], product_type
         group_ids.append(h.group_id)
 
     ph = hist.get(product_type_id) or TypeHistory()
-    pmu, psigma, pgrid = _leg_marginals(ph.sell, ph.anchor_sell or ph.last_sell, default_sigma)
+    panchor = ph.anchor_sell or ph.last_sell
+    pmu, psigma, pgrid = _leg_marginals(ph.sell, panchor, default_sigma)
     pseries = ph.sell if ph.sell else ([ph.last_sell] if ph.last_sell else [])
-    pphi, pstep, ptheta, px0, pomega = _fit_process(pseries, pmu, psigma, params)
+    pphi, pstep, ptheta, px0, pomega = _fit_process(pseries, pmu, psigma, params, anchor=panchor)
     product = ProductInput(
         type_id=product_type_id, qty=int(product_qty), mu=pmu, sigma=psigma, qgrid=pgrid,
         vol_mean=float(np.mean(ph.volume)) if ph.volume else 0.0,
