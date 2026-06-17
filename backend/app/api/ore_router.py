@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import statistics
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -26,7 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.adapters import market
-from app.core.database import UserDB
+from app.core.database import UserDB, get_db, LinkedCharacter, EsiSkill
 from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType
 from app.core.security import get_current_user
 from app.repositories import eve as eve_repo
@@ -34,6 +35,7 @@ from app.services import delivery as dsvc
 from app.services import facility_bonus
 from app.services import ore_acquisition as oa
 from app.services import pricing
+from app.services import skills as skills_svc
 from app.services.refining import RefineSetup, RigYield, compute_yield, reprocess
 
 router = APIRouter()
@@ -317,6 +319,118 @@ async def catalog(
     return {
         "minerals": eve_repo.mineral_catalog(eve_db),
         "ores": eve_repo.ore_catalog(eve_db, compressed=compressed),
+    }
+
+
+def _try_num(s: str) -> Optional[float]:
+    try:
+        return float(s.replace(",", "").replace(" ", ""))
+    except (ValueError, AttributeError):
+        return None
+
+
+_QTY_LINE = re.compile(r"^(.*?)(?:\s+|\s*x\s*)([\d.,\s]+)$", re.IGNORECASE)
+
+
+def _parse_need_lines(text: str) -> list[tuple[str, float]]:
+    """Parse pasted lines into (name, qty). Handles EVE clipboard / multibuy / fitting
+    formats: ``Name<tab>Qty``, ``Qty<tab>Name``, ``Name 1000``, ``Name x1000``,
+    ``Name 1,000`` and bare ``Name`` (qty 0)."""
+    out: list[tuple[str, float]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "\t" in line:
+            a, b = (line.split("\t") + [""])[:2]
+            a, b = a.strip(), b.strip()
+            qa, qb = _try_num(a), _try_num(b)
+            if qa is not None and qb is None:
+                out.append((b, qa))
+            elif qb is not None:
+                out.append((a, qb))
+            else:
+                out.append((a, 0.0))
+            continue
+        m = _QTY_LINE.match(line)
+        if m and _try_num(m.group(2)) is not None:
+            out.append((m.group(1).strip(), _try_num(m.group(2))))
+        else:
+            out.append((line, 0.0))
+    return out
+
+
+class ParseNeedsRequest(BaseModel):
+    text: str
+
+
+@router.post("/parse-minerals")
+async def parse_minerals(
+        body: ParseNeedsRequest,
+        current_user: UserDB = Depends(get_current_user),
+        eve_db: Session = Depends(_get_eve_db),
+):
+    """Parse a pasted list and keep only the minerals (summing duplicates).
+
+    Returns ``needs`` ready to feed the comparison, plus the names it skipped
+    (recognised but not a mineral) and the ones it could not match.
+    """
+    parsed = _parse_need_lines(body.text or "")
+    if not parsed:
+        return {"needs": [], "skipped_non_mineral": [], "unmatched": []}
+
+    resolved = eve_repo.types_by_name(eve_db, [n for n, _ in parsed])
+    tids = [r["type_id"] for r in resolved.values()]
+    groups = {tid: gid for tid, gid in
+              eve_db.query(EveType.type_id, EveType.group_id).filter(EveType.type_id.in_(tids or [-1])).all()}
+
+    agg: dict[int, dict] = {}
+    skipped: list[str] = []
+    unmatched: list[str] = []
+    for name, qty in parsed:
+        r = resolved.get(name.lower())
+        if not r:
+            unmatched.append(name)
+            continue
+        if groups.get(r["type_id"]) != eve_repo.GROUP_MINERAL:
+            skipped.append(r["name"])
+            continue
+        a = agg.setdefault(r["type_id"], {"type_id": r["type_id"], "name": r["name"], "qty": 0.0})
+        a["qty"] += qty
+
+    return {
+        "needs": sorted(agg.values(), key=lambda x: x["type_id"]),
+        "skipped_non_mineral": sorted(set(skipped)),
+        "unmatched": sorted(set(unmatched)),
+    }
+
+
+@router.get("/character-skills")
+async def character_skills(
+        character_id: int = Query(..., description="LinkedCharacter.id"),
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Reprocessing-relevant skill levels for one of the user's linked characters,
+    to prefill the refining form. ``ore_specific_max`` is the highest ore-processing
+    level trained (a reasonable single value for the multi-ore comparison)."""
+    char = db.query(LinkedCharacter).filter(
+        LinkedCharacter.id == character_id, LinkedCharacter.user_id == current_user.id).first()
+    if not char:
+        raise HTTPException(404, "Character not found")
+    levels = {s.skill_id: (s.trained_level or 0)
+              for s in db.query(EsiSkill).filter(EsiSkill.character_id == char.character_id).all()}
+    ore_specific = [
+        {"ore": ore, "skill_id": sid, "level": levels.get(sid, 0)}
+        for ore, sid in skills_svc.SKILL_ORE_PROCESSING.items()
+    ]
+    return {
+        "character_id": char.id,
+        "character_name": char.character_name,
+        "reprocessing_lvl": levels.get(skills_svc.SKILL_REPROCESSING, 0),
+        "efficiency_lvl": levels.get(skills_svc.SKILL_REPROCESSING_EFFICIENCY, 0),
+        "ore_specific": ore_specific,
+        "ore_specific_max": max((o["level"] for o in ore_specific), default=0),
     }
 
 

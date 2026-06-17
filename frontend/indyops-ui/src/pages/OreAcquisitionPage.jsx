@@ -112,6 +112,26 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
 function RefineSetup({ refine, setRefine, rigs }) {
   const set = (k, v) => setRefine({ ...refine, [k]: v })
+  const [chars, setChars] = useState([])
+  const [charId, setCharId] = useState('')
+  const [charMsg, setCharMsg] = useState('')
+
+  useEffect(() => { get('/characters').then(setChars).catch(() => {}) }, [])
+
+  async function loadChar(id) {
+    setCharId(id); setCharMsg('')
+    if (!id) return
+    try {
+      const s = await get(`/ore/character-skills?character_id=${id}`)
+      setRefine({
+        ...refine,
+        reprocessing_lvl: s.reprocessing_lvl,
+        efficiency_lvl: s.efficiency_lvl,
+        ore_specific_lvl: s.ore_specific_max,
+      })
+      setCharMsg(`Loaded ${s.character_name}: Reproc ${s.reprocessing_lvl} · Eff ${s.efficiency_lvl} · ore-specific ${s.ore_specific_max}`)
+    } catch (e) { setCharMsg(e.message) }
+  }
   const lvl = (k) => (
     <select value={refine[k]} onChange={e => set(k, Number(e.target.value))} style={{ width: '100%' }}>
       {[0, 1, 2, 3, 4, 5].map(l => <option key={l} value={l}>{l}</option>)}
@@ -123,6 +143,16 @@ function RefineSetup({ refine, setRefine, rigs }) {
   }
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 14px' }}>
+      {chars.length > 0 && (
+        <div style={{ gridColumn: '1 / -1', marginBottom: 6 }}>
+          <Field label="Load skills from character" hint={charMsg || 'or enter levels manually below'}>
+            <select value={charId} onChange={e => loadChar(e.target.value)} style={{ width: '100%' }}>
+              <option value="">— manual —</option>
+              {chars.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+            </select>
+          </Field>
+        </div>
+      )}
       <Field label="Base yield" hint="structure / station base">
         <div style={{ display: 'flex', gap: 4 }}>
           <input type="number" step="0.01" value={refine.base_yield}
@@ -213,6 +243,22 @@ function ComparisonTab({ rigs, hubs, cj }) {
     setNeeds({ ...needs, [tid]: { ...needs[tid], qty: num(qty) } })
   }
 
+  const [pasteText, setPasteText] = useState('')
+  const [pasteMsg, setPasteMsg] = useState('')
+  async function parseList() {
+    if (!pasteText.trim()) return
+    try {
+      const r = await post('/ore/parse-minerals', { text: pasteText })
+      const merged = { ...needs }
+      r.needs.forEach(n => { merged[n.type_id] = { name: n.name, qty: n.qty, on: true } })
+      setNeeds(merged)
+      const parts = [`✓ ${r.needs.length} minerals`]
+      if (r.skipped_non_mineral.length) parts.push(`skipped ${r.skipped_non_mineral.length} non-mineral`)
+      if (r.unmatched.length) parts.push(`${r.unmatched.length} unmatched`)
+      setPasteMsg(parts.join(' · '))
+    } catch (e) { setPasteMsg(e.message) }
+  }
+
   async function run() {
     const chosenNeeds = Object.entries(needs).filter(([, v]) => v.on)
       .map(([tid, v]) => ({ type_id: Number(tid), qty: v.qty }))
@@ -265,6 +311,16 @@ function ComparisonTab({ rigs, hubs, cj }) {
         </Panel>
 
         <Panel title="Resources needed">
+          <details style={{ marginBottom: 8 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--accent)' }}>Paste a list (auto-extracts minerals)</summary>
+            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={4}
+                      placeholder={'Tritanium\t1000\nPyerite 5000\nMexallon x250…'}
+                      style={{ width: '100%', marginTop: 6, fontFamily: 'monospace', fontSize: 12 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+              <button className="btn btn-sm" onClick={parseList}>Parse</button>
+              {pasteMsg && <span style={{ fontSize: 11, color: 'var(--text)' }}>{pasteMsg}</span>}
+            </div>
+          </details>
           <div style={{ maxHeight: 200, overflowY: 'auto' }}>
             {minerals.map(m => (
               <div key={m.type_id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
