@@ -61,7 +61,7 @@ testWidget =
               `andM` check "widget: WIDGET make" (fmap dDecision (dec 1) == Just "make")
               `andM` check "widget: A make 200" ((dec 2 >>= dUnitCost) == Just (200 % 1))
               `andM` check "widget: RAW buy" (fmap dDecision (dec 3) == Just "buy")
-              `andM` check "widget: A split 3x10" (map pjRuns aJobs == [10, 10, 10])
+              `andM` check "widget: A one job (30d limit, not maxRuns)" (map pjRuns aJobs == [30])
               `andM` check "widget: RAW qty 615" (map slQty rawShop == [615])
 
 
