@@ -34,6 +34,24 @@ def test_broker_fee_drops_with_relations_and_standings_and_floors():
     assert skills.broker_fee_pct({skills.SKILL_BROKER_RELATIONS: 5}, -10.0, -10.0) == pytest.approx(1.5)
 
 
+def test_reprocessing_skill_mult_stacks_three_skills():
+    # (1+0.03×5)(1+0.02×5)(1+0.02×5) = 1.15 × 1.10 × 1.10
+    assert skills.reprocessing_skill_mult(5, 5, 5) == pytest.approx(1.15 * 1.10 * 1.10)
+    assert skills.reprocessing_skill_mult(0, 0, 0) == 1.0
+    # ore-specific skill is optional and defaults to none
+    assert skills.reprocessing_skill_mult(5, 5) == pytest.approx(1.15 * 1.10)
+
+
+def test_reprocessing_yield_mult_reads_skill_map():
+    s = {skills.SKILL_REPROCESSING: 5, skills.SKILL_REPROCESSING_EFFICIENCY: 4,
+         skills.SKILL_ORE_PROCESSING["Veldspar"]: 3}
+    expect = (1 + 0.03 * 5) * (1 + 0.02 * 4) * (1 + 0.02 * 3)
+    got = skills.reprocessing_yield_mult(s, skills.SKILL_ORE_PROCESSING["Veldspar"])
+    assert got == pytest.approx(expect)
+    # without naming the ore skill, only the general skills apply
+    assert skills.reprocessing_yield_mult(s) == pytest.approx((1 + 0.15) * (1 + 0.08))
+
+
 def test_profile_bundles_everything():
     s = {skills.SKILL_INDUSTRY: 4, skills.SKILL_ADVANCED_INDUSTRY: 3,
          skills.SKILL_ACCOUNTING: 5, skills.SKILL_BROKER_RELATIONS: 4}

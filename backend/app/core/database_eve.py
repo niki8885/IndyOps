@@ -95,6 +95,22 @@ class EveType(EveBase):
     sound_id = Column(Integer, nullable=True)
 
 
+class EveTypeMaterial(EveBase):
+    """invTypeMaterials — what one *portion* of a type reprocesses/refines into.
+
+    For ore and compressed ore this is the mineral yield; the row ``quantity`` is
+    the perfect (100%) output for one ``EveType.portion_size`` batch of ``type_id``.
+    Effective yield = quantity × facility/skill/rig multipliers × (1 − tax).
+    Also covers reprocessing of modules/ships, but the Ore-Acquisition feature only
+    reads ore → mineral rows. See [[indyops-chain-calculator]].
+    """
+    __tablename__ = "eve_type_materials"
+
+    type_id = Column(Integer, primary_key=True, index=True)
+    material_type_id = Column(Integer, primary_key=True, index=True)
+    quantity = Column(BigInteger, nullable=True)
+
+
 class EveMetaType(EveBase):
     """invMetaTypes — an item's tech level (meta group).
 
@@ -178,6 +194,28 @@ class EveRigBonus(EveBase):
     me_bonus = Column(Float, nullable=True)
     te_bonus = Column(Float, nullable=True)
     cost_bonus = Column(Float, nullable=True)
+    hisec_mod = Column(Float, nullable=True)
+    lowsec_mod = Column(Float, nullable=True)
+    nullsec_mod = Column(Float, nullable=True)
+
+
+class EveReprocessingRig(EveBase):
+    """
+    Structure reprocessing-yield rigs (Standup M-Set … Reprocessing), pivoted from
+    dgmTypeAttributes like :class:`EveRigBonus`.
+
+    ``yield_bonus`` is the rig's reprocessing-yield bonus as a *positive* percentage
+    (e.g. 2.0 = +2% yield). The effective bonus = ``yield_bonus × security modifier``
+    for the refinery's system (hi 1.0 / low 1.9 / null & WH 2.1), matching the
+    engineering-rig convention. ``group_id`` keys the rig's specialisation (general
+    vs ore-specific). The attribute id carrying the bonus is resolved by *name* from
+    dgmAttributeTypes at import time — see ``update_reprocessing_rigs``.
+    """
+    __tablename__ = "eve_reprocessing_rigs"
+
+    type_id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, nullable=True, index=True)
+    yield_bonus = Column(Float, nullable=True)
     hisec_mod = Column(Float, nullable=True)
     lowsec_mod = Column(Float, nullable=True)
     nullsec_mod = Column(Float, nullable=True)
