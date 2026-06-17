@@ -1,5 +1,4 @@
 import asyncio
-import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 import requests as _requests
@@ -8,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
+from app.adapters import market
 from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveRegion, EveGroup
 from app.core.database import UserDB
 from app.core.security import get_current_user
@@ -151,30 +151,6 @@ async def search_types(
     ]
 
 
-_ESI_SYSTEMS_URL = "https://esi.evetech.net/latest/industry/systems/?datasource=tranquility"
-_ESI_COST_CACHE: dict = {"data": None, "ts": 0.0}
-_ESI_COST_TTL = 3600  # cache the whole table for 1h (it updates ~daily)
-
-
-def _fetch_esi_cost_indices() -> dict:
-    """Fetch + cache the full ESI industry cost-index table, keyed by solar_system_id."""
-    now = _time.time()
-    if _ESI_COST_CACHE["data"] is not None and now - _ESI_COST_CACHE["ts"] < _ESI_COST_TTL:
-        return _ESI_COST_CACHE["data"]
-
-    resp = _requests.get(_ESI_SYSTEMS_URL, timeout=30, headers={"User-Agent": "IndyOps/1.0"})
-    resp.raise_for_status()
-
-    table = {}
-    for entry in resp.json():
-        table[entry["solar_system_id"]] = {
-            ci["activity"]: ci["cost_index"] for ci in entry.get("cost_indices", [])
-        }
-    _ESI_COST_CACHE["data"] = table
-    _ESI_COST_CACHE["ts"] = now
-    return table
-
-
 @router.get("/industry/cost-index")
 async def get_cost_index(
         system_name: Optional[str] = None,
@@ -199,7 +175,7 @@ async def get_cost_index(
         solar_system_id = sys.solar_system_id
 
     try:
-        indices = _fetch_esi_cost_indices().get(solar_system_id)
+        indices = market.esi_cost_indices().get(solar_system_id)
     except Exception as exc:
         raise HTTPException(502, f"ESI request failed: {exc}")
 

@@ -1,14 +1,4 @@
-"""
-Parity: the Haskell port (haskell/chain-engine) must agree with the Python core
-(the oracle) on the same requests. Both run exact rational arithmetic, so parity
-is **strict equality** — every field, including money (carried as Fraction /
-[num,den]), matches exactly.
-
-Skipped automatically where the binary isn't built (CHAIN_ENGINE_BIN or the
-default haskell/chain-engine/bin/chain-engine[.exe]).
-"""
 import pytest
-
 from app.adapters import chain_engine
 from app.services.chain import ChainRequest, Node, Recipe, RecipeLocation, solve_chain
 
@@ -62,6 +52,18 @@ def _req_shared_dag():
     })
 
 
+def _req_shared_made_dag():
+    # Shared *made* intermediate S feeding two made parents — exercises the topo
+    # make-order (reverse post-order). Both engines must sum S's demand identically.
+    return ChainRequest(1, 3, {
+        1: Node(1, "ROOT", 1e12, (_recipe([(2, 1), (3, 1)]),)),
+        2: Node(2, "A", 1e9, (_recipe([(4, 1)]),)),
+        3: Node(3, "B", 1e9, (_recipe([(4, 1)]),)),
+        4: Node(4, "S", 1e9, (_recipe([(5, 5)]),)),
+        5: Node(5, "RAW", 100.0),
+    })
+
+
 def _req_buy_beats_make():
     return ChainRequest(1, 4, {
         1: Node(1, "WIDGET", 100000.0, (_recipe([(2, 10)]),)),
@@ -112,6 +114,7 @@ REQUESTS = {
     "install_me_scc": _req_install_me_scc,
     "reaction": _req_reaction,
     "shared_dag": _req_shared_dag,
+    "shared_made_dag": _req_shared_made_dag,
     "buy_beats_make": _req_buy_beats_make,
     "messy_rationals": _req_messy_rationals,
     "multi_location": _req_multi_location,
@@ -137,7 +140,8 @@ def test_haskell_matches_python(name):
     assert set(py.decisions) == set(hs.decisions)
     for t in py.decisions:
         a, b = py.decisions[t], hs.decisions[t]
-        assert (a.decision, a.recipe_index, a.place_id) == (b.decision, b.recipe_index, b.place_id)
+        assert ((a.decision, a.recipe_index, a.place_id, a.activity)
+                == (b.decision, b.recipe_index, b.place_id, b.activity))
         assert _approx(a.unit_cost, b.unit_cost)
         assert _approx(a.unit_make, b.unit_make)
         assert _approx(a.unit_buy, b.unit_buy)

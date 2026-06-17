@@ -29,6 +29,9 @@ const STATUS_COLOR = {
 const MARKETS = ['Jita', 'C-J']
 const METHODS = ['Buy', 'Split', 'Sell']
 
+// EVE item icon CDN — lets each chain node show what the component actually is.
+const iconUrl = (id, size = 32) => `https://images.evetech.net/types/${id}/icon?size=${size}`
+
 // Engineering complexes (Raitaru/Azbel/Sotiyo) manufacture; refineries (Athanor/
 // Tatara) run reactions. Default a facility's chain slots to what its type can do.
 const REACTION_FAC = new Set(['Athanor', 'Tatara'])
@@ -124,6 +127,10 @@ function CalculatorTab() {
   const [bpInfo, setBpInfo]         = useState(null)     // blueprint info from API
   const [facilities, setFacilities] = useState([])
   const [projects, setProjects]     = useState([])
+  // Character selection: producer (job-time skills) + seller (sell-side fees).
+  const [characters, setCharacters]   = useState([])
+  const [produceCharId, setProduceCharId] = useState('')
+  const [sellCharId, setSellCharId]   = useState('')
 
   const [params, setParams] = useState({
     runs: 1, windows: 1, me: 0, te: 0,
@@ -172,6 +179,7 @@ function CalculatorTab() {
 
   useEffect(() => {
     get('/facilities').then(setFacilities).catch(() => {})
+    get('/characters').then(setCharacters).catch(() => {})
     get('/organisations').then(async orgs => {
       const all = []
       for (const o of orgs) {
@@ -251,6 +259,8 @@ function CalculatorTab() {
         material_prices: Object.entries(matPrices)
           .filter(([, v]) => v !== '')
           .map(([type_id, unit_cost]) => ({ type_id: Number(type_id), unit_cost: Number(unit_cost) })),
+        produce_character_id: produceCharId ? Number(produceCharId) : null,
+        sell_character_id: sellCharId ? Number(sellCharId) : null,
       })
       setResult(res)
     } catch (e) { setError(e.message) }
@@ -493,6 +503,24 @@ function CalculatorTab() {
               {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
           </div>
+          {characters.length > 0 && (
+            <div>
+              <CLabel>Producing char <Hint>job time from Industry / Adv. Industry</Hint></CLabel>
+              <select value={produceCharId} onChange={e => setProduceCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+          )}
+          {characters.length > 0 && (
+            <div>
+              <CLabel>Selling char <Hint>sales tax + broker fee from skills/standings</Hint></CLabel>
+              <select value={sellCharId} onChange={e => setSellCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+          )}
           <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />
           <NumField label="Facility Tax %" value={params.facility_tax_pct} onChange={setP('facility_tax_pct')} step={0.1} />
           <NumField label="Structure Bonus %" value={params.structure_bonus_pct} onChange={setP('structure_bonus_pct')} step={0.1} />
@@ -900,10 +928,13 @@ function ChainTab() {
   // global chain params
   const [params, setParams] = useState({
     qty: 1, price_basis: 'buy',
-    me_pct: 0, te_pct: 0,
+    me_pct: 0, te_pct: 0,           // COMPONENT default ME/TE (intermediate blueprints)
+    final_me: 0, final_te: 0,       // FINAL product blueprint ME/TE (often unresearched)
     system_cost_index: 0, facility_tax_pct: 0, structure_discount_pct: 0,
     man_lines: 10, react_lines: 0, max_depth: 12,
     flag_unrealistic: true, unrealistic_ratio: 30,   // drop buys below 30% of adjusted
+    broker_fee_pct: 3.6,   // sell-side broker fee
+    sales_tax_pct: 2.0,    // sell-side sales tax
   })
 
   // ── (1) Buy-price region multi-select ──
@@ -915,12 +946,21 @@ function ChainTab() {
   const [sellMethod, setSellMethod] = useState('Sell')
   const [sellPrice, setSellPrice]   = useState(null)
   const [sellLoading, setSellLoading] = useState(false)
+  const [customSell, setCustomSell] = useState('')   // manual sell price (sellMethod='Custom')
 
   // ── (3) Facility mode: 'none' = single + manual, 'multi' = checklist ──
   const [facilityMode, setFacilityMode] = useState('none')
   const [singleFacilityId, setSingleFacilityId] = useState('')
   // facilityChecks: { [id]: { checked: bool, man: number, react: number } }
   const [facilityChecks, setFacilityChecks] = useState({})
+  // Live reaction cost index per reaction-facility id (from ESI by system). Reaction
+  // jobs cost on this index, not the facility's stored manufacturing SCI.
+  const [reactSci, setReactSci] = useState({})
+  // Character selection: producer drives job time (Industry/Adv-Industry); seller drives
+  // sell-side fees (Accounting sales tax + Broker Relations/standings broker fee).
+  const [characters, setCharacters] = useState([])
+  const [produceCharId, setProduceCharId] = useState('')
+  const [sellCharId, setSellCharId] = useState('')
 
   // advanced: manual multi-location structures (used when facilityMode='none')
   const [structures, setStructures] = useState([])
@@ -930,7 +970,8 @@ function ChainTab() {
   const [result, setResult]   = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
-  const [forceBuy, setForceBuy] = useState(new Set())   // nodes the user chose to skip making
+  const [forceBuy, setForceBuy] = useState(new Set())    // nodes forced to buy (skip making)
+  const [forceMake, setForceMake] = useState(new Set())  // nodes forced to make (even if buying is cheaper)
   // IO-22: optional Monte-Carlo profit simulation run alongside the chain calc
   const [sim, setSim] = useState({
     on: false, n_iterations: 25000, dist_mode: 0, corr_mode: 0,
@@ -953,7 +994,28 @@ function ChainTab() {
       setFacilityChecks(checks)
     }).catch(() => {})
     get('/blueprints').then(setOwnedBPs).catch(() => {})
+    get('/characters').then(setCharacters).catch(() => {})
   }, [])
+
+  // Resolve the live reaction cost index for each reaction facility's system (one call
+  // per unique system), so the table shows the index reaction jobs actually cost on.
+  useEffect(() => {
+    const reactFacs = facilities.filter(f => REACTION_FAC.has(f.facility_type) && f.system_name)
+    const systems = [...new Set(reactFacs.map(f => f.system_name))]
+    if (!systems.length) return
+    let cancelled = false
+    Promise.all(systems.map(sys =>
+      get(`/eve/industry/cost-index?system_name=${encodeURIComponent(sys)}`)
+        .then(r => [sys, r?.reaction]).catch(() => [sys, null])
+    )).then(pairs => {
+      if (cancelled) return
+      const bySys = Object.fromEntries(pairs)
+      const map = {}
+      reactFacs.forEach(f => { if (bySys[f.system_name] != null) map[f.id] = bySys[f.system_name] })
+      setReactSci(map)
+    })
+    return () => { cancelled = true }
+  }, [facilities])
 
   // auto-fill global params when single facility selected
   useEffect(() => {
@@ -1027,9 +1089,15 @@ function ChainTab() {
   async function calculate(fbSet, opts = {}) {
     if (!product?.type_id) return
     const fb = fbSet instanceof Set ? fbSet : forceBuy
+    const fm = opts.fmSet instanceof Set ? opts.fmSet : forceMake
     const useBP = opts.useBP ?? useBlueprints
     const bpSel = opts.bpSel ?? bpSelection
     const meTe = opts.meTe ?? meTeOverrides
+    // Final-product blueprint ME/TE: apply as the target's override unless the user set
+    // it per-node. Component default (me_pct/te_pct) covers every other node.
+    const meTeSend = (product?.type_id != null && meTe[product.type_id] == null)
+      ? { ...meTe, [product.type_id]: [Number(params.final_me) || 0, Number(params.final_te) || 0] }
+      : meTe
     setLoading(true); setError('')
     try {
       const activeStructures = facilityMode === 'multi' ? multiStructures : structures
@@ -1042,7 +1110,7 @@ function ChainTab() {
         include_cj: includeCJ,
         use_owned_blueprints: useBP,
         blueprint_selection: bpSel,
-        me_te_overrides: meTe,
+        me_te_overrides: meTeSend,
         flag_unrealistic: params.flag_unrealistic,
         unrealistic_ratio: Number(params.unrealistic_ratio) / 100,
         facility_id: singleFacilityId && facilityMode === 'none' ? Number(singleFacilityId) : null,
@@ -1055,6 +1123,9 @@ function ChainTab() {
         react_lines: Number(params.react_lines),
         max_depth: Number(params.max_depth),
         force_buy: [...fb],
+        force_make: [...fm],
+        produce_character_id: produceCharId ? Number(produceCharId) : null,
+        sell_character_id: sellCharId ? Number(sellCharId) : null,
         simulate: !!sim.on,
         project_id: null,
         ...(sim.on ? {
@@ -1065,6 +1136,8 @@ function ChainTab() {
             copula: Number(sim.copula) || 0,
             path_steps: Number(sim.dynamics) > 0 ? 24 : 1,
             garch: Number(sim.dynamics) === 2 ? 1 : 0,
+            broker_fee_pct: Number(params.broker_fee_pct) || 0,   // keep sim fees in sync with the margin calc
+            sales_tax_pct: Number(params.sales_tax_pct) || 0,
           },
         } : {}),
         ...(activeStructures.length ? {
@@ -1083,14 +1156,18 @@ function ChainTab() {
       })
       setResult(res)
 
-      // auto-fetch sell price for profit calculation
-      setSellLoading(true)
-      try {
-        const prices = await fetchMarketPrices([product.type_id], sellMarket)
-        const p = prices[product.type_id]
-        setSellPrice(p?.[sellMethod] ?? null)
-      } catch {}
-      finally { setSellLoading(false) }
+      // auto-fetch sell price for profit calculation (skip when the user typed a price)
+      if (sellMethod === 'Custom') {
+        setSellLoading(false)
+      } else {
+        setSellLoading(true)
+        try {
+          const prices = await fetchMarketPrices([product.type_id], sellMarket)
+          const p = prices[product.type_id]
+          setSellPrice(p?.[sellMethod] ?? null)
+        } catch {}
+        finally { setSellLoading(false) }
+      }
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }
@@ -1102,7 +1179,26 @@ function ChainTab() {
     const next = new Set(forceBuy)
     next.has(tid) ? next.delete(tid) : next.add(tid)
     setForceBuy(next)
-    calculate(next)
+    calculate(next, { fmSet: forceMake })
+  }
+
+  // Swapper: force a node to MAKE or BUY (clears the opposite force), then re-solve.
+  // The decision the core returns then drives the highlight, both directions.
+  function setNodeMode(tid, mode) {
+    const nb = new Set(forceBuy), nm = new Set(forceMake)
+    nb.delete(tid); nm.delete(tid)
+    if (mode === 'buy') nb.add(tid)
+    else nm.add(tid)
+    setForceBuy(nb); setForceMake(nm)
+    calculate(nb, { fmSet: nm })
+  }
+
+  // Clear any forced mode on a node → back to the core's automatic make/buy choice.
+  function clearNodeMode(tid) {
+    const nb = new Set(forceBuy), nm = new Set(forceMake)
+    nb.delete(tid); nm.delete(tid)
+    setForceBuy(nb); setForceMake(nm)
+    calculate(nb, { fmSet: nm })
   }
 
   // owned blueprints keyed by the product they make
@@ -1134,6 +1230,12 @@ function ChainTab() {
     })
   }
   const reSolveMeTe = () => { if (product?.type_id) calculate(undefined, { meTe: meTeOverrides }) }
+  // Quick "max research" for one node: ME 10 / TE 20, then re-solve.
+  function setNodeMeTeMax(tid) {
+    const next = { ...meTeOverrides, [tid]: [10, 20] }
+    setMeTeOverrides(next)
+    if (product?.type_id) calculate(undefined, { meTe: next })
+  }
 
   const plan      = result?.plan
   const asg       = result?.assignment
@@ -1160,9 +1262,18 @@ function ChainTab() {
   const priceFlag = tid => priceFlags[tid] ?? priceFlags[String(tid)]
 
   const totalCost = result?.final_cost ?? plan?.total_cost ?? null
-  const totalSell = sellPrice != null && plan ? sellPrice * plan.target_qty : null
-  const profit    = totalSell != null && totalCost != null ? totalSell - totalCost : null
-  const margin    = profit != null && totalSell ? profit / totalSell * 100 : null
+  // 'Custom' = the user's own per-unit price; otherwise the fetched market price.
+  const sellPriceEff = sellMethod === 'Custom' ? (Number(customSell) || null) : sellPrice
+  const totalSell = sellPriceEff != null && plan ? sellPriceEff * plan.target_qty : null   // gross market value
+  // Revenue is net of sell-side fees (broker fee + sales tax), like real selling —
+  // without this the margin runs ~5 points high vs tools that subtract them (Ravworks).
+  // A chosen selling character's skill/standings fees take over the manual fields.
+  const sellFeePct = result?.sell_character
+    ? (result.sell_character.broker_fee_pct + result.sell_character.sales_tax_pct)
+    : (Number(params.broker_fee_pct) || 0) + (Number(params.sales_tax_pct) || 0)
+  const netSell   = totalSell != null ? totalSell * (1 - sellFeePct / 100) : null
+  const profit    = netSell != null && totalCost != null ? netSell - totalCost : null
+  const margin    = profit != null && netSell ? profit / netSell * 100 : null
 
   // estimated wall-clock build time: the dependency-staged schedule (global slot
   // caps) when available, else the busiest (facility, slot) line as a fallback.
@@ -1191,7 +1302,7 @@ function ChainTab() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px,1fr))', gap: 14 }}>
           <div style={{ gridColumn: '1 / -1' }}>
             <CLabel>Product to build (full chain)</CLabel>
-            <TypeSearch value={product} onChange={t => { setProduct(t?.type_id ? t : null); setForceBuy(new Set()) }} placeholder="Search product…" />
+            <TypeSearch value={product} onChange={t => { setProduct(t?.type_id ? t : null); setForceBuy(new Set()); setForceMake(new Set()) }} placeholder="Search product…" />
             <span style={{ fontSize: 11, color: 'var(--text)' }}>
               Whole build tree priced; each node decided make-vs-buy recursively.
             </span>
@@ -1251,11 +1362,28 @@ function ChainTab() {
                   className={`btn btn-sm ${sellMethod === m ? 'btn-primary' : 'btn-ghost'}`}
                   style={{ padding: '2px 8px', fontSize: 11 }}>{m}</button>
               ))}
+              <button type="button" onClick={() => setSellMethod('Custom')}
+                className={`btn btn-sm ${sellMethod === 'Custom' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ padding: '2px 8px', fontSize: 11 }} title="Enter your own sell price per unit">Custom</button>
+              {sellMethod === 'Custom' && (
+                <input type="number" step="0.01" min="0" value={customSell} onChange={e => setCustomSell(e.target.value)}
+                  placeholder="price/unit" style={{ width: 110, padding: '2px 4px', fontSize: 11 }} />
+              )}
+              <span style={{ fontSize: 11, color: 'var(--text)', marginLeft: 4 }} title="Broker fee taken off the sell side">Broker</span>
+              <input type="number" step="0.1" min="0" value={params.broker_fee_pct}
+                onChange={setP('broker_fee_pct')} style={{ width: 44, padding: '2px 4px', fontSize: 11 }} />
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>%</span>
+              <span style={{ fontSize: 11, color: 'var(--text)', marginLeft: 4 }} title="Sales tax taken off the sell side">Tax</span>
+              <input type="number" step="0.1" min="0" value={params.sales_tax_pct}
+                onChange={setP('sales_tax_pct')} style={{ width: 44, padding: '2px 4px', fontSize: 11 }} />
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>%</span>
             </div>
           </div>
 
-          <NumField label="Default ME" value={params.me_pct} onChange={setP('me_pct')} step={1} min={0} max={10} />
-          <NumField label="Default TE" value={params.te_pct} onChange={setP('te_pct')} step={1} min={0} max={20} />
+          <NumField label="Component ME" value={params.me_pct} onChange={setP('me_pct')} step={1} min={0} max={10} />
+          <NumField label="Component TE" value={params.te_pct} onChange={setP('te_pct')} step={1} min={0} max={20} />
+          <NumField label="Final ME" value={params.final_me} onChange={setP('final_me')} step={1} min={0} max={10} />
+          <NumField label="Final TE" value={params.final_te} onChange={setP('final_te')} step={1} min={0} max={20} />
           <NumField label="Max depth" value={params.max_depth} onChange={setP('max_depth')} min={1} max={20} />
           <div>
             <CLabel>Blueprints <Hint>use ME/TE you own</Hint></CLabel>
@@ -1282,6 +1410,36 @@ function ChainTab() {
             Use my facilities <Hint>all selected — each job built at its cheapest</Hint>
           </label>
         </div>
+
+        {/* ── character selection: producer (time/skills) + seller (fees/standings) ── */}
+        {characters.length > 0 && (
+          <div style={{ padding: '12px 16px', display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
+            <div>
+              <CLabel>Producing character <Hint>recalcs job time from Industry / Advanced Industry</Hint></CLabel>
+              <select value={produceCharId} onChange={e => setProduceCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <CLabel>Selling character <Hint>sales tax (Accounting) + broker fee (Broker Relations + standings)</Hint></CLabel>
+              <select value={sellCharId} onChange={e => setSellCharId(e.target.value)}>
+                <option value="">— none —</option>
+                {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
+              </select>
+            </div>
+            {result?.produce_character && (
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>
+                ⏱ time ×{result.produce_character.man_time_mult} mfg / ×{result.produce_character.react_time_mult} react
+              </span>
+            )}
+            {result?.sell_character && (
+              <span style={{ fontSize: 11, color: 'var(--text)' }}>
+                💰 sales {result.sell_character.sales_tax_pct}% · broker {result.sell_character.broker_fee_pct}%
+              </span>
+            )}
+          </div>
+        )}
 
         {/* ── job slots: a single per-character total, shared across all structures ── */}
         <div style={{ padding: '12px 16px', display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
@@ -1358,8 +1516,14 @@ function ChainTab() {
                           </td>
                           <td style={{ color: fc.checked ? 'var(--text-white)' : 'var(--text)', whiteSpace: 'nowrap' }}>{f.name}</td>
                           <td style={{ fontSize: 11, color: 'var(--text)' }}>{facilityActivity(f.facility_type)}</td>
-                          <td style={{ fontSize: 12, color: 'var(--text)' }}>
-                            {f.system_cost_index != null ? (f.system_cost_index * 100).toFixed(3) : '—'}
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}
+                              title={REACTION_FAC.has(f.facility_type) && reactSci[f.id] != null
+                                ? 'Reaction cost index (live from ESI)' : undefined}>
+                            {(() => {
+                              const isReact = REACTION_FAC.has(f.facility_type)
+                              const frac = isReact && reactSci[f.id] != null ? reactSci[f.id] : f.system_cost_index
+                              return frac != null ? (frac * 100).toFixed(3) : '—'
+                            })()}
                           </td>
                           <td style={{ fontSize: 12, color: 'var(--text)' }}>{f.tax != null ? f.tax : '—'}</td>
                           <td style={{ fontSize: 12, color: '#4caf7d' }}
@@ -1461,14 +1625,25 @@ function ChainTab() {
           {result.simulation && <SimulationPanel run={result.simulation} projectId={result.simulation.project_id} />}
           {/* ── Summary ── */}
           <Section title="Chain summary">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 12px 0' }}>
+              <img src={iconUrl(plan.target_type_id, 64)} alt="" width={40} height={40} loading="lazy"
+                style={{ borderRadius: 5, background: 'var(--surface3)', flexShrink: 0 }} />
+              <div>
+                <div style={{ color: 'var(--text-white)', fontWeight: 600, fontSize: 15 }}>
+                  {plan.decisions?.[plan.target_type_id]?.name || product?.name || `Type ${plan.target_type_id}`}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text)' }}>Producing ×{plan.target_qty}</div>
+              </div>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, padding: 12 }}>
               <IskStat label="Unit cost" value={plan.unit_cost} color="var(--accent)" bold />
               <IskStat label="Total production cost" value={totalCost} bold />
               {sellLoading
                 ? <div style={{ fontSize: 12, color: 'var(--text)' }}>Fetching sell price…</div>
-                : sellPrice != null
+                : sellPriceEff != null
                   ? <>
-                      <IskStat label={`Sell (${sellMarket} ${sellMethod})`} value={totalSell} color="#4caf7d" bold />
+                      <IskStat label={`Sell (${sellMethod === 'Custom' ? 'Custom' : `${sellMarket} ${sellMethod}`})`} value={totalSell} color="#4caf7d" bold />
+                      <IskStat label={`Net sell (−${sellFeePct.toFixed(1)}%)`} value={netSell} color="#4caf7d" />
                       <IskStat label="Profit" value={profit} color={profit >= 0 ? '#4caf7d' : '#e05252'} bold />
                       <div>
                         <div style={statLabel}>Margin</div>
@@ -1511,16 +1686,24 @@ function ChainTab() {
               <LegendDot color="#e0884f" label="skipped" />
               <span>Click a node to skip making it — the chain re-solves.</span>
             </div>
-            {forceBuy.size > 0 && (
+            {(forceBuy.size > 0 || forceMake.size > 0) && (
               <div style={{ padding: '0 12px 8px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                <span style={{ fontSize: 11, color: 'var(--text)' }}>Skipped:</span>
+                {forceBuy.size > 0 && <span style={{ fontSize: 11, color: 'var(--text)' }}>Forced buy:</span>}
                 {[...forceBuy].map(tid => (
-                  <button key={tid} type="button" onClick={() => toggleSkip(tid)} className="btn btn-sm"
-                    style={{ background: '#2a1d10', color: '#e0884f', border: '1px solid #5a3d1a', fontSize: 11, padding: '2px 8px' }}>
+                  <button key={`b${tid}`} type="button" onClick={() => clearNodeMode(tid)} className="btn btn-sm" title="Revert to auto"
+                    style={{ background: '#10202a', color: '#3a9bd6', border: '1px solid #1a3d5a', fontSize: 11, padding: '2px 8px' }}>
                     {plan.decisions[tid]?.name || tid} ✕
                   </button>
                 ))}
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setForceBuy(new Set()); calculate(new Set()) }}>Reset all</button>
+                {forceMake.size > 0 && <span style={{ fontSize: 11, color: 'var(--text)', marginLeft: 6 }}>Forced make:</span>}
+                {[...forceMake].map(tid => (
+                  <button key={`m${tid}`} type="button" onClick={() => clearNodeMode(tid)} className="btn btn-sm" title="Revert to auto"
+                    style={{ background: '#10260f', color: '#4caf7d', border: '1px solid #1a5a2a', fontSize: 11, padding: '2px 8px' }}>
+                    {plan.decisions[tid]?.name || tid} ✕
+                  </button>
+                ))}
+                <button type="button" className="btn btn-ghost btn-sm"
+                  onClick={() => { setForceBuy(new Set()); setForceMake(new Set()); calculate(new Set(), { fmSet: new Set() }) }}>Reset all</button>
               </div>
             )}
             <Suspense fallback={<div style={{ padding: 16, fontSize: 12, color: 'var(--text)' }}>Loading graph…</div>}>
@@ -1539,7 +1722,7 @@ function ChainTab() {
           {/* ── Make vs Buy ── */}
           <Section title={`Make vs Buy — ${decisions.length} nodes`}>
             <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--text)' }}>
-              ME / TE per item override the <b>Default ME / TE</b> above; edit a cell and click away to re-solve.
+              ME / TE per item override the <b>Component</b> default (the <b>Final</b> default applies to the end product); reactions are always 0/0. Edit a cell and click away to re-solve, or hit <b>max</b> for ME 10 / TE 20.
             </div>
             <table>
               <thead><tr><th>Item</th><th>ME</th><th>TE</th><th>Decision</th><th>Make /u</th><th>Buy /u</th><th>Chosen /u</th><th>Saved /u</th><th>Build?</th></tr></thead>
@@ -1548,22 +1731,33 @@ function ChainTab() {
                   const skipped = forceBuy.has(d.type_id)
                   const makeable = d.unit_make != null || skipped   // has a recipe we could run
                   const edited = meTeOverrides[d.type_id] != null
+                  const isReaction = d.activity === 11              // reactions ignore ME/TE → always 0/0
+                  const dash = <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>
+                  const zero = <span style={{ color: 'var(--border2)', fontSize: 11 }} title="Reactions ignore ME/TE">0</span>
                   return (
                   <tr key={d.type_id}>
-                    <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{d.name}</td>
-                    <td>
-                      {makeable
-                        ? <input type="number" min={0} max={10} style={{ width: 44, color: edited ? 'var(--accent)' : undefined }}
-                            value={nodeMe(d.type_id)} onChange={e => setNodeMeTe(d.type_id, 'me', e.target.value)}
-                            onBlur={reSolveMeTe} title="Material Efficiency for this blueprint (overrides Default ME)" />
-                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>}
+                    <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                        <img src={iconUrl(d.type_id, 32)} alt="" width={22} height={22} loading="lazy"
+                          style={{ borderRadius: 3, background: 'var(--surface3)', flexShrink: 0 }} />
+                        {d.name}
+                      </span>
                     </td>
                     <td>
-                      {makeable
-                        ? <input type="number" min={0} max={20} style={{ width: 44, color: edited ? 'var(--accent)' : undefined }}
-                            value={nodeTe(d.type_id)} onChange={e => setNodeMeTe(d.type_id, 'te', e.target.value)}
-                            onBlur={reSolveMeTe} title="Time Efficiency for this blueprint (overrides Default TE)" />
-                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>}
+                      {!makeable ? dash : isReaction ? zero
+                        : <input type="number" min={0} max={10} style={{ width: 44, color: edited ? 'var(--accent)' : undefined }}
+                            value={nodeMe(d.type_id)} onChange={e => setNodeMeTe(d.type_id, 'me', e.target.value)}
+                            onBlur={reSolveMeTe} title="Material Efficiency (overrides Component ME)" />}
+                    </td>
+                    <td>
+                      {!makeable ? dash : isReaction ? zero
+                        : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <input type="number" min={0} max={20} style={{ width: 44, color: edited ? 'var(--accent)' : undefined }}
+                              value={nodeTe(d.type_id)} onChange={e => setNodeMeTe(d.type_id, 'te', e.target.value)}
+                              onBlur={reSolveMeTe} title="Time Efficiency (overrides Component TE)" />
+                            <button type="button" onClick={() => setNodeMeTeMax(d.type_id)} title="Set max research ME 10 / TE 20"
+                              style={{ fontSize: 9, padding: '1px 4px', cursor: 'pointer' }}>max</button>
+                          </span>}
                     </td>
                     <td><DecisionBadge decision={d.decision} /></td>
                     <td>{d.unit_make != null ? fmtIsk(d.unit_make) : '—'}</td>
@@ -1574,9 +1768,17 @@ function ChainTab() {
                     </td>
                     <td>
                       {makeable
-                        ? <input type="checkbox" checked={!skipped} title="uncheck to skip making this (force buy)"
-                            onChange={() => toggleSkip(d.type_id)} />
-                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>—</span>}
+                        ? <span style={{ display: 'inline-flex', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                            {/* highlight the ACTUAL decision the core returned; the buttons
+                                force make/buy (force_make / force_buy) and re-solve */}
+                            <button type="button" title="Force-build this in-house"
+                              onClick={() => setNodeMode(d.type_id, 'make')}
+                              style={swapBtnStyle(d.decision === 'make', '#4caf7d')}>MAKE</button>
+                            <button type="button" title="Force-buy this instead of building"
+                              onClick={() => setNodeMode(d.type_id, 'buy')}
+                              style={swapBtnStyle(d.decision !== 'make', '#3a9bd6')}>BUY</button>
+                          </span>
+                        : <span style={{ color: 'var(--border2)', fontSize: 11 }}>buy only</span>}
                     </td>
                   </tr>
                   )
@@ -1880,6 +2082,15 @@ ${[...decisions].sort((a, b) => (b.saved_per_unit || 0) - (a.saved_per_unit || 0
 </tbody>
 </table>
 </body></html>`
+}
+
+// One segment of the make/buy swapper in the chain table. `active` side is filled.
+function swapBtnStyle(active, color) {
+  return {
+    border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 700, lineHeight: 1.4,
+    padding: '3px 9px', color: active ? '#08120c' : 'var(--text)',
+    background: active ? color : 'transparent',
+  }
 }
 
 function DecisionBadge({ decision }) {

@@ -39,9 +39,9 @@ def test_golden_two_tier_make():
     assert plan.unit_cost == 2050.0
     assert plan.total_cost == 6150.0          # 2050 × 3, integer runs divide cleanly
 
-    # A is needed 30 (10/widget × 3), split by max_runs=10 → 3 jobs.
+    # A is needed 30 (10/widget × 3). base_time 600s × 30 ≪ 30 days → one job, not split.
     a_jobs = [j for j in plan.jobs if j.type_id == 2]
-    assert [j.runs for j in a_jobs] == [10, 10, 10]
+    assert [j.runs for j in a_jobs] == [30]
     # WIDGET pulls a make-child (A) → not a tip; A's only input is RAW → a tip.
     assert [j.bounceable for j in plan.jobs if j.type_id == 1] == [False]
     assert all(j.bounceable for j in a_jobs)
@@ -49,6 +49,20 @@ def test_golden_two_tier_make():
     raw = [s for s in plan.shopping_list if s.type_id == 3][0]
     assert raw.qty == 615                      # 15 (widget) + 600 (3×A×200)
     assert raw.total == 6150.0
+
+
+def test_jobs_split_by_30_day_limit():
+    # base_time 12 days/run (1_036_800s) → at most floor(30d / 12d) = 2 runs per job.
+    # Need 5 → jobs [2, 2, 1] (split by the 30-day job limit, not maxProductionLimit).
+    twelve_days = 12 * 24 * 3600
+    slow = _recipe([(2, 1)], qpr=1, base_time=twelve_days, max_runs=1000)
+    nodes = {
+        1: Node(1, "W", 1e12, (slow,)),
+        2: Node(2, "RAW", 1.0),
+    }
+    plan = solve_chain(ChainRequest(1, 5, nodes))
+    w_jobs = [j for j in plan.jobs if j.type_id == 1]
+    assert [j.runs for j in w_jobs] == [2, 2, 1]
 
 
 def test_golden_buy_beats_make():
@@ -130,6 +144,27 @@ def test_property_shared_subtree_demand_sums():
     raw_lines = [s for s in plan.shopping_list if s.type_id == 4]
     assert len(raw_lines) == 1               # merged, not duplicated per parent
     assert raw_lines[0].qty == 10            # 3 (via A) + 7 (via B)
+
+
+def test_shared_made_intermediate_demand_sums():
+    # A *made* node S feeds two made parents A and B (like a composite reaction that
+    # feeds many capital components). Every parent's demand for S must be summed.
+    # Regression: the make-order was a pre-order, which processes S right after the
+    # FIRST parent and silently drops every later parent's demand → S's inputs and
+    # the whole total cost were undercounted (Anshar margin 54% instead of ~20%).
+    nodes = {
+        1: Node(1, "ROOT", 1e12, (_recipe([(2, 1), (3, 1)]),)),
+        2: Node(2, "A", 1e9, (_recipe([(4, 1)]),)),
+        3: Node(3, "B", 1e9, (_recipe([(4, 1)]),)),
+        4: Node(4, "S", 1e9, (_recipe([(5, 5)]),)),   # made shared intermediate
+        5: Node(5, "RAW", 100.0),                     # bought leaf
+    }
+    plan = solve_chain(ChainRequest(1, 1, nodes))
+    assert plan.decisions[4].decision == "make"
+    raw = [s for s in plan.shopping_list if s.type_id == 5][0]
+    assert raw.qty == 10                       # 2 × S × 5 RAW (NOT 5 — both parents counted)
+    # phase-2 plan total must equal the phase-1 recursive unit cost (no install here).
+    assert plan.total_cost == plan.unit_cost == 1000.0
 
 
 def test_property_total_matches_unit_when_clean():
@@ -333,3 +368,43 @@ def test_reactor_subtype_matches_product_family():
     # hybrid-polymer product → it does not
     req_h = from_bom(1, 10, _tree_reaction("Hybrid Polymers"), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
     assert req_h.nodes[1].recipes[0].locations[0].te_mult == 1.0
+
+
+# ── reaction cost index (#2) ────────────────────────────────────────────────────
+
+def test_reaction_node_uses_reaction_cost_index():
+    # A facility whose reaction index (0.02) differs from its manufacturing index
+    # (0.05): the reaction node must cost on the *reaction* index.
+    fac = LocationParams(20, "Tatara", can_man=False, can_react=True, sci=0.05, react_sci=0.02)
+    req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [fac])
+    loc = req.nodes[1].recipes[0].locations[0]
+    assert loc.slot_kind == "reaction" and loc.sci == 0.02
+
+
+def test_reaction_falls_back_to_mfg_index_when_react_sci_missing():
+    fac = LocationParams(20, "Tatara", can_man=False, can_react=True, sci=0.05)  # react_sci None
+    req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [fac])
+    assert req.nodes[1].recipes[0].locations[0].sci == 0.05
+
+
+def test_manufacturing_node_ignores_reaction_index():
+    fac = LocationParams(10, "Sotiyo", sci=0.05, react_sci=0.02)
+    req = from_bom(1, 1, _tree_one_tier(), {1: 1e12, 2: 1.0}, {2: 0.0}, [fac])
+    loc = req.nodes[1].recipes[0].locations[0]
+    assert loc.slot_kind == "manufacturing" and loc.sci == 0.05
+
+
+# ── producing-character skill time (#4 character selection) ──────────────────────
+
+def test_producing_char_time_mult_applies_to_manufacturing_te():
+    fac = LocationParams(10, "Sotiyo", te_mult=1.0)
+    req = from_bom(1, 1, _tree_one_tier(), {1: 1e12, 2: 1.0}, {2: 0.0}, [fac],
+                   time_mult_man=0.8, time_mult_react=0.85)
+    assert req.nodes[1].recipes[0].locations[0].te_mult == 0.8
+
+
+def test_producing_char_reaction_time_mult_applies_to_reaction_te():
+    fac = LocationParams(20, "Tatara", can_man=False, can_react=True, te_mult=1.0)
+    req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [fac],
+                   time_mult_man=0.8, time_mult_react=0.85)
+    assert req.nodes[1].recipes[0].locations[0].te_mult == 0.85

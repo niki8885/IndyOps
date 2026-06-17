@@ -67,6 +67,7 @@ data NodeDecision = NodeDecision
   , dRecipeIndex :: !(Maybe Int)
   , dPlaceId     :: !(Maybe Int)
   , dSaved       :: !Rational
+  , dActivity    :: !(Maybe Int)
   }
 
 data JobInput = JobInput
@@ -187,6 +188,7 @@ encDecision d = JObj
   , ("recipe_index", jMaybeInt (dRecipeIndex d))
   , ("place_id", jMaybeInt (dPlaceId d))
   , ("saved_per_unit", jRat (dSaved d))
+  , ("activity", jMaybeInt (dActivity d))
   ]
 
 encJob :: PlannedJob -> JValue

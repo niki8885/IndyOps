@@ -10,6 +10,7 @@ const NAV = [
   { to: '/market',        label: 'Market'         },
   { to: '/analysis',      label: 'Analysis'       },
   { to: '/organisations', label: 'Organisations'  },
+  { to: '/personal',      label: 'Personal File'  },
 ]
 
 export default function Layout() {

@@ -26,13 +26,17 @@ services:
     environment:
       SQLALCHEMY_DATABASE_URL: postgresql://${POSTGRES_USER:-indyops}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-indyops}
       SECRET_KEY: ${SECRET_KEY}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      CALLBACK_URL: ${CALLBACK_URL}
+      FRONTEND_URL: ${FRONTEND_URL:-}
     depends_on:
       db:
         condition: service_healthy
     networks:
       - internal
 
-  # Background collectors (indices / tracking / SDE) — out of the API process.
+  # Background collectors (indices / tracking / SDE / ESI) — out of the API process.
   worker:
     image: ghcr.io/niki8885/indyops-backend:latest
     restart: unless-stopped
@@ -40,7 +44,11 @@ services:
     environment:
       SQLALCHEMY_DATABASE_URL: postgresql://${POSTGRES_USER:-indyops}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-indyops}
       SECRET_KEY: ${SECRET_KEY}
-      RUN_DB_BOOTSTRAP: "0"        # the API container owns schema bootstrap
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      CALLBACK_URL: ${CALLBACK_URL}
+      FRONTEND_URL: ${FRONTEND_URL:-}
+      RUN_DB_BOOTSTRAP: "0"
     depends_on:
       db:
         condition: service_healthy
@@ -54,6 +62,9 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
     depends_on:
       - backend
     networks:

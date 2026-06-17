@@ -6,9 +6,13 @@ from fractions import Fraction
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.adapters import market
-from app.core.database import get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement, Blueprint
+from app.core.database import (
+    get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement, Blueprint,
+    LinkedCharacter, EsiSkill, EsiStanding,
+)
 from app.core.database_eve import (
     EveSessionLocal, EveType, EveRigBonus, EveGroup, EveSolarSystem,
 )
@@ -27,12 +31,16 @@ from app.services.facility_bonus import (
 from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_calculation
 from app.services.scheduling import stage_schedule
 from app.services.pricing import flag_unrealistic, resolve_price
+from app.services import skills as skills_svc
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
 REACTION_TYPES = (FacilityType.ATHANOR, FacilityType.TATARA)
+
+MAX_CHAIN_QTY = 100_000
+MAX_CHAIN_JOBS = 20_000
 
 
 def _activity_caps(facility_type) -> tuple[bool, bool]:
@@ -88,6 +96,10 @@ class CalcRequest(BaseModel):
     project_id: Optional[int] = None
     region_id: int = 10000002        # market region for sim history (default The Forge)
     sim: Optional[SimParamsIn] = None
+    # Character selection (LinkedCharacter.id): producer recalcs job time from skills;
+    # seller sets the sell-side fees (broker fee + sales tax).
+    produce_character_id: Optional[int] = None
+    sell_character_id: Optional[int] = None
 
 
 class JobCreate(BaseModel):
@@ -298,6 +310,14 @@ async def calculate(
             elif s_bonus == 0.0 and f.cost_bonus:
                 s_bonus = f.cost_bonus
 
+    # Character selection: producer's skills recalc job time; seller's skills/standings
+    # set the sell-side fees (broker fee + sales tax).
+    produce_profile = _industry_profile(db, current_user.id, body.produce_character_id)
+    sell_profile = _industry_profile(db, current_user.id, body.sell_character_id)
+    skill_time_mult = produce_profile.man_time_mult if produce_profile else 1.0
+    broker_fee = sell_profile.broker_fee_pct if sell_profile else body.broker_fee_pct
+    sales_tax = sell_profile.sales_tax_pct if sell_profile else 0.0
+
     inp = CalcInput(
         product_name=product_name,
         product_qty_per_run=qty_per_run,
@@ -312,7 +332,9 @@ async def calculate(
         ],
         output_price=body.output_price,
         bpc_cost=body.bpc_cost,
-        broker_fee_pct=body.broker_fee_pct,
+        broker_fee_pct=broker_fee,
+        sales_tax_pct=sales_tax,
+        skill_time_mult=skill_time_mult,
         system_cost_index=sci,
         facility_tax_pct=tax,
         structure_bonus_pct=s_bonus,
@@ -326,6 +348,8 @@ async def calculate(
     calc = run_calculation(inp)
     result = asdict(calc)
     result["price_flags"] = {str(t): fl for t, fl in price_flags.items()}
+    result["produce_character"] = _profile_out(produce_profile)
+    result["sell_character"] = _profile_out(sell_profile)
 
     # IO-22: optional Monte-Carlo profit simulation on this production calc.
     if body.simulate:
@@ -388,6 +412,9 @@ class ChainCalcRequest(BaseModel):
     # Nodes the user chose to skip making (force buy): their recipes are dropped so
     # the core can only buy them. Lets the chain be re-shaped from the graph.
     force_buy: List[int] = []
+    # Nodes the user chose to build even if buying is cheaper (force make): their buy
+    # price is dropped so the core must make them. Symmetric to force_buy.
+    force_make: List[int] = []
     # Owned blueprints: apply their ME/TE (and a BPC's cost) per node. With
     # use_owned_blueprints the backend auto-picks (BPO else best BPC); blueprint_selection
     # (product_type_id -> blueprint_id) overrides the pick for a node.
@@ -406,6 +433,11 @@ class ChainCalcRequest(BaseModel):
     simulate: bool = False
     project_id: Optional[int] = None
     sim: Optional[SimParamsIn] = None
+    # Character selection (LinkedCharacter.id). The producing character recalcs job
+    # time from its Industry / Advanced Industry skills; the selling character sets the
+    # simulation's sales tax (Accounting) and broker fee (Broker Relations + standings).
+    produce_character_id: Optional[int] = None
+    sell_character_id: Optional[int] = None
 
 
 def _fnum(v) -> Optional[float]:
@@ -475,13 +507,40 @@ def _to_jsonable(x):
     return x
 
 
+def _reaction_sci_by_facility(eve_db, facilities) -> dict[int, float]:
+    """``{facility_id: reaction cost index}`` resolved from each facility's system via
+    ESI (the live ``/industry/systems`` table). Facilities with no system or no ESI
+    data are omitted, so the caller falls back to the manufacturing index."""
+    named = [f for f in facilities if f and f.system_name]
+    if not named:
+        return {}
+    lowered = list({f.system_name.strip().lower() for f in named})
+    rows = eve_db.query(EveSolarSystem.solar_system_id, EveSolarSystem.solar_system_name).filter(
+        func.lower(EveSolarSystem.solar_system_name).in_(lowered)).all()
+    sysid_by_name = {nm.lower(): sid for sid, nm in rows}
+    try:
+        table = market.esi_cost_indices()
+    except Exception as exc:  # cached ESI table unavailable → fall back to mfg index
+        logger.warning("reaction cost-index fetch failed: %s", exc)
+        return {}
+    out: dict[int, float] = {}
+    for f in named:
+        sid = sysid_by_name.get(f.system_name.strip().lower())
+        idx = (table.get(sid) or {}).get("reaction") if sid else None
+        if idx is not None:
+            out[f.id] = idx
+    return out
+
+
 def _facility_location(s: ChainStructure, f, rigs, band: str,
-                       me_pct: float, te_pct: float) -> LocationParams:
+                       me_pct: float, te_pct: float,
+                       react_sci: Optional[float] = None) -> LocationParams:
     """Turn one of the user's facilities into a chain LocationParams.
 
     Costs/SCI/tax come from the structure payload; ME/TE/cost *rigs* come from the
     facility's fitted rigs (``rigs``) and are applied per node by the core. The
-    global me_pct/te_pct are the manual base the rigs multiply onto.
+    global me_pct/te_pct are the manual base the rigs multiply onto. ``react_sci`` is
+    the system's reaction cost index (used for reaction nodes); None → mfg index.
     """
     is_ec = bool(f and f.facility_type in EC_TYPES)
     # A facility may run only the activities its *type* allows (EC → manufacturing,
@@ -493,7 +552,8 @@ def _facility_location(s: ChainStructure, f, rigs, band: str,
         place_id=s.place_id,
         place_name=s.name or (getattr(f, "name", None) if f else None) or f"struct {s.place_id}",
         me_mult=1 - me_pct / 100, te_mult=1 - te_pct / 100,
-        sci=s.system_cost_index, tax=s.facility_tax_pct / 100, scc=SCC_SURCHARGE,
+        sci=s.system_cost_index, react_sci=react_sci,
+        tax=s.facility_tax_pct / 100, scc=SCC_SURCHARGE,
         struct_discount=s.structure_discount_pct / 100,
         man_lines=s.man_lines, react_lines=s.react_lines,
         rigs=tuple(rigs), band=band, is_ec=is_ec,
@@ -552,11 +612,13 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
             Facility.id.in_(fac_ids or [-1]), Facility.user_id == user_id).all()}
         eve_db = EveSessionLocal()
         try:
+            react_sci = _reaction_sci_by_facility(eve_db, list(facs.values()))
             out = []
             for s in body.structures:
                 f = facs.get(s.place_id)
                 rigs, band, _sec = _facility_rig_context(eve_db, f) if f else ([], "null", None)
-                out.append(_facility_location(s, f, rigs, band, body.me_pct, body.te_pct))
+                out.append(_facility_location(s, f, rigs, band, body.me_pct, body.te_pct,
+                                              react_sci=react_sci.get(s.place_id)))
             return out
         finally:
             eve_db.close()
@@ -565,6 +627,7 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
     sci, tax_pct, disc_pct = body.system_cost_index, body.facility_tax_pct, body.structure_discount_pct
     place_id, place_name = body.place_id, body.place_name
     rigs, band, is_ec = [], "null", False
+    react_sci: Optional[float] = None
     can_man, can_react = True, True   # pure-manual default builds anything
     if body.facility_id:
         f = db.query(Facility).filter(Facility.id == body.facility_id,
@@ -583,12 +646,14 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
             eve_db = EveSessionLocal()
             try:
                 rigs, band, _sec = _facility_rig_context(eve_db, f)
+                react_sci = _reaction_sci_by_facility(eve_db, [f]).get(f.id)
             finally:
                 eve_db.close()
     return [LocationParams(
         place_id=place_id or 1, place_name=place_name or "facility",
         me_mult=1 - body.me_pct / 100, te_mult=1 - body.te_pct / 100,
-        sci=sci, tax=tax_pct / 100, scc=SCC_SURCHARGE, struct_discount=disc_pct / 100,
+        sci=sci, react_sci=react_sci, tax=tax_pct / 100, scc=SCC_SURCHARGE,
+        struct_discount=disc_pct / 100,
         man_lines=body.man_lines, react_lines=body.react_lines,
         rigs=tuple(rigs), band=band, is_ec=is_ec,
         can_man=can_man, can_react=can_react,
@@ -658,6 +723,38 @@ def _bp_report(plan, chosen: dict) -> list[dict]:
     return report
 
 
+def _industry_profile(db: Session, user_id: int, character_id: Optional[int]):
+    """Build an :class:`skills.IndustryProfile` for one of the user's linked characters
+    (by LinkedCharacter.id), or None. Skill levels + best NPC standings drive the time
+    multipliers (producer) and market fees (seller)."""
+    if not character_id:
+        return None
+    char = db.query(LinkedCharacter).filter(
+        LinkedCharacter.id == character_id, LinkedCharacter.user_id == user_id).first()
+    if not char:
+        return None
+    levels = {s.skill_id: (s.trained_level or 0)
+              for s in db.query(EsiSkill).filter(EsiSkill.character_id == char.character_id).all()}
+    st = db.query(EsiStanding).filter(EsiStanding.character_id == char.character_id).all()
+    best_faction = max((s.standing or 0.0 for s in st if s.from_type == "faction"), default=0.0)
+    best_corp = max((s.standing or 0.0 for s in st if s.from_type == "npc_corp"), default=0.0)
+    return skills_svc.profile_from(char.character_id, char.character_name, levels,
+                                   best_faction, best_corp)
+
+
+def _profile_out(p) -> Optional[dict]:
+    if p is None:
+        return None
+    return {
+        "character_id": p.character_id, "character_name": p.character_name,
+        "industry_lvl": p.industry_lvl, "advanced_industry_lvl": p.advanced_industry_lvl,
+        "accounting_lvl": p.accounting_lvl, "broker_relations_lvl": p.broker_relations_lvl,
+        "best_faction_standing": p.best_faction_standing, "best_corp_standing": p.best_corp_standing,
+        "man_time_mult": round(p.man_time_mult, 4), "react_time_mult": round(p.react_time_mult, 4),
+        "sales_tax_pct": p.sales_tax_pct, "broker_fee_pct": p.broker_fee_pct,
+    }
+
+
 @router.post("/calculate-chain")
 async def calculate_chain(
         body: ChainCalcRequest,
@@ -681,6 +778,8 @@ async def calculate_chain(
         raise HTTPException(404, f"No build tree for type_id {body.product_type_id}")
     if not tree[body.product_type_id]["recipes"]:
         raise HTTPException(400, "Target product has no manufacturing/reaction recipe")
+    if body.qty < 1 or body.qty > MAX_CHAIN_QTY:
+        raise HTTPException(400, f"qty must be between 1 and {MAX_CHAIN_QTY:,}")
 
     type_ids = list(tree)
     eff_region_ids = body.region_ids if body.region_ids else [body.region_id]
@@ -731,6 +830,11 @@ async def calculate_chain(
             price_flags[tid] = flag
 
     facilities = _build_facilities(body, db, current_user.id)
+    # Character selection: producer drives job-time skills; seller drives sim fees.
+    produce_profile = _industry_profile(db, current_user.id, body.produce_character_id)
+    sell_profile = _industry_profile(db, current_user.id, body.sell_character_id)
+    tm_man = produce_profile.man_time_mult if produce_profile else 1.0
+    tm_react = produce_profile.react_time_mult if produce_profile else 1.0
     # Owned blueprints: per-node ME/TE + a BPC's cost folded into the build.
     node_overrides, bpc_unit, chosen_bps = _blueprint_plan(body, db, current_user.id, tree)
     # Manual per-node ME/TE wins over the owned-blueprint pick (and the global default).
@@ -738,12 +842,14 @@ async def calculate_chain(
         if isinstance(me_te, (list, tuple)) and len(me_te) == 2:
             node_overrides[int(tid)] = (int(me_te[0]), int(me_te[1]))
     req = from_bom(body.product_type_id, body.qty, tree, buy_prices, adj, facilities,
-                   bpc_unit=bpc_unit, node_overrides=node_overrides)
+                   bpc_unit=bpc_unit, node_overrides=node_overrides,
+                   time_mult_man=tm_man, time_mult_react=tm_react)
 
     # Skip-making (force buy): drop those nodes' recipes so the core can only buy
     # them. Guard nodes that have nothing to buy — leave them makeable.
     forced_skipped: list[int] = []
-    for tid in set(body.force_buy):
+    force_buy_ids = set(body.force_buy)
+    for tid in force_buy_ids:
         n = req.nodes.get(tid)
         if not n or not n.recipes:
             continue
@@ -752,7 +858,27 @@ async def calculate_chain(
             continue
         req.nodes[tid] = replace(n, recipes=())
 
+    # Force-make: drop the buy option so the core must build it. force_buy wins on conflict.
+    forced_make_skipped: list[int] = []
+    for tid in set(body.force_make) - force_buy_ids:
+        n = req.nodes.get(tid)
+        if not n:
+            continue
+        if not n.recipes:
+            forced_make_skipped.append(tid)        # nothing to make → can't force
+            continue
+        req.nodes[tid] = replace(n, buy_price=None)
+
     plan, engine = chain_engine.solve(req)   # native Haskell core, falls back to Python
+
+    # Guard against runaway plans: a deep capital chain at high qty emits an enormous
+    # number of job-chunks, which blows up the response JSON, the inline simulation and
+    # the browser (the "everything froze" at qty=1000). Fail fast with a clear message
+    # instead of melting the server.
+    if len(plan.jobs) > MAX_CHAIN_JOBS:
+        raise HTTPException(
+            400, f"Plan too large: {len(plan.jobs):,} production jobs. Reduce the quantity "
+                 f"(deep reaction/capital chains grow very fast with qty).")
 
     # Capacity schedule: lay the jobs into dependency-ordered stages within the
     # character's job slots. Slots are a single per-character total (man_lines /
@@ -771,8 +897,11 @@ async def calculate_chain(
         "price_source": {str(t): src for t, src in price_source.items()},
         "price_flags": {str(t): fl for t, fl in price_flags.items()},
         "force_buy_skipped": forced_skipped,
+        "force_make_skipped": forced_make_skipped,
         "bp_report": _bp_report(plan, chosen_bps),
         "blueprint_selection": {str(t): bp.id for t, bp in chosen_bps.items()},
+        "produce_character": _profile_out(produce_profile),
+        "sell_character": _profile_out(sell_profile),
     }
 
     # IO-22: optional Monte-Carlo profit simulation on the resulting plan.
@@ -790,11 +919,14 @@ async def calculate_chain(
             params = simin.to_params()
             if (body.sim is None or body.sim.slots <= 1) and (body.man_lines + body.react_lines) > 0:
                 params.slots = max(1, body.man_lines + body.react_lines)
+            # The selling character's skills/standings set the sell-side fees.
+            broker = sell_profile.broker_fee_pct if sell_profile else simin.broker_fee_pct
+            sales = sell_profile.sales_tax_pct if sell_profile else simin.sales_tax_pct
             run = sim_router.run_chain_simulation(
                 db, user_id=current_user.id, project_id=body.project_id, plan=plan,
                 production_time_s=int(schedule.get("total_time_s") or 0), history=history,
                 params=params, product_name=tree[body.product_type_id]["name"],
-                broker_fee_pct=simin.broker_fee_pct, sales_tax_pct=simin.sales_tax_pct)
+                broker_fee_pct=broker, sales_tax_pct=sales)
             response["simulation"] = sim_router.run_payload(run)
         except Exception as exc:  # never let the sim break the chain calc
             logger.warning("chain simulation failed: %s", exc)

@@ -18,13 +18,14 @@ from app.repositories import cache_repo, market_repo
 from app.tasks.update_indices import run_index_update
 from app.tasks.update_sde import run_sde_update
 from app.tasks.update_tracking import run_tracking_update
+from app.tasks.update_esi import sync_all_active
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_WINDOW = 10   # the API's default; other windows recompute on miss
 
 # stable, distinct advisory-lock keys per job
-_LOCK_KEYS = {"sde": 4101, "index": 4102, "tracking": 4103}
+_LOCK_KEYS = {"sde": 4101, "index": 4102, "tracking": 4103, "esi": 4104}
 
 
 @contextmanager
@@ -102,8 +103,13 @@ def job_sde():
     _run("sde", run_sde_update)
 
 
+def job_esi():
+    _run("esi", sync_all_active)
+
+
 def register(scheduler) -> None:
     """Attach the cron jobs to a scheduler (worker process owns it)."""
     scheduler.add_job(job_sde, "cron", hour=3, minute=0, id="sde_update_job", replace_existing=True)
     scheduler.add_job(job_index, "cron", minute=2, id="index_update_job", replace_existing=True)
     scheduler.add_job(job_tracking, "cron", minute=7, id="tracking_update_job", replace_existing=True)
+    scheduler.add_job(job_esi, "cron", minute="*/30", id="esi_sync_job", replace_existing=True)

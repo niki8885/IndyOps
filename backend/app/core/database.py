@@ -397,6 +397,149 @@ class SimulationRun(Base):
     project = relationship("Projects", backref="simulation_runs")
 
 
+# ===========================================================================
+# IO-24 — EVE SSO linked characters + synced ESI data
+# ===========================================================================
+class LinkedCharacter(Base):
+    """An EVE character a user has linked via EVE SSO. Holds the (encrypted)
+    OAuth tokens and the activation flag; the esi_* tables hang off character_id."""
+    __tablename__ = "linked_characters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    character_id = Column(Integer, nullable=False, unique=True, index=True)
+    character_name = Column(String(200), nullable=False)
+    corporation_id = Column(Integer, nullable=True)
+    alliance_id = Column(Integer, nullable=True)
+    owner_hash = Column(String(255), nullable=True)  # ESI 'owner' claim — detects char transfer
+
+    scopes = Column(Text, nullable=True)             # space-separated granted scopes
+    access_token_enc = Column(Text, nullable=True)   # Fernet-encrypted
+    refresh_token_enc = Column(Text, nullable=True)  # Fernet-encrypted
+    token_expires_at = Column(DateTime, nullable=True)
+
+    wallet_balance = Column(Float, nullable=True)
+    total_sp = Column(BigInteger, nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True)        # activation status
+    status = Column(String(20), nullable=False, default="active")   # active|token_expired|invalid
+
+    added_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+    last_sync_at = Column(DateTime, nullable=True)
+
+    owner = relationship("UserDB", backref="linked_characters")
+
+
+class EsiWalletTransaction(Base):
+    __tablename__ = "esi_wallet_transactions"
+    __table_args__ = (UniqueConstraint("character_id", "transaction_id", name="uq_esi_tx"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    transaction_id = Column(BigInteger, nullable=False)
+    date = Column(DateTime, nullable=True)
+    type_id = Column(Integer, nullable=True)
+    quantity = Column(BigInteger, nullable=True)
+    unit_price = Column(Float, nullable=True)
+    is_buy = Column(Boolean, nullable=True)
+    is_personal = Column(Boolean, nullable=True)
+    client_id = Column(Integer, nullable=True)
+    location_id = Column(BigInteger, nullable=True)
+    journal_ref_id = Column(BigInteger, nullable=True)
+
+
+class EsiSkill(Base):
+    __tablename__ = "esi_skills"
+    __table_args__ = (UniqueConstraint("character_id", "skill_id", name="uq_esi_skill"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    skill_id = Column(Integer, nullable=False)
+    skillpoints = Column(BigInteger, nullable=True)
+    trained_level = Column(Integer, nullable=True)
+    active_level = Column(Integer, nullable=True)
+
+
+class EsiAsset(Base):
+    __tablename__ = "esi_assets"
+    __table_args__ = (UniqueConstraint("character_id", "item_id", name="uq_esi_asset"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    item_id = Column(BigInteger, nullable=False)
+    type_id = Column(Integer, nullable=True)
+    quantity = Column(BigInteger, nullable=True)
+    location_id = Column(BigInteger, nullable=True)
+    location_flag = Column(String(60), nullable=True)
+    location_type = Column(String(30), nullable=True)
+    is_singleton = Column(Boolean, nullable=True)
+    is_blueprint_copy = Column(Boolean, nullable=True)
+
+
+class EsiContract(Base):
+    __tablename__ = "esi_contracts"
+    __table_args__ = (UniqueConstraint("character_id", "contract_id", name="uq_esi_contract"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    contract_id = Column(BigInteger, nullable=False)
+    type = Column(String(30), nullable=True)
+    status = Column(String(30), nullable=True)
+    for_corp = Column(Boolean, nullable=True)
+    issuer_id = Column(Integer, nullable=True)
+    assignee_id = Column(Integer, nullable=True)
+    acceptor_id = Column(Integer, nullable=True)
+    date_issued = Column(DateTime, nullable=True)
+    date_expired = Column(DateTime, nullable=True)
+    date_accepted = Column(DateTime, nullable=True)
+    date_completed = Column(DateTime, nullable=True)
+    price = Column(Float, nullable=True)
+    reward = Column(Float, nullable=True)
+    collateral = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    title = Column(String(255), nullable=True)
+    availability = Column(String(30), nullable=True)
+    start_location_id = Column(BigInteger, nullable=True)
+    end_location_id = Column(BigInteger, nullable=True)
+
+
+class EsiIndustryJob(Base):
+    __tablename__ = "esi_industry_jobs"
+    __table_args__ = (UniqueConstraint("character_id", "job_id", name="uq_esi_job"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    job_id = Column(BigInteger, nullable=False)
+    activity_id = Column(Integer, nullable=True)
+    blueprint_type_id = Column(Integer, nullable=True)
+    blueprint_id = Column(BigInteger, nullable=True)
+    product_type_id = Column(Integer, nullable=True)
+    runs = Column(Integer, nullable=True)
+    licensed_runs = Column(Integer, nullable=True)
+    status = Column(String(30), nullable=True)
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    facility_id = Column(BigInteger, nullable=True)
+    station_id = Column(BigInteger, nullable=True)
+    cost = Column(Float, nullable=True)
+    probability = Column(Float, nullable=True)
+
+
+class EsiStanding(Base):
+    """A character's NPC standing (toward a faction / npc_corp / agent). Used to
+    estimate the broker-fee reduction a selling character gets."""
+    __tablename__ = "esi_standings"
+    __table_args__ = (UniqueConstraint("character_id", "from_id", name="uq_esi_standing"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    from_id = Column(Integer, nullable=False)
+    from_type = Column(String(20), nullable=True)  # 'faction' | 'npc_corp' | 'agent'
+    standing = Column(Float, nullable=True)
+
+
 def get_db():
     db = SessionLocal()
     try:

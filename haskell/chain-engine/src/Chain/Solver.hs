@@ -28,6 +28,18 @@ adjQty base runs meMult = max runs (fromInteger (ceiling (fromIntegral (base * r
 adjTime :: Int -> Int -> Rational -> Int
 adjTime base runs teMult = fromInteger (ceiling (fromIntegral (base * runs) * teMult))
 
+-- EVE caps a single industry job at 30 days of run time. We split runs by this limit
+-- (not the blueprint maxProductionLimit). Mirrors chain._runs_per_job exactly.
+maxJobSeconds :: Rational
+maxJobSeconds = 2592000
+
+runsPerJob :: Recipe -> RecipeLocation -> Int -> Int
+runsPerJob recipe loc totalRuns =
+  let perRun = fromIntegral (rcBaseTime recipe) * locTeMult loc
+  in if rcBaseTime recipe > 0 && perRun > 0
+       then max 1 (fromInteger (floor (maxJobSeconds / perRun)))
+       else totalRuns
+
 -- phase 1: decide
 
 type Memo = M.Map Int NodeDecision
@@ -42,7 +54,7 @@ goDecide nodes stack tid = do
     Just d -> pure d
     Nothing -> case M.lookup tid nodes of
       Nothing ->
-        ins (NodeDecision tid (show tid) "unobtainable" Nothing Nothing Nothing Nothing Nothing 0)
+        ins (NodeDecision tid (show tid) "unobtainable" Nothing Nothing Nothing Nothing Nothing 0 Nothing)
       Just node -> do
         best <- if S.member tid stack
                   then pure Nothing
@@ -80,7 +92,7 @@ decideFrom node best =
       choices = [("buy", b) | b <- maybeToList unitBuy]
              ++ [("make", mk) | mk <- maybeToList unitMake]
   in case choices of
-       [] -> NodeDecision tid name "unobtainable" Nothing unitBuy unitMake Nothing Nothing 0
+       [] -> NodeDecision tid name "unobtainable" Nothing unitBuy unitMake Nothing Nothing 0 act
        _  ->
          let (kind, unit) = minimumBy (comparing snd) choices   -- first min: buy beats make on tie
              saved = case (unitBuy, unitMake) of
@@ -91,10 +103,16 @@ decideFrom node best =
                    Just (_, r, p) -> (Just r, Just p)
                    Nothing        -> (Nothing, Nothing)
                | otherwise = (Nothing, Nothing)
-         in NodeDecision tid name kind (Just unit) unitBuy unitMake ri pid saved
+         in NodeDecision tid name kind (Just unit) unitBuy unitMake ri pid saved act
   where
     tid = ndTypeId node
     name = ndName node
+    -- activity of the make recipe (even when bought) — 11 = reaction (no ME/TE).
+    act = case best of
+      Just (_, r, _) -> Just (rcActivity (ndRecipes node !! r))
+      Nothing        -> case ndRecipes node of
+                          (r0 : _) -> Just (rcActivity r0)
+                          []       -> Nothing
 
 -- phase 2: plan
 
@@ -135,7 +153,7 @@ plan req decs = (jobs, shopping, total)
                  recipe = ndRecipes node !! fromMaybe 0 (dRecipeIndex dec)
                  loc = chooseLoc recipe (dPlaceId dec)
                  totalRuns = ceiling (fromIntegral need / fromIntegral (rcQtyPerRun recipe) :: Rational)
-                 cap = fromMaybe totalRuns (rcMaxRuns recipe)
+                 cap = runsPerJob recipe loc totalRuns
                  (newJobs, consumed) = foldl' (mkJob node recipe loc) ([], M.empty) (splitRuns cap totalRuns)
                  (demand', shop') = M.foldlWithKey' (pushConsume dec) (demand, shop) consumed
              in (demand', jacc ++ newJobs, shop')
@@ -183,8 +201,12 @@ splitRuns cap total
   | total <= 0 = []
   | otherwise  = let r = min cap total in r : splitRuns cap (total - r)
 
+-- Reverse post-order DFS: a valid topological sort even when a node is shared by
+-- several parents, so 'plan' has the full demand for a node before it is consumed.
+-- A pre-order ('ordered ++ [t]' before visiting children) drops every parent after
+-- the first for a shared node, undercounting its inputs and the total cost.
 topoMakeOrder :: M.Map Int Node -> Memo -> Int -> [Int]
-topoMakeOrder nodes decs target = acc
+topoMakeOrder nodes decs target = reverse acc
   where
     isMake t = maybe False ((== "make") . dDecision) (M.lookup t decs)
     chosen t = ndRecipes (nodes M.! t) !! fromMaybe 0 (dRecipeIndex (decs M.! t))
@@ -192,8 +214,9 @@ topoMakeOrder nodes decs target = acc
       | S.member t seen = st
       | not (isMake t) = st
       | otherwise =
-          let st' = (S.insert t seen, ordered ++ [t])
-          in foldl' (\s (mt, _) -> visit s mt) st' (rcInputs (chosen t))
+          let (seen', ordered') =
+                foldl' (\s (mt, _) -> visit s mt) (S.insert t seen, ordered) (rcInputs (chosen t))
+          in (seen', ordered' ++ [t])   -- post-order: append after all children
     (seen1, acc1) = visit (S.empty, []) target
     makeIds = [t | (t, d) <- M.toList decs, dDecision d == "make"]
     (_, acc) = foldl' visit (seen1, acc1) makeIds

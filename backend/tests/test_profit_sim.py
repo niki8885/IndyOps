@@ -65,6 +65,47 @@ def test_shortfall_premium_raises_material_cost():
     assert starved.expected_profit < full.expected_profit
 
 
+def test_missing_volume_does_not_zero_revenue():
+    """Regression for the 'too pessimistic' bug: an item with NO volume history
+    (vol_mean=0, the degenerate / point-price fallback) must not collapse to a
+    guaranteed loss. Absent liquidity data ⇒ no participation constraint (fill=1),
+    so the product's revenue is realised and profit tracks the deterministic chain.
+    Old behaviour: fill=0 → revenue=0 → profit ≈ −(material+fixed), prob_loss=100%."""
+    leg = ps.LegInput(1, 10, math.log(100.0), 0.0, [100.0] * 101,
+                      vol_mean=0.0, vol_sigma=0.5, spread_mean=0.0, spread_sigma=0.0)
+    prod = ps.ProductInput(2, 1, math.log(2000.0), 0.0, [2000.0] * 101,
+                           vol_mean=0.0, vol_sigma=0.5, spread_mean=0.0, spread_sigma=0.0)
+    # participation_cap a realistic 10% — with zero volume this used to force fill=0.
+    req = ps.SimRequest("novol", [leg], prod, fixed_cost=50.0, production_time_s=3600,
+                        params=_deterministic_params(participation_cap=0.10),
+                        cholesky_L=[[1.0, 0.0], [0.0, 1.0]])
+    m = ps.simulate(req).metrics
+    # sell 1 @ 2000 − buy 10 @ 100 − 50 fixed = 950, revenue fully realised.
+    assert math.isclose(m.expected_profit, 950.0, abs_tol=1e-6)
+    assert m.prob_loss == 0.0
+
+
+def test_product_revenue_not_throttled_by_liquidity():
+    """The product sells in full regardless of its own market depth — thin product
+    liquidity is a time/price risk, not forfeited units. A thin-volume product and a
+    no-volume product yield the SAME (full) revenue. Materials still throttle (see
+    test_shortfall_premium_raises_material_cost). Guards the 'too pessimistic' bug
+    where a low-volume capital lost most of its revenue and read as a certain loss."""
+    base = dict(legs=[_flat_leg(1, 100.0)], fixed_cost=0.0, production_time_s=3600,
+                cholesky_L=[[1.0, 0.0], [0.0, 1.0]],
+                params=_deterministic_params(participation_cap=1e-9, shortfall_premium=0.0))
+    thin = ps.ProductInput(2, 1000, math.log(50.0), 0.0, [50.0] * 101,
+                           vol_mean=1.0, vol_sigma=0.0, spread_mean=0.0, spread_sigma=0.0)
+    none = ps.ProductInput(2, 1000, math.log(50.0), 0.0, [50.0] * 101,
+                           vol_mean=0.0, vol_sigma=0.0, spread_mean=0.0, spread_sigma=0.0)
+    m_thin = ps.simulate(ps.SimRequest("thin", product=thin, **base)).metrics
+    m_none = ps.simulate(ps.SimRequest("none", product=none, **base)).metrics
+    # 1000 @ 50 = 50,000 revenue regardless of product volume (no leg cost: cap is huge
+    # for the single cheap leg only via shortfall=0); both realise full revenue.
+    assert math.isclose(m_thin.expected_profit, m_none.expected_profit, rel_tol=1e-9)
+    assert m_none.expected_profit > 0                         # full revenue, not throttled
+
+
 def test_correlation_propagates_to_sampled_prices():
     # strongly correlated buy & sell (lognormal) → sampled prices co-move
     L = ps.market_model.nearest_psd_cholesky(np.array([[1.0, 0.9], [0.9, 1.0]]))

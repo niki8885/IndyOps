@@ -16,6 +16,7 @@ from app.api.analysis_router import router as analysis_router
 from app.api.market_router import router as market_router
 from app.api.tracking_router import router as tracking_router
 from app.api.simulation_router import router as simulation_router
+from app.api.characters_router import router as characters_router
 
 # Schema bootstrap for the API container (the worker runs jobs only and sets
 # RUN_DB_BOOTSTRAP=0). Scheduled jobs live in the separate worker (app.worker).
@@ -48,6 +49,7 @@ app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"]
 app.include_router(market_router, prefix="/api/v1/market", tags=["Market Browser"])
 app.include_router(tracking_router, prefix="/api/v1/tracking", tags=["Tracking"])
 app.include_router(simulation_router, prefix="/api/v1/simulation", tags=["Simulation"])
+app.include_router(characters_router, prefix="/api/v1/characters", tags=["Personal File"])
 
 
 @app.get("/", tags=["Health"])
