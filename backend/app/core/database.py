@@ -467,6 +467,79 @@ class AnalyticsCache(Base):
     )
 
 
+class TradeCandidate(Base):
+    """A precomputed cross-hub trade route (buy at one hub, sell at another).
+
+    Current-state upsert table keyed by (item, buy_hub, sell_hub): each collector
+    run overwrites the row. NOT a hypertable (no append-only history). Stores both
+    a 'patient' (place a sell order) and 'instant' (sell into buy orders) margin;
+    the query layer ranks by margin_pct_patient · volume_score."""
+    __tablename__ = "trade_candidates"
+
+    item_id = Column(Integer, primary_key=True)            # type_id
+    buy_hub = Column(BigInteger, primary_key=True)         # source station_id
+    sell_hub = Column(BigInteger, primary_key=True)        # destination station_id
+    type_name = Column(String(200), nullable=True)
+    buy_price = Column(Float, nullable=True)               # source lowest sell order
+    sell_price_patient = Column(Float, nullable=True)      # dest lowest sell order
+    sell_price_instant = Column(Float, nullable=True)      # dest highest buy order
+    margin_pct_patient = Column(Float, nullable=True)
+    margin_pct_instant = Column(Float, nullable=True)
+    profit_isk_patient = Column(Float, nullable=True)
+    profit_isk_instant = Column(Float, nullable=True)
+    transport_cost = Column(Float, nullable=True)          # per-unit ISK
+    item_volume_m3 = Column(Float, nullable=True)
+    daily_volume = Column(Float, nullable=True)
+    volatility_cv = Column(Float, nullable=True)
+    volume_score = Column(Float, nullable=True)            # 0..1
+    updated_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_trade_candidates_updated_at", "updated_at"),
+        Index("ix_trade_candidates_margin_patient", "margin_pct_patient"),
+    )
+
+
+class StationTradeCandidate(Base):
+    """A precomputed in-station flip (buy with a buy order, sell with a sell order
+    at the same hub). Single-hub variant of TradeCandidate: no transport, broker
+    fee charged twice. Current-state upsert keyed by (item, hub)."""
+    __tablename__ = "station_trade_candidates"
+
+    item_id = Column(Integer, primary_key=True)
+    hub = Column(BigInteger, primary_key=True)             # station_id
+    type_name = Column(String(200), nullable=True)
+    buy_price = Column(Float, nullable=True)               # hub highest buy order
+    sell_price = Column(Float, nullable=True)              # hub lowest sell order
+    margin_pct = Column(Float, nullable=True)
+    profit_isk = Column(Float, nullable=True)
+    daily_volume = Column(Float, nullable=True)
+    volatility_cv = Column(Float, nullable=True)
+    volume_score = Column(Float, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_station_trade_candidates_updated_at", "updated_at"),
+    )
+
+
+class TradeTypeStat(Base):
+    """History-derived liquidity/volatility per (region, type), refreshed by the
+    slow trade-history job and read by the fast orders job. Current-state upsert."""
+    __tablename__ = "trade_type_stats"
+
+    region_id = Column(Integer, primary_key=True)
+    type_id = Column(Integer, primary_key=True)
+    daily_volume = Column(Float, nullable=True)
+    volatility_cv = Column(Float, nullable=True)
+    sample_days = Column(Integer, nullable=True)
+    computed_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_trade_type_stats_computed_at", "computed_at"),
+    )
+
+
 class SimulationRun(Base):
     """A stored Monte-Carlo profit-simulation run (IO-22): the request snapshot,
     the risk-adjusted metrics, and the rendered per-run PDF. Roll-up reports are

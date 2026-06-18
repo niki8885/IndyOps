@@ -19,6 +19,7 @@ from app.api.tracking_router import router as tracking_router
 from app.api.simulation_router import router as simulation_router
 from app.api.characters_router import router as characters_router
 from app.api.ore_router import router as ore_router
+from app.api.trade_router import router as trade_router
 
 # Schema bootstrap for the API container (the worker runs jobs only and sets
 # RUN_DB_BOOTSTRAP=0). Scheduled jobs live in the separate worker (app.worker).
@@ -54,6 +55,7 @@ app.include_router(tracking_router, prefix="/api/v1/tracking", tags=["Tracking"]
 app.include_router(simulation_router, prefix="/api/v1/simulation", tags=["Simulation"])
 app.include_router(characters_router, prefix="/api/v1/characters", tags=["Personal File"])
 app.include_router(ore_router, prefix="/api/v1/ore", tags=["Ore Acquisition"])
+app.include_router(trade_router, prefix="/api/v1/trade", tags=["Trade Optimizer"])
 
 
 @app.get("/", tags=["Health"])

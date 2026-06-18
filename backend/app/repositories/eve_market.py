@@ -39,6 +39,34 @@ def types_info(eve_db, type_ids: list[int]) -> dict[int, dict]:
             for tid, name, gid, gname in rows}
 
 
+def types_market_meta(eve_db, type_ids: list[int]) -> dict[int, dict]:
+    """{type_id: {type_name, category_id, volume, market_group_id, published}}.
+
+    Single EveType ⋈ EveGroup query — supplies both the category gate (for the
+    trade allowlist) and the item volume (m³, for transport cost). Complements
+    :func:`types_info`, which lacks volume/category.
+    """
+    rows = (
+        eve_db.query(
+            EveType.type_id, EveType.type_name, EveType.volume,
+            EveType.market_group_id, EveType.published, EveGroup.category_id,
+        )
+        .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
+        .filter(EveType.type_id.in_(type_ids or [-1]))
+        .all()
+    )
+    return {
+        tid: {
+            "type_name": name,
+            "volume": vol,
+            "market_group_id": mgid,
+            "published": bool(pub),
+            "category_id": cat,
+        }
+        for tid, name, vol, mgid, pub, cat in rows
+    }
+
+
 def region_name(eve_db, region_id: int) -> Optional[str]:
     row = eve_db.query(EveRegion.region_name).filter(EveRegion.region_id == region_id).first()
     return row[0] if row else None
