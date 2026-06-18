@@ -179,6 +179,51 @@ def esi_region_orders(region_id: int, type_id: int) -> list[dict]:
     return orders
 
 
+# ── ESI whole-region order book (every type, buy+sell) ──────────────────────
+# The trade optimizer discovers its candidate universe from the live books of
+# the main hubs, so it needs the *entire* region book in one shot (no type_id),
+# unlike esi_region_orders above which is per-type. The Forge is large (hundreds
+# of pages), so callers cap pages and the result is cached for the fast job's
+# cadence.
+_ORDERS_ALL_CACHE: dict = {}
+_ORDERS_ALL_TTL = 600  # ~10 min, matches the fast trade-orders job
+
+
+def esi_region_orders_all(region_id: int, max_pages: int = 300) -> list[dict]:
+    """All live buy+sell orders for *every* type in a region. Paginated, cached.
+
+    Reads ``X-Pages`` and fetches up to ``max_pages`` (a safety bound for huge
+    regions like The Forge). Each order carries the same fields as
+    :func:`esi_region_orders` (price, volume_remain, is_buy_order, location_id,
+    type_id, …). Never raises — returns whatever was fetched (possibly partial).
+    """
+    now = _time.time()
+    hit = _ORDERS_ALL_CACHE.get(region_id)
+    if hit and now - hit[0] < _ORDERS_ALL_TTL:
+        return hit[1]
+
+    url = _ESI_ORDERS_URL.format(region_id=region_id)
+    params = {"datasource": "tranquility", "order_type": "all", "page": 1}
+    orders: list[dict] = []
+    try:
+        r = requests.get(url, params=params, headers=_HEADERS, timeout=_TIMEOUT)
+        r.raise_for_status()
+        orders.extend(r.json())
+        pages = int(r.headers.get("X-Pages", 1) or 1)
+        if pages > max_pages:
+            logger.warning("esi orders-all region %s: %s pages, capping at %s", region_id, pages, max_pages)
+        for page in range(2, min(pages, max_pages) + 1):
+            params["page"] = page
+            rp = requests.get(url, params=params, headers=_HEADERS, timeout=_TIMEOUT)
+            rp.raise_for_status()
+            orders.extend(rp.json())
+    except Exception as exc:
+        logger.warning("esi orders-all region %s failed: %s", region_id, exc)
+
+    _ORDERS_ALL_CACHE[region_id] = (now, orders)
+    return orders
+
+
 _HIST_FULL_CACHE: dict = {}
 
 

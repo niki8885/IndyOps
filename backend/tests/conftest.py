@@ -20,7 +20,10 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.database import Base, AnalyticsCache, MarketIndexSnapshot, TrackPrice
+from app.core.database import (
+    Base, AnalyticsCache, MarketIndexSnapshot, TrackPrice,
+    TradeCandidate, StationTradeCandidate, TradeTypeStat,
+)
 from app.core.database_eve import (
     EveBase, EveType, EveActivityProduct, EveActivityMaterial, EveActivityTime, EveBlueprint,
 )
@@ -34,6 +37,7 @@ def app_engine():
     )
     Base.metadata.create_all(engine, tables=[
         MarketIndexSnapshot.__table__, TrackPrice.__table__, AnalyticsCache.__table__,
+        TradeCandidate.__table__, StationTradeCandidate.__table__, TradeTypeStat.__table__,
     ])
     yield engine
     engine.dispose()

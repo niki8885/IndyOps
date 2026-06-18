@@ -26,6 +26,20 @@ def test_run_swallows_exceptions():
     jobs._run("tracking", boom)   # must not propagate
 
 
+def test_trade_jobs_have_distinct_lock_keys():
+    for name in ("trade_orders", "trade_history"):
+        assert name in jobs._LOCK_KEYS
+    # all lock keys must be unique (no accidental collision with existing jobs)
+    assert len(set(jobs._LOCK_KEYS.values())) == len(jobs._LOCK_KEYS)
+
+
+def test_run_trade_orders_swallows_exceptions():
+    def boom():
+        raise RuntimeError("esi down")
+
+    jobs._run("trade_orders", boom)   # must not propagate
+
+
 def test_warm_index_cache_populates(app_session):
     key = INDEX_ORDER[0]
     base = datetime.datetime(2025, 1, 1)
