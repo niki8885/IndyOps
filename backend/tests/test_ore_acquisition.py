@@ -125,6 +125,22 @@ def test_per_unit_mode_has_no_basket_total():
     assert r.minerals[0].recommended is not None
 
 
+def test_allow_direct_false_excludes_mineral_buy():
+    r = compare(
+        target="Home", basis="sell", needs=[Need(34, "Tritanium", 1000)],
+        sources=[Source("jita", "Jita", cost_per_m3=0.0)],
+        item_prices={"jita": {34: 5.0, 1230: 3.0}},
+        volumes={34: 0.01, 1230: 0.1},
+        ores=[_veldspar()], effective_yield=0.9,
+        mineral_ref_price={34: 5.0}, allow_direct=False,
+    )
+    mp = r.minerals[0]
+    assert mp.direct_best is None
+    assert mp.recommended.kind == "ore"
+    buy_min = next(s for s in r.strategies if s.strategy == "buy_minerals")
+    assert buy_min.covered == 0
+
+
 # ── gas: compressed vs regular ───────────────────────────────────────────────
 from app.services.ore_acquisition import GasInfo, compare_gas  # noqa: E402
 

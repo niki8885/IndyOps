@@ -173,8 +173,13 @@ def compare(
         effective_yield: float,
         mineral_ref_price: dict[int, Optional[float]],
         flags: Optional[dict] = None,
+        allow_direct: bool = True,
 ) -> ComparisonResult:
-    """Build the full ore/compressed/mineral comparison + per-mineral recommendation."""
+    """Build the full ore/compressed/mineral comparison + per-mineral recommendation.
+
+    ``allow_direct=False`` excludes buying the mineral directly (the "Minerals"
+    checkbox is off) — only ore/compressed refining paths are considered.
+    """
     flags = flags or {}
     need_ids = [n.type_id for n in needs]
     need_by_id = {n.type_id: n for n in needs}
@@ -254,12 +259,13 @@ def compare(
     for n in needs:
         direct: list[PathOption] = []
         vol = volumes.get(n.type_id)
-        for s in sources:
-            price = (item_prices.get(s.key) or {}).get(n.type_id)
-            d = _delivered(price, vol, s.cost_per_m3)
-            if d is not None:
-                direct.append(PathOption(kind="mineral", source=s.label,
-                                         effective_cost=_round(d, 4)))
+        if allow_direct:
+            for s in sources:
+                price = (item_prices.get(s.key) or {}).get(n.type_id)
+                d = _delivered(price, vol, s.cost_per_m3)
+                if d is not None:
+                    direct.append(PathOption(kind="mineral", source=s.label,
+                                             effective_cost=_round(d, 4)))
         ore_opts = sorted(ore_paths.get(n.type_id, []),
                           key=lambda p: p.effective_cost)
         direct_best = min(direct, key=lambda p: p.effective_cost) if direct else None

@@ -100,13 +100,16 @@ function Panel({ title, children, right }) {
 
 function Field({ label, children, hint }) {
   return (
-    <label style={{ display: 'block', marginBottom: 10 }}>
+    <label style={{ display: 'block', marginBottom: 10, minWidth: 0 }}>
       <span style={{ display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 3 }}>{label}</span>
       {children}
       {hint && <span style={{ display: 'block', fontSize: 10, color: 'var(--border2)', marginTop: 2 }}>{hint}</span>}
     </label>
   )
 }
+
+// inputs/selects fill their grid cell and never overflow it
+const FIT = { width: '100%', boxSizing: 'border-box', maxWidth: '100%' }
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
@@ -133,7 +136,7 @@ function RefineSetup({ refine, setRefine, rigs }) {
     } catch (e) { setCharMsg(e.message) }
   }
   const lvl = (k) => (
-    <select value={refine[k]} onChange={e => set(k, Number(e.target.value))} style={{ width: '100%' }}>
+    <select value={refine[k]} onChange={e => set(k, Number(e.target.value))} style={FIT}>
       {[0, 1, 2, 3, 4, 5].map(l => <option key={l} value={l}>{l}</option>)}
     </select>
   )
@@ -142,39 +145,41 @@ function RefineSetup({ refine, setRefine, rigs }) {
     set('rig_type_ids', has ? refine.rig_type_ids.filter(x => x !== id) : [...refine.rig_type_ids, id])
   }
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0 14px' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0 12px' }}>
       {chars.length > 0 && (
         <div style={{ gridColumn: '1 / -1', marginBottom: 6 }}>
           <Field label="Load skills from character" hint={charMsg || 'or enter levels manually below'}>
-            <select value={charId} onChange={e => loadChar(e.target.value)} style={{ width: '100%' }}>
+            <select value={charId} onChange={e => loadChar(e.target.value)} style={FIT}>
               <option value="">— manual —</option>
               {chars.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
             </select>
           </Field>
         </div>
       )}
-      <Field label="Base yield" hint="structure / station base">
-        <div style={{ display: 'flex', gap: 4 }}>
-          <input type="number" step="0.01" value={refine.base_yield}
-                 onChange={e => set('base_yield', num(e.target.value))} style={{ width: 70 }} />
-          {BASE_YIELD_PRESETS.map(p => (
-            <button key={p.label} type="button" className="btn btn-ghost btn-sm"
-                    title={p.label} onClick={() => set('base_yield', p.value)}>{p.label}</button>
-          ))}
-        </div>
-      </Field>
+      <div style={{ gridColumn: '1 / -1' }}>
+        <Field label="Base yield" hint="structure / station base">
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input type="number" step="0.01" value={refine.base_yield}
+                   onChange={e => set('base_yield', num(e.target.value))} style={{ width: 70 }} />
+            {BASE_YIELD_PRESETS.map(p => (
+              <button key={p.label} type="button" className="btn btn-ghost btn-sm"
+                      title={p.label} onClick={() => set('base_yield', p.value)}>{p.label}</button>
+            ))}
+          </div>
+        </Field>
+      </div>
       <Field label="Reprocessing (+3%/lvl)">{lvl('reprocessing_lvl')}</Field>
-      <Field label="Reprocessing Efficiency (+2%/lvl)">{lvl('efficiency_lvl')}</Field>
-      <Field label="Ore-specific Processing (+2%/lvl)">{lvl('ore_specific_lvl')}</Field>
+      <Field label="Reproc. Efficiency (+2%/lvl)">{lvl('efficiency_lvl')}</Field>
+      <Field label="Ore-specific (+2%/lvl)">{lvl('ore_specific_lvl')}</Field>
       <Field label="Implant">
-        <select value={refine.implant_pct} onChange={e => set('implant_pct', Number(e.target.value))} style={{ width: '100%' }}>
+        <select value={refine.implant_pct} onChange={e => set('implant_pct', Number(e.target.value))} style={FIT}>
           <option value={0}>None</option><option value={1}>RX-801 (+1%)</option>
           <option value={2}>RX-802 (+2%)</option><option value={4}>RX-804 (+4%)</option>
         </select>
       </Field>
       <Field label="Facility tax %">
         <input type="number" step="0.1" value={refine.tax_pct}
-               onChange={e => set('tax_pct', num(e.target.value))} style={{ width: '100%' }} />
+               onChange={e => set('tax_pct', num(e.target.value))} style={FIT} />
       </Field>
       <div style={{ gridColumn: '1 / -1' }}>
         <Field label={`Reprocessing rigs (${refine.rig_type_ids.length} selected · data-driven from SDE)`}>
@@ -206,6 +211,75 @@ function YieldBadge({ ry }) {
   )
 }
 
+function defaultShipping() {
+  return { mode: 'regular', isk_per_jump_m3: 1000, isk_per_m3: 5,
+           jf_ship: 'Ark', isotopes_per_ly: 305, isotope_price: 800, round_trip: false }
+}
+
+function shippingPayload(s) {
+  if (s.mode === 'jf') return { mode: 'jf', jf_ship: s.jf_ship, isotopes_per_ly: s.isotopes_per_ly, isotope_price: s.isotope_price, round_trip: s.round_trip }
+  if (s.mode === 'flat') return { mode: 'flat', isk_per_m3: s.isk_per_m3 }
+  return { mode: 'regular', isk_per_jump_m3: s.isk_per_jump_m3 }
+}
+
+function TransportControls({ shipping, setShipping }) {
+  const set = (k, v) => setShipping({ ...shipping, [k]: v })
+  return (
+    <>
+      <Field label="Mode">
+        <select value={shipping.mode} onChange={e => set('mode', e.target.value)} style={FIT}>
+          <option value="regular">Freighter (ISK / jump / m³)</option>
+          <option value="flat">Flat (ISK / m³, no jumps)</option>
+          <option value="jf">Jump freighter</option>
+        </select>
+      </Field>
+      {shipping.mode === 'regular' && (
+        <Field label="ISK per jump per m³"><input type="number" value={shipping.isk_per_jump_m3} onChange={e => set('isk_per_jump_m3', num(e.target.value))} style={FIT} /></Field>
+      )}
+      {shipping.mode === 'flat' && (
+        <Field label="ISK per m³ (flat)" hint="applied directly, no route lookup"><input type="number" value={shipping.isk_per_m3} onChange={e => set('isk_per_m3', num(e.target.value))} style={FIT} /></Field>
+      )}
+      {shipping.mode === 'jf' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: '0 10px' }}>
+          <Field label="JF ship"><select value={shipping.jf_ship} onChange={e => set('jf_ship', e.target.value)} style={FIT}>{['Ark', 'Rhea', 'Nomad', 'Anshar'].map(s => <option key={s}>{s}</option>)}</select></Field>
+          <Field label="Isotopes / ly"><input type="number" value={shipping.isotopes_per_ly} onChange={e => set('isotopes_per_ly', num(e.target.value))} style={FIT} /></Field>
+          <Field label="Isotope price"><input type="number" value={shipping.isotope_price} onChange={e => set('isotope_price', num(e.target.value))} style={FIT} /></Field>
+          <Field label="Round trip"><input type="checkbox" checked={shipping.round_trip} onChange={e => set('round_trip', e.target.checked)} /></Field>
+        </div>
+      )}
+    </>
+  )
+}
+
+// Paste-a-list adder shared by every tab. kind: mineral | gas | any.
+function PasteAdder({ kind, label, onParsed }) {
+  const [text, setText] = useState('')
+  const [msg, setMsg] = useState('')
+  async function go() {
+    if (!text.trim()) return
+    try {
+      const r = await post('/ore/parse-items', { text, kind })
+      onParsed(r.needs)
+      const parts = [`✓ ${r.needs.length} ${label}`]
+      if (r.skipped.length) parts.push(`skipped ${r.skipped.length}`)
+      if (r.unmatched.length) parts.push(`${r.unmatched.length} unmatched`)
+      setMsg(parts.join(' · '))
+    } catch (e) { setMsg(e.message) }
+  }
+  return (
+    <details style={{ marginBottom: 8 }}>
+      <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--accent)' }}>Paste a list (auto-extracts {label})</summary>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={4}
+                placeholder={'Tritanium\t1000\nPyerite 5000\nMexallon x250…'}
+                style={{ width: '100%', boxSizing: 'border-box', marginTop: 6, fontFamily: 'monospace', fontSize: 12 }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+        <button className="btn btn-sm" onClick={go}>Parse</button>
+        {msg && <span style={{ fontSize: 11, color: 'var(--text)' }}>{msg}</span>}
+      </div>
+    </details>
+  )
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Tab 1 — Acquisition comparison
 // ────────────────────────────────────────────────────────────────────────────
@@ -216,15 +290,10 @@ function ComparisonTab({ rigs, hubs, cj }) {
   const [target, setTarget] = useState('')
   const [sources, setSources] = useState([])          // [{key,label,region_id,system_name,cj}]
   const [needs, setNeeds] = useState({})              // {type_id: {name, qty, on}}
-  const [analyzeMode, setAnalyzeMode] = useState('all')
+  const [include, setInclude] = useState({ minerals: true, raw: true, compressed: true })
   const [basis, setBasis] = useState('sell')
   const [refine, setRefine] = useState(defaultRefine())
-  const [shipMode, setShipMode] = useState('regular')
-  const [iskPerJump, setIskPerJump] = useState(1000)
-  const [jfShip, setJfShip] = useState('Ark')
-  const [isoPerLy, setIsoPerLy] = useState(305)
-  const [isoPrice, setIsoPrice] = useState(800)
-  const [roundTrip, setRoundTrip] = useState(false)
+  const [shipping, setShipping] = useState(defaultShipping())
   const [volAlert, setVolAlert] = useState(true)
 
   const [loading, setLoading] = useState(false)
@@ -242,22 +311,12 @@ function ComparisonTab({ rigs, hubs, cj }) {
   function setNeedQty(tid, qty) {
     setNeeds({ ...needs, [tid]: { ...needs[tid], qty: num(qty) } })
   }
-
-  const [pasteText, setPasteText] = useState('')
-  const [pasteMsg, setPasteMsg] = useState('')
-  async function parseList() {
-    if (!pasteText.trim()) return
-    try {
-      const r = await post('/ore/parse-minerals', { text: pasteText })
-      const merged = { ...needs }
-      r.needs.forEach(n => { merged[n.type_id] = { name: n.name, qty: n.qty, on: true } })
-      setNeeds(merged)
-      const parts = [`✓ ${r.needs.length} minerals`]
-      if (r.skipped_non_mineral.length) parts.push(`skipped ${r.skipped_non_mineral.length} non-mineral`)
-      if (r.unmatched.length) parts.push(`${r.unmatched.length} unmatched`)
-      setPasteMsg(parts.join(' · '))
-    } catch (e) { setPasteMsg(e.message) }
+  function mergeParsed(parsed) {
+    const merged = { ...needs }
+    parsed.forEach(n => { merged[n.type_id] = { name: n.name, qty: n.qty, on: true } })
+    setNeeds(merged)
   }
+  const toggleInc = (k) => setInclude({ ...include, [k]: !include[k] })
 
   async function run() {
     const chosenNeeds = Object.entries(needs).filter(([, v]) => v.on)
@@ -270,12 +329,12 @@ function ComparisonTab({ rigs, hubs, cj }) {
         target_system: target || null,
         needs: chosenNeeds,
         sources,
-        analyze_mode: analyzeMode,
+        include_minerals: include.minerals,
+        include_raw: include.raw,
+        include_compressed: include.compressed,
         basis,
         refine,
-        shipping: shipMode === 'jf'
-          ? { mode: 'jf', jf_ship: jfShip, isotopes_per_ly: isoPerLy, isotope_price: isoPrice, round_trip: roundTrip }
-          : { mode: 'regular', isk_per_jump_m3: iskPerJump },
+        shipping: shippingPayload(shipping),
         volatility_alert: volAlert,
       }
       setRes(await post('/ore/compare', body))
@@ -292,17 +351,19 @@ function ComparisonTab({ rigs, hubs, cj }) {
 
         <Panel title="Target system">
           <SystemSearch value={target} onChange={(name) => setTarget(name)} placeholder="Refine / deliver to…" />
-          <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
-            <Field label="Analyze">
-              <select value={analyzeMode} onChange={e => setAnalyzeMode(e.target.value)}>
-                <option value="all">Minerals + ore + compressed</option>
-                <option value="minerals">Minerals only</option>
-                <option value="raw">Raw ore</option>
-                <option value="compressed">Compressed ore</option>
-              </select>
-            </Field>
+          <div style={{ marginTop: 10 }}>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>Analyze (what to consider)</span>
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+              {[['minerals', 'Buy minerals'], ['raw', 'Raw ore'], ['compressed', 'Compressed ore']].map(([k, lab]) => (
+                <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-white)' }}>
+                  <input type="checkbox" checked={include[k]} onChange={() => toggleInc(k)} /> {lab}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div style={{ marginTop: 10 }}>
             <Field label="Price basis">
-              <select value={basis} onChange={e => setBasis(e.target.value)}>
+              <select value={basis} onChange={e => setBasis(e.target.value)} style={FIT}>
                 <option value="sell">Sell (buy now)</option>
                 <option value="buy">Buy (place order)</option>
               </select>
@@ -311,16 +372,7 @@ function ComparisonTab({ rigs, hubs, cj }) {
         </Panel>
 
         <Panel title="Resources needed">
-          <details style={{ marginBottom: 8 }}>
-            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--accent)' }}>Paste a list (auto-extracts minerals)</summary>
-            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={4}
-                      placeholder={'Tritanium\t1000\nPyerite 5000\nMexallon x250…'}
-                      style={{ width: '100%', marginTop: 6, fontFamily: 'monospace', fontSize: 12 }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-              <button className="btn btn-sm" onClick={parseList}>Parse</button>
-              {pasteMsg && <span style={{ fontSize: 11, color: 'var(--text)' }}>{pasteMsg}</span>}
-            </div>
-          </details>
+          <PasteAdder kind="mineral" label="minerals" onParsed={mergeParsed} />
           <div style={{ maxHeight: 200, overflowY: 'auto' }}>
             {minerals.map(m => (
               <div key={m.type_id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
@@ -342,24 +394,7 @@ function ComparisonTab({ rigs, hubs, cj }) {
         </Panel>
 
         <Panel title="Transport">
-          <Field label="Mode">
-            <select value={shipMode} onChange={e => setShipMode(e.target.value)}>
-              <option value="regular">Freighter (per jump)</option>
-              <option value="jf">Jump freighter</option>
-            </select>
-          </Field>
-          {shipMode === 'regular'
-            ? <Field label="ISK per jump per m³"><input type="number" value={iskPerJump} onChange={e => setIskPerJump(num(e.target.value))} /></Field>
-            : <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 10px' }}>
-                <Field label="JF ship">
-                  <select value={jfShip} onChange={e => setJfShip(e.target.value)}>
-                    {['Ark', 'Rhea', 'Nomad', 'Anshar'].map(s => <option key={s}>{s}</option>)}
-                  </select>
-                </Field>
-                <Field label="Isotopes / ly"><input type="number" value={isoPerLy} onChange={e => setIsoPerLy(num(e.target.value))} /></Field>
-                <Field label="Isotope price"><input type="number" value={isoPrice} onChange={e => setIsoPrice(num(e.target.value))} /></Field>
-                <Field label="Round trip"><input type="checkbox" checked={roundTrip} onChange={e => setRoundTrip(e.target.checked)} /></Field>
-              </div>}
+          <TransportControls shipping={shipping} setShipping={setShipping} />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 4 }}>
             <input type="checkbox" checked={volAlert} onChange={e => setVolAlert(e.target.checked)} />
             Low-volatility / liquidity alert
@@ -555,12 +590,7 @@ function GasTab({ hubs, cj }) {
   const [needs, setNeeds] = useState({})              // {reg_type_id: {name, qty, on}}
   const [basis, setBasis] = useState('sell')
   const [loss, setLoss] = useState(5)                 // decompression loss %
-  const [shipMode, setShipMode] = useState('regular')
-  const [iskPerJump, setIskPerJump] = useState(1000)
-  const [jfShip, setJfShip] = useState('Ark')
-  const [isoPerLy, setIsoPerLy] = useState(305)
-  const [isoPrice, setIsoPrice] = useState(800)
-  const [roundTrip, setRoundTrip] = useState(false)
+  const [shipping, setShipping] = useState(defaultShipping())
   const [volAlert, setVolAlert] = useState(true)
   const [res, setRes] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -573,6 +603,11 @@ function GasTab({ hubs, cj }) {
     setNeeds({ ...needs, [g.reg_type_id]: { name: g.reg_name, qty: cur?.qty || 0, on: !cur?.on } })
   }
   const setQty = (tid, q) => setNeeds({ ...needs, [tid]: { ...needs[tid], qty: num(q) } })
+  function mergeParsed(parsed) {
+    const merged = { ...needs }
+    parsed.forEach(n => { merged[n.type_id] = { name: n.name, qty: n.qty, on: true } })
+    setNeeds(merged)
+  }
 
   async function run() {
     const chosen = Object.entries(needs).filter(([, v]) => v.on).map(([tid, v]) => ({ type_id: Number(tid), qty: v.qty }))
@@ -583,9 +618,7 @@ function GasTab({ hubs, cj }) {
       setRes(await post('/ore/gas-compare', {
         target_system: target || null, needs: chosen, sources, basis,
         decompression_loss_pct: loss,
-        shipping: shipMode === 'jf'
-          ? { mode: 'jf', jf_ship: jfShip, isotopes_per_ly: isoPerLy, isotope_price: isoPrice, round_trip: roundTrip }
-          : { mode: 'regular', isk_per_jump_m3: iskPerJump },
+        shipping: shippingPayload(shipping),
         volatility_alert: volAlert,
       }))
     } catch (e) { setErr(e.message) } finally { setLoading(false) }
@@ -598,19 +631,20 @@ function GasTab({ hubs, cj }) {
 
         <Panel title="Target system">
           <SystemSearch value={target} onChange={(name) => setTarget(name)} placeholder="Deliver to…" />
-          <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: '0 10px', marginTop: 8 }}>
             <Field label="Price basis">
-              <select value={basis} onChange={e => setBasis(e.target.value)}>
+              <select value={basis} onChange={e => setBasis(e.target.value)} style={FIT}>
                 <option value="sell">Sell (buy now)</option><option value="buy">Buy (place order)</option>
               </select>
             </Field>
             <Field label="Decompression loss %" hint="~5% typical — editable">
-              <input type="number" step="0.5" value={loss} onChange={e => setLoss(num(e.target.value))} style={{ width: 90 }} />
+              <input type="number" step="0.5" value={loss} onChange={e => setLoss(num(e.target.value))} style={FIT} />
             </Field>
           </div>
         </Panel>
 
         <Panel title="Gases needed">
+          <PasteAdder kind="gas" label="gases" onParsed={mergeParsed} />
           <div style={{ maxHeight: 240, overflowY: 'auto' }}>
             {gases.map(g => (
               <div key={g.reg_type_id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
@@ -630,19 +664,7 @@ function GasTab({ hubs, cj }) {
         </Panel>
 
         <Panel title="Transport">
-          <Field label="Mode">
-            <select value={shipMode} onChange={e => setShipMode(e.target.value)}>
-              <option value="regular">Freighter (per jump)</option><option value="jf">Jump freighter</option>
-            </select>
-          </Field>
-          {shipMode === 'regular'
-            ? <Field label="ISK per jump per m³"><input type="number" value={iskPerJump} onChange={e => setIskPerJump(num(e.target.value))} /></Field>
-            : <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 10px' }}>
-                <Field label="JF ship"><select value={jfShip} onChange={e => setJfShip(e.target.value)}>{['Ark', 'Rhea', 'Nomad', 'Anshar'].map(s => <option key={s}>{s}</option>)}</select></Field>
-                <Field label="Isotopes / ly"><input type="number" value={isoPerLy} onChange={e => setIsoPerLy(num(e.target.value))} /></Field>
-                <Field label="Isotope price"><input type="number" value={isoPrice} onChange={e => setIsoPrice(num(e.target.value))} /></Field>
-                <Field label="Round trip"><input type="checkbox" checked={roundTrip} onChange={e => setRoundTrip(e.target.checked)} /></Field>
-              </div>}
+          <TransportControls shipping={shipping} setShipping={setShipping} />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 4 }}>
             <input type="checkbox" checked={volAlert} onChange={e => setVolAlert(e.target.checked)} /> Low-volatility / liquidity alert
           </label>
@@ -733,11 +755,13 @@ function ReprocessTab({ rigs }) {
   const [pending, setPending] = useState(null)
   const [refine, setRefine] = useState(defaultRefine())
   const [system, setSystem] = useState('')
-  const [valueRegion, setValueRegion] = useState(10000002)
+  const [valueRegion, setValueRegion] = useState('forge')
   const [basis, setBasis] = useState('sell')
   const [res, setRes] = useState(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
+
+  const VALUE_REGIONS = { forge: 10000002, domain: 10000043, sinq: 10000032 }
 
   function addItem() {
     if (!pending?.type_id) return
@@ -746,15 +770,26 @@ function ReprocessTab({ rigs }) {
   }
   const setQty = (i, q) => setItems(items.map((it, j) => j === i ? { ...it, qty: num(q) } : it))
   const removeItem = (i) => setItems(items.filter((_, j) => j !== i))
+  function addParsed(parsed) {
+    const byId = new Map(items.map(it => [it.type_id, { ...it }]))
+    parsed.forEach(n => {
+      const ex = byId.get(n.type_id)
+      if (ex) ex.qty += n.qty || 0
+      else byId.set(n.type_id, { type_id: n.type_id, name: n.name, qty: n.qty || 1000 })
+    })
+    setItems([...byId.values()])
+  }
 
   async function run() {
     if (!items.length) { setErr('Add at least one item'); return }
     setLoading(true); setErr(''); setRes(null)
     try {
+      const value_cj = valueRegion === 'cj'
+      const region_id = (value_cj || valueRegion === 'none') ? null : VALUE_REGIONS[valueRegion]
       setRes(await post('/ore/reprocess', {
         items: items.map(it => ({ type_id: it.type_id, qty: it.qty })),
         refine, system_name: system || null,
-        region_id: valueRegion || null, basis,
+        region_id, value_cj, basis,
       }))
     } catch (e) { setErr(e.message) } finally { setLoading(false) }
   }
@@ -763,6 +798,7 @@ function ReprocessTab({ rigs }) {
     <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 18, alignItems: 'start' }}>
       <div>
         <Panel title="Items to reprocess">
+          <PasteAdder kind="any" label="items" onParsed={addParsed} />
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
             <div style={{ flex: 1 }}><TypeSearch value={pending} onChange={t => setPending(t?.type_id ? t : null)} placeholder="Add ore / item…" /></div>
             <button className="btn btn-sm" onClick={addItem}>Add</button>
@@ -788,18 +824,19 @@ function ReprocessTab({ rigs }) {
         </Panel>
 
         <Panel title="Value minerals at">
-          <div style={{ display: 'flex', gap: 10 }}>
-            <Field label="Region">
-              <select value={valueRegion} onChange={e => setValueRegion(Number(e.target.value))}>
-                <option value={10000002}>The Forge (Jita)</option>
-                <option value={10000043}>Domain (Amarr)</option>
-                <option value={10000032}>Sinq Laison (Dodixie)</option>
-                <option value={0}>— none —</option>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: '0 10px' }}>
+            <Field label="Market">
+              <select value={valueRegion} onChange={e => setValueRegion(e.target.value)} style={FIT}>
+                <option value="forge">The Forge (Jita)</option>
+                <option value="domain">Domain (Amarr)</option>
+                <option value="sinq">Sinq Laison (Dodixie)</option>
+                <option value="cj">C-J6MT (local scrape)</option>
+                <option value="none">— none —</option>
               </select>
             </Field>
             <Field label="Basis">
-              <select value={basis} onChange={e => setBasis(e.target.value)}>
-                <option value="sell">Sell</option><option value="buy">Buy</option>
+              <select value={basis} onChange={e => setBasis(e.target.value)} style={FIT}>
+                <option value="sell">Sell</option><option value="buy">Buy</option><option value="split">Split (mid)</option>
               </select>
             </Field>
           </div>
@@ -815,6 +852,11 @@ function ReprocessTab({ rigs }) {
         {!res && !loading && <div className="empty-state">Add ore or items, set your skills/structure, then reprocess.</div>}
         {res && (
           <>
+            {res.warnings?.length > 0 && (
+              <div className="card" style={{ padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#c8a951' }}>
+                {res.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+              </div>
+            )}
             <Panel title="Effective yield" right={res.total_value != null ? <b style={{ color: 'var(--accent)' }}>{fmtIsk(res.total_value)} ISK</b> : null}>
               <YieldBadge ry={res.refine_yield} />
               <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 4 }}>Security band: {res.security_band}</div>
@@ -840,7 +882,7 @@ function ReprocessTab({ rigs }) {
                 <tbody>
                   {res.items.map((it, i) => (
                     <tr key={i}>
-                      <td>{it.input_type_id}</td>
+                      <td style={{ color: 'var(--text-white)' }}>{(items.find(x => x.type_id === it.input_type_id) || {}).name || it.input_type_id}</td>
                       <td>{fmtNum(it.batches)}</td>
                       <td>{fmtNum(it.refined_units)}</td>
                       <td>{fmtNum(it.leftover)}</td>
