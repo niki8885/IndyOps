@@ -4,6 +4,7 @@ Network paths (token exchange, JWKS verify, ESI fetch) are not exercised here â€
 only the pure pieces: token encryption, the SSO state round-trip, claim parsing,
 timestamp parsing and the ESI-json â†’ row mappers.
 """
+import pytest
 import datetime
 
 from app.adapters import esi
@@ -76,7 +77,7 @@ def test_map_transaction():
     assert row["character_id"] == 7
     assert row["transaction_id"] == 123
     assert row["date"] == datetime.datetime(2026, 1, 1, 0, 0, 0)
-    assert row["unit_price"] == 5.5
+    assert row["unit_price"] == pytest.approx(5.5)
     assert row["is_buy"] is True
 
 

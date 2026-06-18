@@ -15,8 +15,8 @@ def test_reaction_time_mult_uses_advanced_industry_only():
 
 
 def test_no_skills_means_no_reduction():
-    assert skills.manufacturing_time_mult({}) == 1.0
-    assert skills.reaction_time_mult({}) == 1.0
+    assert skills.manufacturing_time_mult({}) == pytest.approx(1.0)
+    assert skills.reaction_time_mult({}) == pytest.approx(1.0)
 
 
 def test_sales_tax_drops_with_accounting():
@@ -37,7 +37,7 @@ def test_broker_fee_drops_with_relations_and_standings_and_floors():
 def test_reprocessing_skill_mult_stacks_three_skills():
     # (1+0.03×5)(1+0.02×5)(1+0.02×5) = 1.15 × 1.10 × 1.10
     assert skills.reprocessing_skill_mult(5, 5, 5) == pytest.approx(1.15 * 1.10 * 1.10)
-    assert skills.reprocessing_skill_mult(0, 0, 0) == 1.0
+    assert skills.reprocessing_skill_mult(0, 0, 0) == pytest.approx(1.0)
     # ore-specific skill is optional and defaults to none
     assert skills.reprocessing_skill_mult(5, 5) == pytest.approx(1.15 * 1.10)
 

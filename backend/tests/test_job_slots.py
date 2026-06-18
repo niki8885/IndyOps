@@ -10,10 +10,10 @@ def test_job_slots_base_with_no_skills():
 def test_job_slots_from_skills():
     levels = {
         skills.SKILL_MASS_PRODUCTION: 5,
-        skills.SKILL_ADVANCED_MASS_PRODUCTION: 4,        # man = 1 + 5 + 4 = 10
+        skills.SKILL_ADVANCED_MASS_PRODUCTION: 4,        # manufacturing: 1 + 5 + 4 → 10
         skills.SKILL_LABORATORY_OPERATION: 5,
-        skills.SKILL_ADVANCED_LABORATORY_OPERATION: 5,   # sci = 1 + 5 + 5 = 11
-        skills.SKILL_MASS_REACTIONS: 3,                  # rea = 1 + 3 = 4
+        skills.SKILL_ADVANCED_LABORATORY_OPERATION: 5,   # science: 1 + 5 + 5 → 11
+        skills.SKILL_MASS_REACTIONS: 3,                  # reaction: 1 + 3 → 4
     }
     assert skills.job_slots(levels) == {"manufacturing": 10, "science": 11, "reaction": 4}
 

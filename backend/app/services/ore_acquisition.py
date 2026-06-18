@@ -349,7 +349,7 @@ def compare_gas(
         *,
         target: str,
         basis: str,
-        needs: list[Need],  # type_id = the *regular* gas
+        needs: list[Need],  # type_id is the *regular* gas
         sources: list[Source],
         item_prices: dict[str, dict[int, Optional[float]]],  # regular + compressed type ids
         volumes: dict[int, Optional[float]],

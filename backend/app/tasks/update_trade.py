@@ -210,7 +210,7 @@ def run_trade_orders_update() -> dict:
                     summary["universe"], summary["cross_hub"], summary["station"])
     except Exception as exc:
         db.rollback()
-        logger.error("trade orders update failed: %s", exc)
+        logger.exception("trade orders update failed")
         summary["errors"].append(str(exc))
     finally:
         eve_db.close()
@@ -272,7 +272,7 @@ def run_trade_history_update() -> dict:
         logger.info("trade history: types=%s rows=%s", summary["types"], summary["rows"])
     except Exception as exc:
         db.rollback()
-        logger.error("trade history update failed: %s", exc)
+        logger.exception("trade history update failed")
         summary["errors"].append(str(exc))
     finally:
         db.close()

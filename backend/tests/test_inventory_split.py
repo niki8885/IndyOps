@@ -1,4 +1,5 @@
 """Stack splitting — _split_off carves a new lot off an inventory item."""
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -27,7 +28,7 @@ def test_split_carves_new_lot():
     assert clone.id != item.id
     # metadata carries over so the two halves are interchangeable
     assert clone.place == "Jita"
-    assert clone.price == 5.0
+    assert clone.price == pytest.approx(5.0)
     assert clone.name == "Tritanium"
     s.close()
 

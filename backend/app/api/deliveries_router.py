@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.adapters import market
+from app.api.responses import ERR_400, ERR_404
 from app.api.inventory_router import _split_off, _get_item_or_404, _accessible_org_ids, _resolve_eve_type
 from app.core.database import (
     get_db, Delivery, DeliveryStatusEvent, InventoryItem, Projects, StockMovement,
@@ -315,7 +316,7 @@ async def list_warehouses(
     return sorted(places)
 
 
-@router.post("", response_model=DeliveryOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=DeliveryOut, status_code=status.HTTP_201_CREATED, responses={**ERR_400})
 async def create_delivery(
         body: DeliveryCreate,
         current_user: UserDB = Depends(get_current_user),
@@ -464,7 +465,7 @@ async def sync_contracts(
     return rows
 
 
-@router.get("/{delivery_id}", response_model=DeliveryOut)
+@router.get("/{delivery_id}", response_model=DeliveryOut, responses={**ERR_404})
 async def get_delivery(
         delivery_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -475,7 +476,7 @@ async def get_delivery(
     return d
 
 
-@router.get("/{delivery_id}/history")
+@router.get("/{delivery_id}/history", responses={**ERR_404})
 async def delivery_history(
         delivery_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -505,7 +506,7 @@ async def delivery_history(
     }
 
 
-@router.patch("/{delivery_id}/status", response_model=DeliveryOut)
+@router.patch("/{delivery_id}/status", response_model=DeliveryOut, responses={**ERR_400, **ERR_404})
 async def update_status(
         delivery_id: int,
         body: StatusUpdate,
@@ -528,7 +529,7 @@ async def update_status(
     return d
 
 
-@router.delete("/{delivery_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{delivery_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_404})
 async def delete_delivery(
         delivery_id: int,
         current_user: UserDB = Depends(get_current_user),

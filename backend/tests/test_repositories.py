@@ -2,6 +2,7 @@
 EVE SDE repository against an in-memory SQLite database (no real Postgres).
 Also pins the N+1 fix: materials() must run a constant number of queries.
 """
+import pytest
 from app.repositories import eve as eve_repo
 
 MATS = [
@@ -50,7 +51,7 @@ def test_lookup_helpers(eve_session, seed_blueprint):
     assert eve_repo.base_time(eve_session, bp) == 600
     assert eve_repo.max_production_limit(eve_session, bp) == 10
     assert eve_repo.type_names(eve_session, [1000, 2000])[2000] == "Widget"
-    assert eve_repo.type_volume(eve_session, 2000) == 2.5
+    assert eve_repo.type_volume(eve_session, 2000) == pytest.approx(2.5)
     assert eve_repo.volumes(eve_session, [34, 35]) == {34: 0.01, 35: 0.01}
 
 

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.adapters import profit_sim as sim_engine
 from app.adapters import risk_engine
+from app.api.responses import ERR_404
 from app.core.database import SimulationRun, UserDB, get_db
 from app.core.security import get_current_user
 from app.services import profit_sim as core
@@ -150,14 +151,14 @@ async def list_runs(project_id: Optional[int] = None, source: Optional[str] = No
     return {"runs": [run_payload(r) for r in runs]}
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", responses={**ERR_404})
 async def get_run(run_id: int, current_user: UserDB = Depends(get_current_user),
                   db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id, current_user.id)
     return {**run_payload(run), "params": run.params, "metrics": run.metrics}
 
 
-@router.get("/runs/{run_id}/pdf")
+@router.get("/runs/{run_id}/pdf", responses={**ERR_404})
 async def get_run_pdf(run_id: int, current_user: UserDB = Depends(get_current_user),
                       db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id, current_user.id)
@@ -173,7 +174,7 @@ async def get_run_pdf(run_id: int, current_user: UserDB = Depends(get_current_us
                     headers={"Content-Disposition": f'inline; filename="simulation_{run_id}.pdf"'})
 
 
-@router.get("/reports/project/{project_id}/pdf")
+@router.get("/reports/project/{project_id}/pdf", responses={**ERR_404})
 async def project_rollup_pdf(project_id: int, current_user: UserDB = Depends(get_current_user),
                              db: Session = Depends(get_db)):
     runs = (db.query(SimulationRun)
@@ -195,7 +196,7 @@ async def project_rollup_pdf(project_id: int, current_user: UserDB = Depends(get
                     headers={"Content-Disposition": f'inline; filename="project_{project_id}_simulations.pdf"'})
 
 
-@router.post("/rank")
+@router.post("/rank", responses={**ERR_404})
 async def rank_runs(body: RankRequest, current_user: UserDB = Depends(get_current_user),
                     db: Session = Depends(get_db)):
     runs = (db.query(SimulationRun)

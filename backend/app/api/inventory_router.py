@@ -8,6 +8,7 @@ from app.core.database import get_db, InventoryItem, Projects, Organisation, Org
 from sqlalchemy import or_
 from app.core.database_eve import EveSessionLocal, EveType
 from app.core.security import get_current_user
+from app.api.responses import ERR_400, ERR_404
 
 router = APIRouter()
 
@@ -229,7 +230,7 @@ async def preview_bulk(
     return PreviewResult(items=items, warnings=warnings)
 
 
-@router.post("/batch", response_model=List[InventoryOut], status_code=status.HTTP_201_CREATED)
+@router.post("/batch", response_model=List[InventoryOut], status_code=status.HTTP_201_CREATED, responses={**ERR_404})
 async def batch_add(
         body: BatchCreate,
         current_user: UserDB = Depends(get_current_user),
@@ -260,7 +261,7 @@ async def batch_add(
     return created
 
 
-@router.post("", response_model=InventoryOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=InventoryOut, status_code=status.HTTP_201_CREATED, responses={**ERR_404})
 async def add_item(
         body: InventoryCreate,
         current_user: UserDB = Depends(get_current_user),
@@ -301,7 +302,7 @@ async def add_item(
     return item
 
 
-@router.post("/bulk", response_model=BulkParseResult, status_code=status.HTTP_201_CREATED)
+@router.post("/bulk", response_model=BulkParseResult, status_code=status.HTTP_201_CREATED, responses={**ERR_404})
 async def bulk_add_items(
         body: BulkParseRequest,
         current_user: UserDB = Depends(get_current_user),
@@ -460,7 +461,7 @@ def _split_off(db: Session, item: InventoryItem, qty: Optional[int]) -> Inventor
     return clone
 
 
-@router.post("/{item_id}/sell", response_model=InventoryOut)
+@router.post("/{item_id}/sell", response_model=InventoryOut, responses={**ERR_404})
 async def sell_item(
         item_id: int,
         body: SellRequest,
@@ -485,7 +486,7 @@ async def sell_item(
     return target
 
 
-@router.post("/{item_id}/split", response_model=List[InventoryOut])
+@router.post("/{item_id}/split", response_model=List[InventoryOut], responses={**ERR_400, **ERR_404})
 async def split_item(
         item_id: int,
         body: SplitRequest,
@@ -508,7 +509,7 @@ async def split_item(
     return [item, clone]
 
 
-@router.post("/{item_id}/use", response_model=InventoryOut)
+@router.post("/{item_id}/use", response_model=InventoryOut, responses={**ERR_404})
 async def use_item(
         item_id: int,
         body: UseRequest,
@@ -532,7 +533,7 @@ async def use_item(
     return target
 
 
-@router.get("/{item_id}", response_model=InventoryOut)
+@router.get("/{item_id}", response_model=InventoryOut, responses={**ERR_404})
 async def get_item(
         item_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -541,7 +542,7 @@ async def get_item(
     return _get_item_or_404(db, item_id, current_user.id)
 
 
-@router.patch("/{item_id}", response_model=InventoryOut)
+@router.patch("/{item_id}", response_model=InventoryOut, responses={**ERR_404})
 async def update_item(
         item_id: int,
         body: InventoryUpdate,
@@ -568,7 +569,7 @@ async def update_item(
     return item
 
 
-@router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_404})
 async def delete_item(
         item_id: int,
         current_user: UserDB = Depends(get_current_user),

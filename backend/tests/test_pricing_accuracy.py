@@ -4,6 +4,7 @@ guard (IO-21) actually keeps an unrealistic order out of the plan's totals and
 make-vs-buy — and that disabling it falls back to the raw price. Bridges
 ``resolve_price`` → ``from_bom`` → ``solve_chain`` (no HTTP/DB).
 """
+import pytest
 from app.services.chain import LocationParams, from_bom, solve_chain
 from app.services.pricing import resolve_price
 
@@ -22,18 +23,18 @@ def test_scam_buy_excluded_from_chain_totals():
     # Leaf has a scam buy (0.5) but a realistic sell (80) and adjusted (100): the
     # guard must feed 80 into the chain, so the shopping line is priced at 80, not 0.5.
     price, _src, flag = resolve_price([(0.5, 1)], [(80.0, 1)], adjusted=100.0, ratio=0.3, basis="buy")
-    assert price == 80.0 and flag and flag["original"] == 0.5      # scam dropped → sell side
+    assert price == pytest.approx(80.0) and flag and flag["original"] == pytest.approx(0.5)      # scam dropped → sell side
 
     plan = solve_chain(from_bom(1, 1, _tree_widget_from_leaf(),
                                 {1: 1e9, 2: price}, {2: 100.0}, LocationParams(1, "P")))
     leaf = [s for s in plan.shopping_list if s.type_id == 2][0]
-    assert leaf.unit == 80.0 and leaf.qty == 4 and leaf.total == 320.0
+    assert leaf.unit == pytest.approx(80.0) and leaf.qty == 4 and leaf.total == pytest.approx(320.0)
 
 
 def test_guard_disabled_uses_raw_price():
     # ratio = 0 disables the guard → the raw (scam) buy survives, no flag.
     price, _src, flag = resolve_price([(0.5, 1)], [(80.0, 1)], adjusted=100.0, ratio=0.0, basis="buy")
-    assert price == 0.5 and flag is None
+    assert price == pytest.approx(0.5) and flag is None
 
 
 def test_scam_correction_restores_make_vs_buy():

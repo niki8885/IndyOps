@@ -1,4 +1,5 @@
 """JSON-safe numeric coercion helpers."""
+import pytest
 import numpy as np
 import pandas as pd
 
@@ -19,7 +20,7 @@ def test_clean_nan_and_inf_become_none():
 
 def test_clean_coerces_numpy_scalars_to_python():
     v = clean(np.float64(1.5))
-    assert v == 1.5 and isinstance(v, float)
+    assert v == pytest.approx(1.5) and isinstance(v, float)
     i = clean(np.int64(3))
     assert i == 3 and isinstance(i, int)
 

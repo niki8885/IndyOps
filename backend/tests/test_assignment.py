@@ -32,7 +32,7 @@ def test_unlimited_slots_all_in_house():
     r = assign_jobs(jobs, cfg)
     assert r.status in ("optimal", "feasible")
     assert len(r.in_house) == 2 and not r.bought
-    assert r.savings_forfeited == 0.0
+    assert r.savings_forfeited == pytest.approx(0.0)
 
 
 def test_tight_slots_keep_higher_savings():
@@ -43,8 +43,8 @@ def test_tight_slots_keep_higher_savings():
     r = assign_jobs(jobs, cfg)
     assert [a.type_id for a in r.in_house] == [1]
     assert [a.type_id for a in r.bought] == [2]
-    assert r.savings_captured == 50.0
-    assert r.savings_forfeited == 30.0
+    assert r.savings_captured == pytest.approx(50.0)
+    assert r.savings_forfeited == pytest.approx(30.0)
 
 
 def test_forced_job_over_capacity_is_infeasible():
