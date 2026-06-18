@@ -1,7 +1,9 @@
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /app
-COPY indyops-ui/package*.json ./
+# .npmrc carries legacy-peer-deps=true (the @codecov/vite-plugin vite-8 peer
+# override) — copy it before `npm ci` so the install resolves inside the image.
+COPY indyops-ui/package*.json indyops-ui/.npmrc ./
 RUN npm ci
 COPY indyops-ui/ .
 RUN npm run build
