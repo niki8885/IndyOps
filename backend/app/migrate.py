@@ -69,8 +69,8 @@ def ensure_timescale() -> None:
                     f"SELECT create_hypertable('{table}', 'timestamp', "
                     "migrate_data => true, if_not_exists => true)"))
             logger.info("timescale: converted %s to a hypertable", table)
-        except Exception as exc:
-            logger.error("timescale: failed converting %s — %s", table, exc)
+        except Exception:
+            logger.exception("timescale: failed converting %s", table)
 
 
 def run() -> None:
@@ -99,8 +99,8 @@ def main() -> None:
     try:
         run()
         logger.info("alembic: migrations applied")
-    except Exception as exc:
-        logger.error("alembic: migration step failed (create_all is the fallback) — %s", exc)
+    except Exception:
+        logger.exception("alembic: migration step failed (create_all is the fallback)")
 
 
 if __name__ == "__main__":

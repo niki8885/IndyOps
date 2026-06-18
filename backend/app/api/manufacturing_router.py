@@ -22,6 +22,7 @@ from app.core.security import get_current_user
 from app.adapters import chain_engine
 from app.adapters import sim_data
 from app.api import simulation_router as sim_router
+from app.api.responses import ERR_400, ERR_404
 from app.api.simulation_router import SimParamsIn
 from app.repositories import eve as eve_repo
 from app.services.chain import REACTION, LocationParams, PlannedJob, from_bom
@@ -211,7 +212,7 @@ class JobOut(BaseModel):
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.get("/blueprint", response_model=BlueprintInfoOut)
+@router.get("/blueprint", response_model=BlueprintInfoOut, responses={**ERR_404})
 async def get_blueprint_info(
         product_type_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -244,7 +245,7 @@ async def get_blueprint_info(
         eve_db.close()
 
 
-@router.post("/calculate")
+@router.post("/calculate", responses={**ERR_404})
 async def calculate(
         body: CalcRequest,
         current_user: UserDB = Depends(get_current_user),
@@ -298,16 +299,16 @@ async def calculate(
     if body.facility_id:
         f = db.query(Facility).filter(Facility.id == body.facility_id).first()
         if f:
-            if sci == 0.0 and f.system_cost_index:
+            if not sci and f.system_cost_index:
                 sci = f.system_cost_index
-            if tax == 0.0 and f.tax:
+            if not tax and f.tax:
                 tax = f.tax
             if f.facility_type in EC_TYPES:
-                if mat_role == 0.0:
+                if not mat_role:
                     mat_role = EC_MATERIAL_ROLE
-                if s_bonus == 0.0:
+                if not s_bonus:
                     s_bonus = max(EC_COST_ROLE, f.cost_bonus or 0.0)
-            elif s_bonus == 0.0 and f.cost_bonus:
+            elif not s_bonus and f.cost_bonus:
                 s_bonus = f.cost_bonus
 
     # Character selection: producer's skills recalc job time; seller's skills/standings
@@ -647,11 +648,11 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
         if f:
             place_id = place_id or f.id
             place_name = place_name or getattr(f, "name", None) or f.facility_type.value
-            if sci == 0.0 and f.system_cost_index:
+            if not sci and f.system_cost_index:
                 sci = f.system_cost_index
-            if tax_pct == 0.0 and f.tax:
+            if not tax_pct and f.tax:
                 tax_pct = f.tax
-            if disc_pct == 0.0 and f.cost_bonus:
+            if not disc_pct and f.cost_bonus:
                 disc_pct = f.cost_bonus
             is_ec = f.facility_type in EC_TYPES
             can_man, can_react = _activity_caps(f.facility_type)   # a refinery can't manufacture, etc.
@@ -767,7 +768,7 @@ def _profile_out(p) -> Optional[dict]:
     }
 
 
-@router.post("/calculate-chain")
+@router.post("/calculate-chain", responses={**ERR_400, **ERR_404})
 async def calculate_chain(
         body: ChainCalcRequest,
         current_user: UserDB = Depends(get_current_user),
@@ -1000,7 +1001,7 @@ def _facility_rig_context(eve_db, f) -> tuple[list[RigBonus], str, Optional[floa
     return rigs, band_of(sec), sec
 
 
-@router.get("/facility-bonuses")
+@router.get("/facility-bonuses", responses={**ERR_404})
 async def facility_bonuses(
         facility_id: int,
         product_type_id: int,
@@ -1083,7 +1084,7 @@ async def create_job(
     return j
 
 
-@router.get("/jobs/{job_id}", response_model=JobOut)
+@router.get("/jobs/{job_id}", response_model=JobOut, responses={**ERR_404})
 async def get_job(
         job_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -1092,7 +1093,7 @@ async def get_job(
     return _job_or_404(db, job_id, current_user.id)
 
 
-@router.get("/jobs/{job_id}/history")
+@router.get("/jobs/{job_id}/history", responses={**ERR_404})
 async def job_history(
         job_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -1122,7 +1123,7 @@ async def job_history(
     }
 
 
-@router.patch("/jobs/{job_id}", response_model=JobOut)
+@router.patch("/jobs/{job_id}", response_model=JobOut, responses={**ERR_404})
 async def update_job(
         job_id: int,
         body: JobUpdate,
@@ -1148,7 +1149,7 @@ async def update_job(
     return j
 
 
-@router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_404})
 async def delete_job(
         job_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -1288,7 +1289,7 @@ async def material_availability(
     return {"project_id": body.project_id, "materials": out}
 
 
-@router.post("/jobs/{job_id}/issue")
+@router.post("/jobs/{job_id}/issue", responses={**ERR_400, **ERR_404})
 async def issue_job_materials(
         job_id: int,
         force: bool = False,
@@ -1392,7 +1393,7 @@ class ReceiveRequest(BaseModel):
     place: Optional[str] = None
 
 
-@router.post("/jobs/{job_id}/receive")
+@router.post("/jobs/{job_id}/receive", responses={**ERR_400, **ERR_404})
 async def receive_job_output(
         job_id: int,
         body: ReceiveRequest,
@@ -1468,7 +1469,7 @@ async def receive_job_output(
     return {"job_id": job.id, "received_qty": qty, "unit_cost": unit, "inventory_id": item.id}
 
 
-@router.get("/jobs/{job_id}/movements")
+@router.get("/jobs/{job_id}/movements", responses={**ERR_404})
 async def job_movements(
         job_id: int,
         current_user: UserDB = Depends(get_current_user),

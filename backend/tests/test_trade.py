@@ -9,14 +9,14 @@ def _hist(prices_volumes):
 
 
 def test_daily_volume_mean():
-    assert trade.daily_volume(_hist([(100, 10), (100, 20), (100, 30)])) == 20.0
-    assert trade.daily_volume([]) == 0.0
-    assert trade.daily_volume(None) == 0.0
+    assert trade.daily_volume(_hist([(100, 10), (100, 20), (100, 30)])) == pytest.approx(20.0)
+    assert trade.daily_volume([]) == pytest.approx(0.0)
+    assert trade.daily_volume(None) == pytest.approx(0.0)
 
 
 def test_volatility_cv():
     # flat prices → 0 variation
-    assert trade.volatility_cv(_hist([(100, 1), (100, 1), (100, 1)])) == 0.0
+    assert trade.volatility_cv(_hist([(100, 1), (100, 1), (100, 1)])) == pytest.approx(0.0)
     # mean 100, population std 10 → CV 0.1
     assert trade.volatility_cv(_hist([(90, 1), (110, 1)])) == pytest.approx(0.1)
     # too few usable points → None
@@ -25,9 +25,9 @@ def test_volatility_cv():
 
 
 def test_transport_cost():
-    assert trade.transport_cost_per_unit(2.0, 5, 1000) == 10000.0
-    assert trade.transport_cost_per_unit(2.0, 0, 1000) == 0.0     # same hub
-    assert trade.transport_cost_per_unit(-1, 5, 1000) == 0.0      # clamps negatives
+    assert trade.transport_cost_per_unit(2.0, 5, 1000) == pytest.approx(10000.0)
+    assert trade.transport_cost_per_unit(2.0, 0, 1000) == pytest.approx(0.0)     # same hub
+    assert trade.transport_cost_per_unit(-1, 5, 1000) == pytest.approx(0.0)      # clamps negatives
 
 
 def test_patient_margin():
@@ -71,8 +71,8 @@ def test_plan_trade_caps_by_tightest_constraint():
     # budget 1000/price 100 = 10; cargo 50/vol 2 = 25; liquidity 1000 → min = 10
     p = trade.plan_trade(100, 2.0, profit_isk=20, daily_volume=1000, budget=1000, cargo=50)
     assert p["units"] == 10
-    assert p["trip_profit"] == 200.0
-    assert p["trip_cost"] == 1000.0
+    assert p["trip_profit"] == pytest.approx(200.0)
+    assert p["trip_cost"] == pytest.approx(1000.0)
 
 
 def test_plan_trade_cargo_binds():
@@ -97,7 +97,7 @@ def test_plan_trade_ignores_zero_buy_price_for_budget_cap():
 
 def test_volume_scores_monotonic_and_edges():
     scores = trade.volume_scores({1: 0.0, 2: 100.0, 3: 10.0})
-    assert scores[1] == 0.0 and scores[2] == 1.0
+    assert scores[1] == pytest.approx(0.0) and scores[2] == pytest.approx(1.0)
     assert 0.0 < scores[3] < 1.0
     # degenerate sets
     assert trade.volume_scores({1: 50.0}) == {1: 1.0}

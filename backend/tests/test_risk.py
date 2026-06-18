@@ -1,4 +1,5 @@
 """Risk analytics: VaR/CVaR, Monte-Carlo determinism, volatility regimes."""
+import pytest
 import numpy as np
 import pandas as pd
 
@@ -38,8 +39,8 @@ def test_volume_heatmap_weekday_hour_means():
     df = pd.DataFrame({"timestamp": ts, "volume": [10.0, 20.0, 5.0]})
     heat = volume_heatmap(df)
     assert len(heat) == 7 and all(len(row) == 24 for row in heat)
-    assert heat[0][10] == 15.0     # Monday (wd 0), hour 10
-    assert heat[1][15] == 5.0      # Tuesday (wd 1), hour 15
+    assert heat[0][10] == pytest.approx(15.0)     # Monday (wd 0), hour 10
+    assert heat[1][15] == pytest.approx(5.0)      # Tuesday (wd 1), hour 15
     assert heat[3][8] is None      # untouched cell stays None
 
 

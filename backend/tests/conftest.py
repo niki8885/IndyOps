@@ -8,9 +8,11 @@ real Postgres is ever touched.
 """
 import os
 
+_SQLITE_MEMORY = "sqlite://"  # in-memory SQLite URL, reused across fixtures
+
 # database / database_eve build their engines from this at import time, so it
 # must be set before any ``app.core.*`` import (incl. the ones just below).
-os.environ.setdefault("SQLALCHEMY_DATABASE_URL", "sqlite://")
+os.environ.setdefault("SQLALCHEMY_DATABASE_URL", _SQLITE_MEMORY)
 os.environ.setdefault("SECRET_KEY", "test-secret")
 # don't run create_all/run_migrations against the module-level engine on import
 os.environ.setdefault("RUN_DB_BOOTSTRAP", "0")
@@ -33,7 +35,7 @@ from app.core.database_eve import (
 def app_engine():
     """Fresh in-memory app database with just the hot/market tables created."""
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+        _SQLITE_MEMORY, connect_args={"check_same_thread": False}, poolclass=StaticPool,
     )
     Base.metadata.create_all(engine, tables=[
         MarketIndexSnapshot.__table__, TrackPrice.__table__, AnalyticsCache.__table__,
@@ -56,7 +58,7 @@ def app_session(app_engine) -> Session:
 def eve_engine():
     """Fresh in-memory SDE database with all eve_* tables created."""
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+        _SQLITE_MEMORY, connect_args={"check_same_thread": False}, poolclass=StaticPool,
     )
     EveBase.metadata.create_all(engine)
     yield engine

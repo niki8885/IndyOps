@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import PropTypes from 'prop-types'
 import * as factoryModule from 'react-plotly.js/factory'
 import * as plotlyModule from 'plotly.js-dist-min'
 import { get, download } from '../api/client'
@@ -6,8 +7,8 @@ import { get, download } from '../api/client'
 // Same robust CJS/UMD interop as ChainGraph / AnalysisPage.
 function asFn(m) {
   if (typeof m === 'function') return m
-  if (m && typeof m.default === 'function') return m.default
-  if (m && m.default && typeof m.default.default === 'function') return m.default.default
+  if (typeof m?.default === 'function') return m.default
+  if (typeof m?.default?.default === 'function') return m.default.default
   return null
 }
 let Plot = null
@@ -19,11 +20,14 @@ try {
   console.error('Plotly init failed', e)
 }
 
-const isk = x => x == null ? '—'
-  : Math.abs(x) >= 1e9 ? `${(x / 1e9).toFixed(2)} B`
-  : Math.abs(x) >= 1e6 ? `${(x / 1e6).toFixed(2)} M`
-  : Math.abs(x) >= 1e3 ? `${(x / 1e3).toFixed(2)} K`
-  : x.toFixed(2)
+const isk = x => {
+  if (x == null) return '—'
+  const a = Math.abs(x)
+  if (a >= 1e9) return `${(x / 1e9).toFixed(2)} B`
+  if (a >= 1e6) return `${(x / 1e6).toFixed(2)} M`
+  if (a >= 1e3) return `${(x / 1e3).toFixed(2)} K`
+  return x.toFixed(2)
+}
 const pct = x => x == null ? '—' : `${(x * 100).toFixed(2)}%`
 const num = (x, n = 2) => x == null ? '—' : Number(x).toFixed(n)
 
@@ -35,6 +39,13 @@ function Stat({ label, value, color, sub }) {
       {sub && <div style={{ fontSize: 10, color: 'var(--text)' }}>{sub}</div>}
     </div>
   )
+}
+
+Stat.propTypes = {
+  label: PropTypes.node,
+  value: PropTypes.node,
+  color: PropTypes.string,
+  sub: PropTypes.node,
 }
 
 // ± half-width of a 95% CI [lo,hi]
@@ -158,4 +169,9 @@ export default function SimulationPanel({ run, projectId }) {
       )}
     </div>
   )
+}
+
+SimulationPanel.propTypes = {
+  run: PropTypes.object,
+  projectId: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
 }

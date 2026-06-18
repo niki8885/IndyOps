@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db, Projects, Organisation, OrganisationMember, Employee, UserDB
 from app.core.schemas import ProjectsType, ProjectsStatus, ProjectPriority
 from app.core.security import get_current_user
+from app.api.responses import ERR_400, ERR_403, ERR_404
 
 _WRITE_ROLES = {"OWNER", "ADMIN", "SENIOR"}
 
@@ -59,7 +60,7 @@ class ProjectOut(BaseModel):
         from_attributes = True
 
 
-@router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED, responses={**ERR_400, **ERR_403, **ERR_404})
 async def create_project(
         org_id: int,
         body: ProjectCreate,
@@ -101,7 +102,7 @@ async def create_project(
     return project
 
 
-@router.get("", response_model=List[ProjectOut])
+@router.get("", response_model=List[ProjectOut], responses={**ERR_403, **ERR_404})
 async def list_projects(
         org_id: int,
         project_type: Optional[ProjectsType] = None,
@@ -123,7 +124,7 @@ async def list_projects(
     return q.all()
 
 
-@router.get("/{project_id}", response_model=ProjectOut)
+@router.get("/{project_id}", response_model=ProjectOut, responses={**ERR_403, **ERR_404})
 async def get_project(
         org_id: int,
         project_id: int,
@@ -135,7 +136,7 @@ async def get_project(
     return _get_project_or_404(db, project_id, org_id)
 
 
-@router.patch("/{project_id}", response_model=ProjectOut)
+@router.patch("/{project_id}", response_model=ProjectOut, responses={**ERR_400, **ERR_403, **ERR_404})
 async def update_project(
         org_id: int,
         project_id: int,
@@ -174,7 +175,7 @@ async def update_project(
     return project
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_403, **ERR_404})
 async def delete_project(
         org_id: int,
         project_id: int,

@@ -16,6 +16,8 @@ down_revision = "0010_production_status_events"
 branch_labels = None
 depends_on = None
 
+_NOW_SQL = "NOW()"  # server-side default timestamp, reused across the upsert tables
+
 
 def upgrade() -> None:
     op.create_table(
@@ -36,7 +38,7 @@ def upgrade() -> None:
         sa.Column("daily_volume", sa.Float(), nullable=True),
         sa.Column("volatility_cv", sa.Float(), nullable=True),
         sa.Column("volume_score", sa.Float(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("NOW()")),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text(_NOW_SQL)),
     )
     op.create_index("ix_trade_candidates_updated_at", "trade_candidates", ["updated_at"])
     op.create_index("ix_trade_candidates_margin_patient", "trade_candidates", ["margin_pct_patient"])
@@ -53,7 +55,7 @@ def upgrade() -> None:
         sa.Column("daily_volume", sa.Float(), nullable=True),
         sa.Column("volatility_cv", sa.Float(), nullable=True),
         sa.Column("volume_score", sa.Float(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("NOW()")),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text(_NOW_SQL)),
     )
     op.create_index("ix_station_trade_candidates_updated_at", "station_trade_candidates", ["updated_at"])
 
@@ -64,7 +66,7 @@ def upgrade() -> None:
         sa.Column("daily_volume", sa.Float(), nullable=True),
         sa.Column("volatility_cv", sa.Float(), nullable=True),
         sa.Column("sample_days", sa.Integer(), nullable=True),
-        sa.Column("computed_at", sa.DateTime(), nullable=False, server_default=sa.text("NOW()")),
+        sa.Column("computed_at", sa.DateTime(), nullable=False, server_default=sa.text(_NOW_SQL)),
     )
     op.create_index("ix_trade_type_stats_computed_at", "trade_type_stats", ["computed_at"])
 

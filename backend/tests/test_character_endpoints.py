@@ -75,7 +75,7 @@ def _seed_veldspar(eve_db):
 
 
 def _mine(app_db, qty=10000):
-    app_db.add(EsiMiningLedger(character_id=CID, date=datetime.datetime.utcnow().date(),
+    app_db.add(EsiMiningLedger(character_id=CID, date=datetime.datetime.now(datetime.timezone.utc).date(),
                                type_id=1230, solar_system_id=30000142, quantity=qty))
     app_db.commit()
 
@@ -113,7 +113,7 @@ def test_mining_journal_refines_values_and_taxes(app_db, eve_db):
     assert j["categories"]["ore"]["value"] == pytest.approx(100000.0)
     assert j["categories"]["ore"]["qty"] == 10000
     assert j["gross_value"] == pytest.approx(100000.0)
-    assert j["tax_pct"] == 10.0
+    assert j["tax_pct"] == pytest.approx(10.0)
     assert j["tax_amount"] == pytest.approx(10000.0)
     assert j["net_value"] == pytest.approx(90000.0)
     assert j["stats_30d"]["total"] == pytest.approx(100000.0)
@@ -127,7 +127,7 @@ def test_mining_journal_empty_period(app_db, eve_db):
     # the previous year has no ledger rows
     j = run(cr.get_mining_journal(char_id=1, period="year", offset=-1, scope="character",
                                   basis="sell", current_user=USER, db=app_db, eve_db=eve_db))
-    assert j["gross_value"] == 0.0
+    assert j["gross_value"] == pytest.approx(0.0)
     assert j["items"] == []
 
 
@@ -200,4 +200,4 @@ def test_standings_returns_rows(app_db):
     app_db.add(EsiStanding(character_id=CID, from_id=500001, from_type="faction", standing=7.5))
     app_db.commit()
     rows = run(cr.get_standings(char_id=1, current_user=USER, db=app_db))
-    assert rows[0]["from_id"] == 500001 and rows[0]["standing"] == 7.5
+    assert rows[0]["from_id"] == 500001 and rows[0]["standing"] == pytest.approx(7.5)

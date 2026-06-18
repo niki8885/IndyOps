@@ -7,8 +7,8 @@ from app.services.refining import (
 
 def test_base_yield_only_no_skills_no_rigs():
     ry = compute_yield(RefineSetup(base_yield=0.50))
-    assert ry.skill_mult == 1.0
-    assert ry.rig_bonus_pct == 0.0
+    assert ry.skill_mult == pytest.approx(1.0)
+    assert ry.rig_bonus_pct == pytest.approx(0.0)
     assert ry.effective_yield == pytest.approx(0.50)
 
 
@@ -39,7 +39,7 @@ def test_effective_yield_clamped_to_one():
     # absurd base + rigs would exceed 100%; yield is capped at 1.0
     s = RefineSetup(base_yield=0.95, reprocessing_lvl=5, efficiency_lvl=5,
                     ore_specific_lvl=5, rigs=(RigYield("x", 50.0),), security="null")
-    assert compute_yield(s).effective_yield == 1.0
+    assert compute_yield(s).effective_yield == pytest.approx(1.0)
 
 
 def test_reprocess_floors_batches_and_minerals():

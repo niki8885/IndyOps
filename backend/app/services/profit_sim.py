@@ -67,8 +67,8 @@ class SimParams:
     n_iterations: int = 25_000
     seed: int = 42
     horizon_days: float = 1.0
-    corr_mode: int = 0  # 0 = Cholesky matrix, 1 = factor model
-    dist_mode: int = 0  # 0 = empirical (copula), 1 = lognormal
+    corr_mode: int = 0  # 0 → Cholesky matrix, 1 → factor model
+    dist_mode: int = 0  # 0 → empirical (copula), 1 → lognormal
     participation_cap: float = 0.10  # max fraction of period volume we can execute
     shortfall_premium: float = 0.25  # extra cost to source an unfilled material
     slippage: float = 0.50  # how much of the spread we cross
@@ -497,7 +497,7 @@ def _leg_marginals(side_hist: list[float], point: Optional[float], default_sigma
     (materials) or rosy. A risk sim should centre on the point estimate, not move it."""
     mu, sigma = market_model.lognormal_params(side_hist)
     grid = market_model.quantile_grid(side_hist)
-    if sigma == 0.0:                              # no usable history → flat point price
+    if not sigma:                                # no usable history → flat point price
         if point and point > 0:
             return math.log(point), default_sigma, [float(point)] * QGRID_POINTS
         return mu, sigma, grid
@@ -577,7 +577,8 @@ def request_from_legs(label: str, leg_specs: list[tuple[int, int]], product_type
         h = hist.get(tid) or TypeHistory()
         anchor = h.anchor_buy or h.last_buy
         mu, sigma, grid = _leg_marginals(h.buy, anchor, default_sigma)
-        series = h.buy if h.buy else ([h.last_buy] if h.last_buy else [])
+        buy_fallback = [h.last_buy] if h.last_buy else []
+        series = h.buy if h.buy else buy_fallback
         phi, step_sigma, theta, x0, omega = _fit_process(series, mu, sigma, params, anchor=anchor)
         legs.append(LegInput(
             type_id=tid, qty=int(qty), mu=mu, sigma=sigma, qgrid=grid,
@@ -593,7 +594,8 @@ def request_from_legs(label: str, leg_specs: list[tuple[int, int]], product_type
     ph = hist.get(product_type_id) or TypeHistory()
     panchor = ph.anchor_sell or ph.last_sell
     pmu, psigma, pgrid = _leg_marginals(ph.sell, panchor, default_sigma)
-    pseries = ph.sell if ph.sell else ([ph.last_sell] if ph.last_sell else [])
+    sell_fallback = [ph.last_sell] if ph.last_sell else []
+    pseries = ph.sell if ph.sell else sell_fallback
     pphi, pstep, ptheta, px0, pomega = _fit_process(pseries, pmu, psigma, params, anchor=panchor)
     product = ProductInput(
         type_id=product_type_id, qty=int(product_qty), mu=pmu, sigma=psigma, qgrid=pgrid,

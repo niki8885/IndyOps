@@ -17,9 +17,9 @@ def test_uniform_basket_entropy_is_log_n(n):
 
 def test_single_dominant_basket():
     c = concentration([100.0, 0.0, 0.0])
-    assert c.top3_share == 1.0
-    assert c.h_index == 1.0
-    assert c.entropy == 0.0
+    assert c.top3_share == pytest.approx(1.0)
+    assert c.h_index == pytest.approx(1.0)
+    assert c.entropy == pytest.approx(0.0)
 
 
 def test_concentration_ignores_nonpositive_weights():
@@ -37,4 +37,4 @@ def test_liquidity_zero_variance_is_none():
 
 def test_liquidity_value():
     # mean 2, population std sqrt(2/3) → 2 / 0.8165 ≈ 2.4495
-    assert liquidity([1.0, 2.0, 3.0]) == 2.4495
+    assert liquidity([1.0, 2.0, 3.0]) == pytest.approx(2.4495)

@@ -1,4 +1,5 @@
 """Smoke tests for trade_repo upserts/loaders against in-memory SQLite."""
+import pytest
 from datetime import datetime
 
 from app.core.database import TradeCandidate, StationTradeCandidate
@@ -30,7 +31,7 @@ def test_upsert_trade_candidates_is_idempotent(app_session):
     trade_repo.upsert_trade_candidates(app_session, [_cand(0.25, t2)])
     rows = app_session.query(TradeCandidate).all()
     assert len(rows) == 1
-    assert rows[0].margin_pct_patient == 0.25
+    assert rows[0].margin_pct_patient == pytest.approx(0.25)
     assert rows[0].updated_at == t2
 
 

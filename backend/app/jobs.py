@@ -67,8 +67,8 @@ def _run(name: str, fn):
             logger.info("job %s: start", name)
             result = fn()
             logger.info("job %s: done in %.1fs — %s", name, time.monotonic() - start, result)
-    except Exception as exc:
-        logger.error("job %s: failed after %.1fs — %s", name, time.monotonic() - start, exc)
+    except Exception:
+        logger.exception("job %s: failed after %.1fs", name, time.monotonic() - start)
 
 
 def warm_index_cache(db, window: int = _DEFAULT_WINDOW) -> int:

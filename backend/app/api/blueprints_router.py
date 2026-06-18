@@ -10,6 +10,7 @@ from app.core.database import get_db, Blueprint, Organisation, OrganisationMembe
 from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
 from app.repositories import eve as eve_repo
+from app.api.responses import ERR_400, ERR_404
 
 router = APIRouter()
 
@@ -127,7 +128,7 @@ async def list_blueprints(
     return q.order_by(Blueprint.name).all()
 
 
-@router.post("", response_model=BlueprintOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=BlueprintOut, status_code=status.HTTP_201_CREATED, responses={**ERR_400})
 async def create_blueprint(
         body: BlueprintIn,
         current_user: UserDB = Depends(get_current_user),
@@ -152,7 +153,7 @@ async def create_blueprint(
     return bp
 
 
-@router.patch("/{bp_id}", response_model=BlueprintOut)
+@router.patch("/{bp_id}", response_model=BlueprintOut, responses={**ERR_404})
 async def update_blueprint(
         bp_id: int,
         body: BlueprintUpdate,
@@ -170,7 +171,7 @@ async def update_blueprint(
     return bp
 
 
-@router.delete("/{bp_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{bp_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_404})
 async def delete_blueprint(
         bp_id: int,
         current_user: UserDB = Depends(get_current_user),

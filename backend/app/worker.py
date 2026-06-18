@@ -24,6 +24,7 @@ def main() -> None:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("worker shutting down")
+        raise
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ def test_deterministic_profit_matches_closed_form():
                         cholesky_L=[[1.0, 0.0], [0.0, 1.0]])
     m = ps.simulate(req).metrics
     assert math.isclose(m.expected_profit, 878.0, abs_tol=1e-6)
-    assert m.std < 1e-6 and m.prob_loss == 0.0
+    assert m.std < 1e-6 and m.prob_loss == pytest.approx(0.0)
     assert m.var5 == pytest.approx(878.0, abs=1e-6)
 
 
@@ -49,7 +49,7 @@ def test_metrics_formulas_on_known_profit():
     assert math.isclose(m.sharpe_like, profit.mean() / profit.std(ddof=0))
     assert math.isclose(m.risk_adjusted, profit.mean() - profit.std(ddof=0))
     assert math.isclose(m.return_per_slot, profit.mean() / 2)
-    assert math.isclose(m.time_per_job_h, 7200 / 3600 / 2)  # slots=2
+    assert math.isclose(m.time_per_job_h, 7200 / 3600 / 2)  # two slots
 
 
 def test_shortfall_premium_raises_material_cost():
@@ -82,7 +82,7 @@ def test_missing_volume_does_not_zero_revenue():
     m = ps.simulate(req).metrics
     # sell 1 @ 2000 − buy 10 @ 100 − 50 fixed = 950, revenue fully realised.
     assert math.isclose(m.expected_profit, 950.0, abs_tol=1e-6)
-    assert m.prob_loss == 0.0
+    assert m.prob_loss == pytest.approx(0.0)
 
 
 def test_product_revenue_not_throttled_by_liquidity():
@@ -333,4 +333,4 @@ def test_auto_t_df_estimated_from_data():
     req = ps.request_from_legs("h", [(1, 10)], 2, 5, hist, 250.0, 7200,
                                ps.SimParams(n_iterations=2000, seed=4, copula=1, t_df=0.0),
                                broker_fee_pct=3.6)
-    assert 3.0 <= req.params.t_df <= 100.0 and req.params.t_df != 0.0   # auto-filled
+    assert 3.0 <= req.params.t_df <= 100.0 and req.params.t_df != pytest.approx(0.0)   # auto-filled
