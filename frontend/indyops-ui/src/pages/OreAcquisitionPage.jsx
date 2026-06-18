@@ -36,11 +36,10 @@ export default function OreAcquisitionPage() {
   return (
     <div>
       <h2 style={{ marginBottom: 6 }}>Ore Acquisition &amp; Refining</h2>
-      <p style={{ color: 'var(--text)', fontSize: 13, marginBottom: 10, maxWidth: 760 }}>
+      <p style={{ color: 'var(--text)', fontSize: 13, marginBottom: 16, maxWidth: 760 }}>
         Compare buying minerals, raw ore, or compressed ore — transport and refining
         yield/tax included — and find the cheapest way to stock each mineral.
       </p>
-      <SdeSyncButton />
       <div className="tabs">
         {TABS.map((t, i) => (
           <button key={i} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
@@ -49,43 +48,6 @@ export default function OreAcquisitionPage() {
       {tab === 0 && <ComparisonTab rigs={rigs} hubs={hubs} cj={cj} />}
       {tab === 1 && <GasTab hubs={hubs} cj={cj} />}
       {tab === 2 && <ReprocessTab rigs={rigs} />}
-    </div>
-  )
-}
-
-// Always-visible SDE sync control. The global header banner only appears when the
-// SDE has 0 types; a forced re-sync (this button) is what populates the newer
-// eve_type_materials / reprocessing-rig / gas tables that refining depends on.
-function SdeSyncButton() {
-  const [status, setStatus] = useState(null)   // {synced, type_count}
-  const [started, setStarted] = useState(false)
-  const [msg, setMsg] = useState('')
-
-  useEffect(() => { get('/eve/sde/status').then(setStatus).catch(() => {}) }, [])
-
-  async function sync() {
-    setMsg('')
-    try {
-      const r = await post('/eve/sde/update', {})
-      setStarted(true)
-      setMsg(r.message || 'Sync started — 5–15 min.')
-      const poll = setInterval(async () => {
-        try { setStatus(await get('/eve/sde/status')) } catch { /* ignore */ }
-      }, 30000)
-      setTimeout(() => clearInterval(poll), 20 * 60 * 1000)
-    } catch (e) { setMsg(e.message) }
-  }
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16, fontSize: 12, color: 'var(--text)' }}>
-      <button className="btn btn-ghost btn-sm" onClick={sync} disabled={started}>
-        {started ? 'Sync running…' : '⚡ Sync EVE SDE (refining data)'}
-      </button>
-      {status && <span>{fmtNum(status.type_count)} types in DB</span>}
-      <span style={{ color: 'var(--border2)' }}>
-        — forces a full re-import (5–15 min); run once to populate ore/gas reprocessing yields
-      </span>
-      {msg && <span style={{ color: 'var(--accent)' }}>{msg}</span>}
     </div>
   )
 }

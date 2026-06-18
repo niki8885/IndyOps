@@ -220,6 +220,70 @@ def fetch_affiliation(character_id: int) -> dict:
     return rows[0] if rows else {}
 
 
+def fetch_corporation(corporation_id: int) -> dict:
+    """Public corporation info (name, ticker, alliance…) — no auth required."""
+    return _esi_get(f"/corporations/{corporation_id}/")
+
+
+def fetch_alliance(alliance_id: int) -> dict:
+    """Public alliance info (name, ticker…) — no auth required."""
+    return _esi_get(f"/alliances/{alliance_id}/")
+
+
+def resolve_names(ids: list) -> dict:
+    """Bulk-resolve ids → ``{id: {"name", "category"}}`` via /universe/names/ (public)."""
+    ids = [i for i in {int(x) for x in ids if x}]
+    if not ids:
+        return {}
+    resp = _session.post(
+        f"{config.ESI_BASE_URL}/universe/names/",
+        params={"datasource": "tranquility"},
+        json=ids,
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return {r["id"]: {"name": r.get("name"), "category": r.get("category")} for r in resp.json()}
+
+
+def fetch_market_prices() -> list:
+    """CCP's market-wide adjusted/average price per type_id — public, no auth."""
+    return _esi_get("/markets/prices/")
+
+
+def fetch_location(character_id: int, token: str) -> dict:
+    """Current location: ``{solar_system_id, station_id?, structure_id?}``."""
+    return _esi_get(f"/characters/{character_id}/location/", token)
+
+
+def fetch_ship(character_id: int, token: str) -> dict:
+    """Current ship: ``{ship_type_id, ship_name, ship_item_id}``."""
+    return _esi_get(f"/characters/{character_id}/ship/", token)
+
+
+def fetch_online(character_id: int, token: str) -> dict:
+    """Online status: ``{online, last_login, last_logout, logins}``."""
+    return _esi_get(f"/characters/{character_id}/online/", token)
+
+
+def fetch_implants(character_id: int, token: str) -> list:
+    """Active (currently-plugged) implant type_ids."""
+    return _esi_get(f"/characters/{character_id}/implants/", token)
+
+
+def fetch_mining(character_id: int, token: str) -> list:
+    """Character mining ledger (ESI keeps ~30 days): ``[{date, quantity, type_id, solar_system_id}]``."""
+    return _esi_get(f"/characters/{character_id}/mining/", token, paginate=True)
+
+
+def fetch_structure(structure_id: int, token: str) -> dict:
+    """
+    Resolve an Upwell structure (citadel/complex) to its name + solar system.
+    Requires the ``esi-universe.read_structures.v1`` scope and docking access for
+    the character; raises (403/404) otherwise — callers cache the failure.
+    """
+    return _esi_get(f"/universe/structures/{structure_id}/", token)
+
+
 def fetch_wallet_balance(character_id: int, token: str) -> float:
     return _esi_get(f"/characters/{character_id}/wallet/", token)
 

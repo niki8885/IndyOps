@@ -39,7 +39,12 @@ export default defineConfig({
       reporter: ['text', 'json', 'lcov'],
       reportsDirectory: './coverage',
       include: ['src/**/*.{js,jsx}'],
-      exclude: ['src/main.jsx', 'src/**/*.test.{js,jsx}', 'src/test/**'],
+      exclude: [
+        'src/main.jsx',
+        'src/**/*.test.{js,jsx}',
+        'src/test/**',
+        'src/lib/plot.jsx',   // thin browser-only Plotly wrapper, not unit-testable
+      ],
     },
   },
 })

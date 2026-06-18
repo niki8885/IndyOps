@@ -17,6 +17,24 @@ SKILL_ADVANCED_INDUSTRY = 3388  # −3%/level job time (manufacturing + reaction
 SKILL_ACCOUNTING = 16622        # −11%/level sales (transaction) tax
 SKILL_BROKER_RELATIONS = 3446   # −0.30%/level broker fee
 
+# ── industry job-slot skills (each +1 concurrent job per level; base 1 slot) ──
+SKILL_MASS_PRODUCTION = 3387                # +1 manufacturing slot / level
+SKILL_ADVANCED_MASS_PRODUCTION = 24625      # +1 manufacturing slot / level
+SKILL_LABORATORY_OPERATION = 3406           # +1 science slot / level
+SKILL_ADVANCED_LABORATORY_OPERATION = 24624  # +1 science slot / level
+SKILL_MASS_REACTIONS = 45748                # +1 reaction slot / level
+SKILL_ADVANCED_MASS_REACTIONS = 45749       # +1 reaction slot / level
+
+_MAX_SLOTS = 11  # 1 base + 5 + 5 with both skills at V
+
+# Industry activity_id → slot category. Manufacturing(1); research/copy/invention
+# share the science slots (3 TE, 4 ME, 5 copy, 8 invention); reactions (9, 11).
+_ACTIVITY_CATEGORY = {1: "manufacturing", 3: "science", 4: "science",
+                      5: "science", 8: "science", 9: "reaction", 11: "reaction"}
+# A job ties up its slot until it's delivered — count everything not finished/cancelled.
+_OCCUPYING_STATUSES = {"active", "ready", "paused"}
+_SLOT_CATEGORIES = ("manufacturing", "science", "reaction")
+
 # ── reprocessing / refining skills ────────────────────────────────────────────
 SKILL_REPROCESSING = 3385             # +3%/level reprocessing yield
 SKILL_REPROCESSING_EFFICIENCY = 3389  # +2%/level reprocessing yield
@@ -78,6 +96,41 @@ def broker_fee_pct(skills: Mapping[int, int],
            - BROKER_PER_FACTION_STANDING_PCT * max(0.0, faction_standing)
            - BROKER_PER_CORP_STANDING_PCT * max(0.0, corp_standing))
     return max(BROKER_MIN_PCT, fee)
+
+
+def job_slots(skills: Mapping[int, int]) -> dict:
+    """
+    Max concurrent industry jobs per category from the slot skills (each +1/level,
+    base 1, capped at 11). Manufacturing ← Mass Production + Advanced Mass
+    Production; science (research / copy / invention) ← Laboratory Operation +
+    Advanced Laboratory Operation; reactions ← Mass Reactions + Advanced Mass
+    Reactions.
+    """
+    man = 1 + _lvl(skills, SKILL_MASS_PRODUCTION) + _lvl(skills, SKILL_ADVANCED_MASS_PRODUCTION)
+    sci = 1 + _lvl(skills, SKILL_LABORATORY_OPERATION) + _lvl(skills, SKILL_ADVANCED_LABORATORY_OPERATION)
+    rea = 1 + _lvl(skills, SKILL_MASS_REACTIONS) + _lvl(skills, SKILL_ADVANCED_MASS_REACTIONS)
+    return {
+        "manufacturing": min(man, _MAX_SLOTS),
+        "science": min(sci, _MAX_SLOTS),
+        "reaction": min(rea, _MAX_SLOTS),
+    }
+
+
+def job_slot_usage(jobs, skills: Mapping[int, int]) -> dict:
+    """
+    Used vs. available industry slots per category. ``jobs`` is an iterable of
+    ``(activity_id, status)`` pairs; only jobs still occupying a slot (active /
+    ready / paused) are counted. Returns ``{category: {"used", "max"}}``.
+    """
+    maxes = job_slots(skills)
+    used = {cat: 0 for cat in _SLOT_CATEGORIES}
+    for activity_id, status in jobs:
+        if (status or "").lower() not in _OCCUPYING_STATUSES:
+            continue
+        cat = _ACTIVITY_CATEGORY.get(activity_id)
+        if cat:
+            used[cat] += 1
+    return {cat: {"used": used[cat], "max": maxes[cat]} for cat in _SLOT_CATEGORIES}
 
 
 def reprocessing_skill_mult(reprocessing_lvl: int, efficiency_lvl: int,

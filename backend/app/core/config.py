@@ -35,6 +35,18 @@ ESI_SCOPES = [
     "esi-contracts.read_character_contracts.v1",
     "esi-industry.read_character_jobs.v1",
     "esi-characters.read_standings.v1",
+    # resolve Upwell-structure (citadel) names for asset locations — requires the
+    # character to re-link once to grant it; structures fall back to their id otherwise
+    "esi-universe.read_structures.v1",
+    # character-page overview: current location/ship/online + active implants.
+    # New scopes → characters must re-link once; unsynced fields fall back to '—'.
+    "esi-location.read_location.v1",
+    "esi-location.read_ship_type.v1",
+    "esi-location.read_online.v1",
+    "esi-clones.read_implants.v1",
+    "esi-clones.read_clones.v1",
+    # mining ledger → the per-character mining journal / profit report
+    "esi-industry.read_character_mining.v1",
 ]
 
 ESI_USER_AGENT = os.getenv(

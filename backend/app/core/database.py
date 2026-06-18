@@ -3,7 +3,7 @@ import os
 from app.core.config import SQLALCHEMY_DATABASE_URL
 from sqlalchemy import (
     create_engine, Column, Integer, Enum,
-    ForeignKey, String, DateTime, Boolean, Float, Text, BigInteger, JSON,
+    ForeignKey, String, DateTime, Date, Boolean, Float, Text, BigInteger, JSON,
     Index, UniqueConstraint, LargeBinary,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -580,7 +580,9 @@ class LinkedCharacter(Base):
     character_id = Column(Integer, nullable=False, unique=True, index=True)
     character_name = Column(String(200), nullable=False)
     corporation_id = Column(Integer, nullable=True)
+    corporation_name = Column(String(200), nullable=True)
     alliance_id = Column(Integer, nullable=True)
+    alliance_name = Column(String(200), nullable=True)
     owner_hash = Column(String(255), nullable=True)  # ESI 'owner' claim — detects char transfer
 
     scopes = Column(Text, nullable=True)             # space-separated granted scopes
@@ -589,7 +591,17 @@ class LinkedCharacter(Base):
     token_expires_at = Column(DateTime, nullable=True)
 
     wallet_balance = Column(Float, nullable=True)
+    assets_value = Column(Float, nullable=True)       # ESI-average-priced assets (latest sync)
     total_sp = Column(BigInteger, nullable=True)
+
+    # current location / ship / online — from the esi-location + clones scopes
+    location_system_id = Column(Integer, nullable=True)
+    location_id = Column(BigInteger, nullable=True)   # station or structure holding the char
+    location_type = Column(String(20), nullable=True)  # 'station' | 'structure' | 'system'
+    ship_type_id = Column(Integer, nullable=True)
+    ship_name = Column(String(200), nullable=True)
+    online = Column(Boolean, nullable=True)
+    last_login = Column(DateTime, nullable=True)
 
     is_active = Column(Boolean, nullable=False, default=True)        # activation status
     status = Column(String(20), nullable=False, default="active")   # active|token_expired|invalid
@@ -645,6 +657,94 @@ class EsiAsset(Base):
     location_type = Column(String(30), nullable=True)
     is_singleton = Column(Boolean, nullable=True)
     is_blueprint_copy = Column(Boolean, nullable=True)
+
+
+class EsiStructure(Base):
+    """
+    Cache of resolved Upwell structure names (IO asset-location recursion).
+
+    Player structure ids only become names via ESI /universe/structures/{id}/,
+    which needs the read_structures scope + docking access. Keyed globally by
+    structure_id and shared across characters: once any character with access
+    resolves a name it's reused. ``error`` records a 403/404 so we can back off
+    instead of re-hammering, and a different character can retry later.
+    """
+    __tablename__ = "esi_structures"
+
+    structure_id = Column(BigInteger, primary_key=True)
+    name = Column(String(255), nullable=True)
+    solar_system_id = Column(Integer, nullable=True)
+    type_id = Column(Integer, nullable=True)
+    error = Column(String(20), nullable=True)        # 'forbidden' | 'not_found' | 'error'
+    updated_at = Column(DateTime, nullable=True)      # last fetch attempt
+
+
+class EsiImplant(Base):
+    """A character's currently-plugged implants (replaced each sync)."""
+    __tablename__ = "esi_implants"
+    __table_args__ = (UniqueConstraint("character_id", "type_id", name="uq_esi_implant"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    type_id = Column(Integer, nullable=False)
+
+
+class CharacterWealthSnapshot(Base):
+    """Append-only wealth history (one row per sync) backing the overview's plot."""
+    __tablename__ = "character_wealth_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    liquid = Column(Float, nullable=True)         # wallet balance
+    assets_value = Column(Float, nullable=True)   # ESI-average-priced assets
+    total = Column(Float, nullable=True)          # liquid + assets
+
+
+class EsiMiningLedger(Base):
+    """A character's mining ledger (one row per day × ore type × system).
+
+    ESI only keeps ~30 days, so sync **upserts** (not replace) — older rows persist
+    so the journal's month/quarter/year reports accumulate history over time."""
+    __tablename__ = "esi_mining_ledger"
+    __table_args__ = (UniqueConstraint("character_id", "date", "type_id", "solar_system_id",
+                                       name="uq_mining_entry"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    type_id = Column(Integer, nullable=False)
+    solar_system_id = Column(Integer, nullable=True)
+    quantity = Column(BigInteger, nullable=True)
+
+
+class CharacterSettings(Base):
+    """Per-character journal settings (edited in the Statistics tab)."""
+    __tablename__ = "character_settings"
+
+    character_id = Column(Integer, primary_key=True)   # LinkedCharacter.character_id
+    mining_tax_pct = Column(Float, nullable=False, default=0.0)      # corp mining tax %
+    price_basis = Column(String(10), nullable=False, default="sell")  # buy | sell | split
+    refine_base_yield = Column(Float, nullable=False, default=0.50)   # structure base yield
+
+
+class MiningTaxWriteoff(Base):
+    """A persisted 'tax written off' record for a journal period (the Списать налог button)."""
+    __tablename__ = "mining_tax_writeoffs"
+    __table_args__ = (UniqueConstraint("user_id", "scope", "character_id", "period_type", "period_key",
+                                       name="uq_mining_writeoff"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    character_id = Column(Integer, nullable=True)        # null when scope = 'all'
+    scope = Column(String(12), nullable=False)           # 'character' | 'all'
+    period_type = Column(String(8), nullable=False)      # day | month | quarter | year
+    period_key = Column(String(16), nullable=False)      # e.g. 2026-06, 2026-Q2, 2026
+    gross_value = Column(Float, nullable=True)
+    tax_pct = Column(Float, nullable=True)
+    tax_amount = Column(Float, nullable=True)
+    net_value = Column(Float, nullable=True)
+    created_at = Column(DateTime, nullable=True)
 
 
 class EsiContract(Base):

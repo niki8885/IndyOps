@@ -73,7 +73,6 @@ function IndicesTab() {
   const [detail, setDetail]     = useState(null)
   const [window, setWindow]     = useState(10)
   const [loading, setLoading]   = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
   const [showIchimoku, setShowIchimoku] = useState(false)
 
   async function loadIndices() {
@@ -88,12 +87,6 @@ function IndicesTab() {
 
   useEffect(() => { loadIndices() }, [])
   useEffect(() => { loadDetail() }, [sel, window])
-
-  async function refresh() {
-    setRefreshing(true)
-    try { await post('/analysis/refresh', {}); await loadIndices(); await loadDetail() }
-    catch {} finally { setRefreshing(false) }
-  }
 
   const ts = detail?.timestamps || []
   const s  = detail?.series || {}
@@ -111,9 +104,6 @@ function IndicesTab() {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text)' }}>EVE commodity indices · hourly</span>
-        <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={refreshing} style={{ marginLeft: 'auto' }}>
-          {refreshing ? 'Collecting…' : '⟳ Collect snapshot now'}
-        </button>
       </div>
 
       {/* index cards */}
@@ -149,7 +139,7 @@ function IndicesTab() {
       {detail?.empty && (
         <div className="warning-box">
           No data collected for <b>{detail.label}</b> yet. The hourly collector builds history over time —
-          click “Collect snapshot now” to capture the first point.
+          check back once it has captured its first snapshots.
         </div>
       )}
 
