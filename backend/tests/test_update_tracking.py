@@ -53,7 +53,7 @@ def _seed_item(db, user_id=1, item_id=1, type_id=34, place_ids=(1,)):
 # ── _fnum helper ──────────────────────────────────────────────────────────────
 
 def test_fnum():
-    assert ut._fnum("3.5") == 3.5
+    assert ut._fnum("3.5") == pytest.approx(3.5)
     assert ut._fnum(None) is None
     assert ut._fnum("nope") is None
 

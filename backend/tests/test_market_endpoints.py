@@ -155,15 +155,15 @@ def test_orders_success(eve_db):
     assert out["count"] == 3
     # 2 sell orders, cheapest first
     assert len(out["sellers"]) == 2
-    assert out["sellers"][0]["price"] == 5.0
+    assert out["sellers"][0]["price"] == pytest.approx(5.0)
     assert out["sellers"][0]["location"] == "Jita IV - Moon 4 - CNAP"
     assert out["sellers"][0]["region"] == "The Forge"
     # 1 buy order
     assert len(out["buyers"]) == 1
-    assert out["buyers"][0]["price"] == 4.0
-    assert out["summary"]["best_sell"] == 5.0
-    assert out["summary"]["best_buy"] == 4.0
-    assert out["summary"]["spread"] == 1.0
+    assert out["buyers"][0]["price"] == pytest.approx(4.0)
+    assert out["summary"]["best_sell"] == pytest.approx(5.0)
+    assert out["summary"]["best_buy"] == pytest.approx(4.0)
+    assert out["summary"]["spread"] == pytest.approx(1.0)
 
 
 # ── /orderbook ──────────────────────────────────────────────────────────────────
@@ -177,9 +177,9 @@ def test_orderbook_success(eve_db):
     # two distinct ask price-levels (5.0, 6.0), one bid level (4.0)
     assert [a["price"] for a in out["asks"]] == [5.0, 6.0]
     assert [b["price"] for b in out["bids"]] == [4.0]
-    assert out["best_ask"] == 5.0
-    assert out["best_bid"] == 4.0
-    assert out["spread"] == 1.0
+    assert out["best_ask"] == pytest.approx(5.0)
+    assert out["best_bid"] == pytest.approx(4.0)
+    assert out["spread"] == pytest.approx(1.0)
 
 
 # ── /history ─────────────────────────────────────────────────────────────────────

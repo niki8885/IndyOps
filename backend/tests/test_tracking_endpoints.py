@@ -23,6 +23,7 @@ from app.core.database import (
 from app.core.database_eve import EveBase, EveType
 
 USER = SimpleNamespace(id=1)
+SEED_HASH = "x"  # placeholder password hash for seeded test users (not a real credential)
 
 
 def run(coro):
@@ -38,7 +39,7 @@ def _mem_db(base):
 @pytest.fixture
 def db():
     session, engine = _mem_db(Base)
-    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password="x"))
+    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password=SEED_HASH))
     session.commit()
     yield session
     session.close(); engine.dispose()

@@ -36,8 +36,8 @@ def test_from_tracked_picks_most_populated_place():
     th = sim_data._from_tracked(_tracked_df(rows))
     assert isinstance(th, TypeHistory)
     assert len(th.buy) == 9
-    assert th.last_buy == 18.0  # 10 + 8
-    assert th.last_sell == 20.0  # 12 + 8
+    assert th.last_buy == pytest.approx(18.0)  # 10 + 8
+    assert th.last_sell == pytest.approx(20.0)  # 12 + 8
     assert 999.0 not in th.buy  # the noisy place was not chosen
 
 
@@ -64,10 +64,10 @@ def test_from_esi_happy_path():
     rows = [{"lowest": 1.0 + i, "highest": 2.0 + i, "volume": 10 + i} for i in range(10)]
     th = sim_data._from_esi(rows)
     assert isinstance(th, TypeHistory)
-    assert th.buy[0] == 1.0 and th.buy[-1] == 10.0
-    assert th.sell[0] == 2.0 and th.sell[-1] == 11.0
-    assert th.last_buy == 10.0
-    assert th.last_sell == 11.0
+    assert th.buy[0] == pytest.approx(1.0) and th.buy[-1] == pytest.approx(10.0)
+    assert th.sell[0] == pytest.approx(2.0) and th.sell[-1] == pytest.approx(11.0)
+    assert th.last_buy == pytest.approx(10.0)
+    assert th.last_sell == pytest.approx(11.0)
 
 
 def test_from_esi_falls_back_to_low_when_no_high():
@@ -75,7 +75,7 @@ def test_from_esi_falls_back_to_low_when_no_high():
     rows = [{"lowest": 1.0 + i, "volume": 5} for i in range(10)]
     th = sim_data._from_esi(rows)
     assert th.sell == th.buy
-    assert th.last_sell == th.last_buy == 10.0
+    assert th.last_sell == th.last_buy == pytest.approx(10.0)
 
 
 # ── gather_history (orchestration) ───────────────────────────────────────────
@@ -102,7 +102,7 @@ def test_gather_history_uses_tracked_first(_patch_sources):
     _patch_sources["esi"][34] = [{"lowest": 999, "highest": 1000, "volume": 1} for _ in range(10)]
     out = sim_data.gather_history(db=None, user_id=1, type_ids=[34], region_id=10000002)
     th = out[34]
-    assert th.last_buy == 18.0          # from tracked, not ESI
+    assert th.last_buy == pytest.approx(18.0)          # from tracked, not ESI
     assert 999.0 not in th.buy
 
 
@@ -111,8 +111,8 @@ def test_gather_history_falls_back_to_esi(_patch_sources):
     _patch_sources["esi"][34] = [{"lowest": 5.0 + i, "highest": 7.0 + i, "volume": 1} for i in range(10)]
     out = sim_data.gather_history(db=None, user_id=1, type_ids=[34], region_id=10000002)
     th = out[34]
-    assert th.buy[0] == 5.0
-    assert th.last_sell == 16.0
+    assert th.buy[0] == pytest.approx(5.0)
+    assert th.last_sell == pytest.approx(16.0)
 
 
 def test_gather_history_empty_typehistory_when_no_data(_patch_sources):
@@ -123,18 +123,18 @@ def test_gather_history_empty_typehistory_when_no_data(_patch_sources):
     th = out[34]
     assert th.buy == [] and th.sell == []
     assert th.group_id == 7
-    assert th.last_buy == 3.0
-    assert th.last_sell == 4.0
-    assert th.anchor_buy == 3.0
-    assert th.anchor_sell == 4.0
+    assert th.last_buy == pytest.approx(3.0)
+    assert th.last_sell == pytest.approx(4.0)
+    assert th.anchor_buy == pytest.approx(3.0)
+    assert th.anchor_sell == pytest.approx(4.0)
 
 
 def test_gather_history_point_sell_defaults_to_point_buy(_patch_sources):
     out = sim_data.gather_history(
         db=None, user_id=1, type_ids=[34], region_id=10000002, point_buy={34: 9.0})
     th = out[34]
-    assert th.last_sell == 9.0    # falls back to point_buy
-    assert th.anchor_sell == 9.0
+    assert th.last_sell == pytest.approx(9.0)    # falls back to point_buy
+    assert th.anchor_sell == pytest.approx(9.0)
 
 
 def test_gather_history_swallows_tracked_exception(_patch_sources, monkeypatch):
@@ -145,7 +145,7 @@ def test_gather_history_swallows_tracked_exception(_patch_sources, monkeypatch):
     _patch_sources["esi"][34] = [{"lowest": 2.0, "highest": 3.0, "volume": 1} for _ in range(10)]
     out = sim_data.gather_history(db=None, user_id=1, type_ids=[34], region_id=10000002)
     # falls through to ESI despite the tracked-source error
-    assert out[34].buy[0] == 2.0
+    assert out[34].buy[0] == pytest.approx(2.0)
 
 
 def test_gather_history_swallows_esi_exception(_patch_sources, monkeypatch):
@@ -157,7 +157,7 @@ def test_gather_history_swallows_esi_exception(_patch_sources, monkeypatch):
         db=None, user_id=1, type_ids=[34], region_id=10000002, point_buy={34: 1.0})
     # both sources failed → empty TypeHistory anchored on the point
     assert out[34].buy == []
-    assert out[34].last_buy == 1.0
+    assert out[34].last_buy == pytest.approx(1.0)
 
 
 def test_gather_history_multiple_types(_patch_sources):
@@ -165,6 +165,6 @@ def test_gather_history_multiple_types(_patch_sources):
     out = sim_data.gather_history(db=None, user_id=1, type_ids=[34, 35], region_id=10000002,
                                   point_buy={35: 50.0})
     assert set(out.keys()) == {34, 35}
-    assert out[34].buy[0] == 1.0          # ESI-backed
+    assert out[34].buy[0] == pytest.approx(1.0)          # ESI-backed
     assert out[35].buy == []              # no data → empty
-    assert out[35].last_buy == 50.0       # point fallback
+    assert out[35].last_buy == pytest.approx(50.0)       # point fallback

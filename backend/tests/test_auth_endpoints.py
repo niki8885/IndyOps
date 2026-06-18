@@ -11,7 +11,6 @@ in ``app.core.security.get_current_user``, so we exercise it end-to-end with a
 real token produced by ``login``.
 """
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -43,7 +42,11 @@ def db():
         engine.dispose()
 
 
-def _register(db, username="alice", password="s3cret-pw", email="alice@example.com"):
+PW = "s3cret-pw"           # valid password for seeded test users (not a real credential)
+WRONG_PW = "incorrect-pw"  # deliberately non-matching, for the wrong-password test
+
+
+def _register(db, username="alice", password=PW, email="alice@example.com"):
     return run(ar.register(UserRegister(username=username, password=password, email=email), db=db))
 
 
@@ -59,8 +62,8 @@ def test_register_success_hashes_password(db):
     row = db.query(UserDB).filter(UserDB.username == "alice").first()
     assert row is not None
     # password is stored hashed, not in clear text, and verifies for real
-    assert row.hashed_password != "s3cret-pw"
-    assert ar._verify_password("s3cret-pw", row.hashed_password) is True
+    assert row.hashed_password != PW
+    assert ar._verify_password(PW, row.hashed_password) is True
     assert ar._verify_password("wrong", row.hashed_password) is False
 
 
@@ -83,8 +86,8 @@ def test_register_duplicate_email(db):
 # ── login ───────────────────────────────────────────────────────────────────
 
 def test_login_success_returns_token(db):
-    _register(db, username="dave", password="hunter2-pw", email="dave@example.com")
-    out = run(ar.login(UserLogin(username="dave", password="hunter2-pw"), db=db))
+    _register(db, username="dave", password=PW, email="dave@example.com")
+    out = run(ar.login(UserLogin(username="dave", password=PW), db=db))
     assert out["token_type"] == "bearer"
     assert out["username"] == "dave"
     assert out["email"] == "dave@example.com"
@@ -95,23 +98,23 @@ def test_login_success_returns_token(db):
 
 
 def test_login_wrong_password(db):
-    _register(db, username="erin", password="correct-pw", email="erin@example.com")
+    _register(db, username="erin", password=PW, email="erin@example.com")
     with pytest.raises(HTTPException) as exc:
-        run(ar.login(UserLogin(username="erin", password="incorrect-pw"), db=db))
+        run(ar.login(UserLogin(username="erin", password=WRONG_PW), db=db))
     assert exc.value.status_code == 401
 
 
 def test_login_unknown_user(db):
     with pytest.raises(HTTPException) as exc:
-        run(ar.login(UserLogin(username="ghost", password="whatever"), db=db))
+        run(ar.login(UserLogin(username="ghost", password=PW), db=db))
     assert exc.value.status_code == 401
 
 
 # ── current-user dependency (the "me" path) ───────────────────────────────────
 
 def test_get_current_user_with_real_login_token(db):
-    reg = _register(db, username="frank", password="pw-frank-1", email="frank@example.com")
-    login_out = run(ar.login(UserLogin(username="frank", password="pw-frank-1"), db=db))
+    reg = _register(db, username="frank", password=PW, email="frank@example.com")
+    login_out = run(ar.login(UserLogin(username="frank", password=PW), db=db))
     token = login_out["access_token"]
 
     # get_current_user is a plain def (not async) → call it directly

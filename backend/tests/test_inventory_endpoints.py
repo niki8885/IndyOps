@@ -7,7 +7,6 @@ directly with seeded sessions for the Depends params. The SDE-resolution helper
 that factory to hand back an in-memory EveBase session; no network is touched.
 """
 import asyncio
-import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +24,7 @@ from app.core.database_eve import EveBase, EveType
 from app.core.schemas import ProjectsType, ProjectsStatus
 
 USER = SimpleNamespace(id=1)
+SEED_HASH = "x"  # placeholder password hash for seeded test users (not a real credential)
 
 
 def run(coro):
@@ -40,7 +40,7 @@ def _mem_db(base):
 @pytest.fixture
 def app_db():
     session, engine = _mem_db(Base)
-    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password="x"))
+    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password=SEED_HASH))
     session.commit()
     yield session
     session.close(); engine.dispose()
