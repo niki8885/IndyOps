@@ -106,7 +106,7 @@ def test_fuzzwork_aggregates_happy_path(monkeypatch):
 
     monkeypatch.setattr(market.requests, "get", fake_get)
     out = market.fuzzwork_aggregates(10000002, [34, 35])
-    assert out["34"]["sell"]["min"] == 5.0
+    assert out["34"]["sell"]["min"] == pytest.approx(5.0)
     assert captured["params"] == {"region": 10000002, "types": "34,35"}
 
 
@@ -185,7 +185,7 @@ def test_gnf_local_none_on_failure(monkeypatch):
 
 
 def test_fnum_helper():
-    assert market._fnum("3.5") == 3.5
+    assert market._fnum("3.5") == pytest.approx(3.5)
     assert market._fnum(None) is None
     assert market._fnum("abc") is None
 

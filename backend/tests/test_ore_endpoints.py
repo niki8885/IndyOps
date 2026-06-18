@@ -172,7 +172,7 @@ def test_catalog_compressed_filter(eve_db):
 def test_rigs(eve_db):
     out = run(orr.list_rigs(current_user=USER, eve_db=eve_db))
     assert out["rigs"][0]["type_id"] == RIG
-    assert out["rigs"][0]["yield_bonus"] == 2.0
+    assert out["rigs"][0]["yield_bonus"] == pytest.approx(2.0)
 
 
 def test_gas_catalog(eve_db):
@@ -521,7 +521,7 @@ def test_compare_unknown_target_system_uses_hi_band(eve_db):
     out = run(orr.compare_acquisition(body=body, current_user=USER, eve_db=eve_db))
     assert out["security_band"] == "hi"
     assert any("system not found" in w for w in out["warnings"])
-    assert out["sources"][0]["cost_per_m3"] == 0.0
+    assert out["sources"][0]["cost_per_m3"] == pytest.approx(0.0)
 
 
 def test_compare_no_ores_yield_selected_mineral_warns(eve_db):
@@ -582,7 +582,7 @@ def test_compare_volatility_zero_volume_alert(eve_db, monkeypatch):
     )
     out = run(orr.compare_acquisition(body=body, current_user=USER, eve_db=eve_db))
     assert out["alerts"][TRIT]["alert"] is True
-    assert out["alerts"][TRIT]["avg_volume"] == 0.0
+    assert out["alerts"][TRIT]["avg_volume"] == pytest.approx(0.0)
 
 
 def test_compare_regular_shipping_route_unavailable(eve_db, monkeypatch):
@@ -597,7 +597,7 @@ def test_compare_regular_shipping_route_unavailable(eve_db, monkeypatch):
     )
     out = run(orr.compare_acquisition(body=body, current_user=USER, eve_db=eve_db))
     assert any("ESI route unavailable" in w for w in out["warnings"])
-    assert out["sources"][0]["cost_per_m3"] == 0.0
+    assert out["sources"][0]["cost_per_m3"] == pytest.approx(0.0)
 
 
 def test_gas_compare_no_compression_ratio_warns(eve_db):
@@ -697,7 +697,7 @@ def test_compare_jf_same_system_zero_rate(eve_db):
         volatility_alert=False,
     )
     out = run(orr.compare_acquisition(body=body, current_user=USER, eve_db=eve_db))
-    assert out["sources"][0]["cost_per_m3"] == 0.0
+    assert out["sources"][0]["cost_per_m3"] == pytest.approx(0.0)
 
 
 def test_compare_volatility_no_region_source(eve_db):
@@ -757,9 +757,9 @@ def test_compare_basket_ore_yields_only_unneeded_mineral(eve_db, monkeypatch):
 
 def test_basis_price_split_one_sided():
     assert orr._basis_price({"buy": 4.0, "sell": 6.0}, "split") == pytest.approx(5.0)
-    assert orr._basis_price({"buy": 4.0, "sell": None}, "split") == 4.0
-    assert orr._basis_price({"buy": None, "sell": 6.0}, "split") == 6.0
-    assert orr._basis_price({"buy": 4.0, "sell": 6.0}, "buy") == 4.0
+    assert orr._basis_price({"buy": 4.0, "sell": None}, "split") == pytest.approx(4.0)
+    assert orr._basis_price({"buy": None, "sell": 6.0}, "split") == pytest.approx(6.0)
+    assert orr._basis_price({"buy": 4.0, "sell": 6.0}, "buy") == pytest.approx(4.0)
 
 
 def test_fnum_handles_bad_values():
@@ -780,7 +780,7 @@ def test_parse_items_tab_no_numbers_qty_zero(eve_db):
     body = orr.ParseNeedsRequest(text="Tritanium\tPyerite", kind="any")
     out = run(orr.parse_items(body=body, current_user=USER, eve_db=eve_db))
     # first token "Tritanium" kept at qty 0 (second token is the discarded "name")
-    assert any(n["type_id"] == TRIT and n["qty"] == 0.0 for n in out["needs"])
+    assert any(n["type_id"] == TRIT and n["qty"] == pytest.approx(0.0) for n in out["needs"])
 
 
 def test_parse_items_bare_name_qty_zero(eve_db):

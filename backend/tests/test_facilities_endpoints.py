@@ -20,6 +20,7 @@ from app.core.schemas import FacilityType, OrganisationType
 
 USER = SimpleNamespace(id=1)
 OTHER = SimpleNamespace(id=999)
+SEED_HASH = "x"  # placeholder password hash for seeded test users (not a real credential)
 
 
 def run(coro):
@@ -32,8 +33,8 @@ def db():
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     session.add_all([
-        UserDB(id=1, username="u", email="u@example.com", hashed_password="x"),
-        UserDB(id=999, username="other", email="o@example.com", hashed_password="x"),
+        UserDB(id=1, username="u", email="u@example.com", hashed_password=SEED_HASH),
+        UserDB(id=999, username="other", email="o@example.com", hashed_password=SEED_HASH),
     ])
     session.commit()
     yield session
@@ -76,8 +77,8 @@ def test_create_facility_persists_all_fields(db):
     assert out.user_id == 1
     assert out.name == "Sotiyo-X"
     assert out.facility_type == FacilityType.SOTIYO
-    assert out.tax == 1.5 and out.cost_bonus == 2.0
-    assert out.system_name == "Jita" and out.system_cost_index == 0.05
+    assert out.tax == pytest.approx(1.5) and out.cost_bonus == pytest.approx(2.0)
+    assert out.system_name == "Jita" and out.system_cost_index == pytest.approx(0.05)
     assert out.rig1.type_id == 37180 and out.rig1.name == "T2 Rig"
     assert out.rig2.type_id is None
     assert out.rig3.type_id is None  # rig3 omitted entirely
@@ -177,8 +178,8 @@ def test_update_facility_changes_fields(db):
     assert out.name == "Renamed"
     assert out.facility_type == FacilityType.TATARA
     assert out.organisation_id == org.id
-    assert out.tax == 9.0 and out.cost_bonus == 3.0
-    assert out.system_name == "Amarr" and out.system_cost_index == 0.07
+    assert out.tax == pytest.approx(9.0) and out.cost_bonus == pytest.approx(3.0)
+    assert out.system_name == "Amarr" and out.system_cost_index == pytest.approx(0.07)
     assert out.rig1.name == "R1" and out.rig2.name == "R2" and out.rig3.name == "R3"
     assert out.updated_at is not None
 
@@ -191,7 +192,7 @@ def test_update_facility_partial_leaves_other_fields(db):
         current_user=USER, db=db,
     ))
     assert out.name == "OnlyName"
-    assert out.tax == 1.0  # untouched
+    assert out.tax == pytest.approx(1.0)  # untouched
 
 
 def test_update_facility_not_found(db):

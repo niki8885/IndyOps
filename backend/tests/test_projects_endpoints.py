@@ -23,6 +23,7 @@ from app.core.schemas import ProjectsType, ProjectsStatus, ProjectPriority, Empl
 
 USER = SimpleNamespace(id=1)
 OTHER = SimpleNamespace(id=2)
+SEED_HASH = "x"  # placeholder password hash for seeded test users (not a real credential)
 
 
 def run(coro):
@@ -35,8 +36,8 @@ def db():
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     # two users; org is owned by user 1
-    session.add(UserDB(id=1, username="u1", email="u1@example.com", hashed_password="x"))
-    session.add(UserDB(id=2, username="u2", email="u2@example.com", hashed_password="x"))
+    session.add(UserDB(id=1, username="u1", email="u1@example.com", hashed_password=SEED_HASH))
+    session.add(UserDB(id=2, username="u2", email="u2@example.com", hashed_password=SEED_HASH))
     session.commit()
     yield session
     session.close(); engine.dispose()

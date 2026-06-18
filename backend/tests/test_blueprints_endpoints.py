@@ -26,6 +26,7 @@ from app.core.database import Base, UserDB, Organisation, OrganisationMember, Bl
 from app.core.database_eve import EveBase, EveType, EveActivityProduct
 
 USER = SimpleNamespace(id=1)
+SEED_HASH = "x"  # placeholder password hash for seeded test users (not a real credential)
 
 # Blueprint type 1000 (manufacturing, activity 1) makes product 587.
 BP_TYPE_ID = 1000
@@ -46,7 +47,7 @@ def _mem_db(base):
 @pytest.fixture
 def app_db():
     session, engine = _mem_db(Base)
-    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password="x"))
+    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password=SEED_HASH))
     session.commit()
     yield session
     session.close(); engine.dispose()
@@ -96,7 +97,7 @@ def test_create_bpc_keeps_runs(app_db):
         current_user=USER, db=app_db))
     assert out.is_bpo is False
     assert out.runs == 50            # BPC → runs preserved
-    assert out.cost == 1234.0
+    assert out.cost == pytest.approx(1234.0)
 
 
 def test_create_blueprint_not_a_blueprint_400(app_db):

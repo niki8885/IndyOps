@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 from app.api import trade_router as tr
 from app.core import config
 from app.core.database import (
-    Base, TradeCandidate, StationTradeCandidate,
+    Base,
 )
 from app.core.trade_data import HUB_STATION_IDS
 

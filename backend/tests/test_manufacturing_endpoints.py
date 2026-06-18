@@ -34,6 +34,7 @@ from app.services.manufacturing import CalcInput, Material, run_calculation
 
 
 USER = SimpleNamespace(id=1)
+SEED_HASH = "x"  # placeholder password hash for seeded test users (not a real credential)
 
 
 def run(coro):
@@ -49,7 +50,7 @@ def _mem_db(base):
 @pytest.fixture
 def app_db():
     session, engine = _mem_db(Base)
-    session.add(UserDB(id=1, username="u", hashed_password="x", email="u@e.com"))
+    session.add(UserDB(id=1, username="u", hashed_password=SEED_HASH, email="u@e.com"))
     session.commit()
     yield session
     session.close(); engine.dispose()
@@ -451,7 +452,7 @@ def test_receive_explicit_qty_and_price(app_db, eve_db):
     j = _make_job(app_db, calc_snapshot=_calc_snapshot())
     body = mr.ReceiveRequest(quantity=2, unit_price=1234.0)
     out = run(mr.receive_job_output(job_id=j.id, body=body, current_user=USER, db=app_db))
-    assert out["received_qty"] == 2 and out["unit_cost"] == 1234.0
+    assert out["received_qty"] == 2 and out["unit_cost"] == pytest.approx(1234.0)
 
 
 def test_receive_400_nothing_to_receive(app_db, eve_db):
@@ -481,7 +482,7 @@ def test_job_movements(app_db, eve_db):
     app_db.commit()
     rows = run(mr.job_movements(job_id=j.id, current_user=USER, db=app_db))
     assert len(rows) == 1 and rows[0]["direction"] == "out"
-    assert rows[0]["total_cost"] == 500.0
+    assert rows[0]["total_cost"] == pytest.approx(500.0)
 
 
 def test_job_movements_404(app_db, eve_db):

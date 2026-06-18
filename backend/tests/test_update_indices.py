@@ -39,16 +39,16 @@ def _agg(price, volume):
 # ── small helper coverage ─────────────────────────────────────────────────────
 
 def test_sell_price_prefers_percentile_then_falls_through():
-    assert ui._sell_price({"sell": {"percentile": "10.5", "min": "1"}}) == 10.5
-    assert ui._sell_price({"sell": {"percentile": 0, "min": "7"}}) == 7.0  # skips zero
-    assert ui._sell_price({"sell": {}}) == 0.0
-    assert ui._sell_price({}) == 0.0
+    assert ui._sell_price({"sell": {"percentile": "10.5", "min": "1"}}) == pytest.approx(10.5)
+    assert ui._sell_price({"sell": {"percentile": 0, "min": "7"}}) == pytest.approx(7.0)  # skips zero
+    assert ui._sell_price({"sell": {}}) == pytest.approx(0.0)
+    assert ui._sell_price({}) == pytest.approx(0.0)
 
 
 def test_sell_volume_parses_and_defaults():
-    assert ui._sell_volume({"sell": {"volume": "1234"}}) == 1234.0
-    assert ui._sell_volume({"sell": {"volume": None}}) == 0.0
-    assert ui._sell_volume({"sell": {"volume": "oops"}}) == 0.0
+    assert ui._sell_volume({"sell": {"volume": "1234"}}) == pytest.approx(1234.0)
+    assert ui._sell_volume({"sell": {"volume": None}}) == pytest.approx(0.0)
+    assert ui._sell_volume({"sell": {"volume": "oops"}}) == pytest.approx(0.0)
 
 
 # ── _compute_basket ───────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ def test_compute_plex_success(monkeypatch):
                         lambda region, ids: {str(PLEX_TYPE_ID): _agg(4_000_000.0, 50)})
     snap = ui._compute_plex()
     assert snap["price_index"] == pytest.approx(4_000_000.0)
-    assert snap["top3_share"] == 1.0 and snap["liquidity_index"] is None
+    assert snap["top3_share"] == pytest.approx(1.0) and snap["liquidity_index"] is None
 
 
 def test_compute_plex_falls_back_to_jita(monkeypatch):

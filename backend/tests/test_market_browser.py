@@ -304,7 +304,6 @@ def test_history_payload_single_point_prev_equals_last():
 # ── correlation_payload ───────────────────────────────────────────────────────
 
 def _corr_hist(prices, start="2026-01-01"):
-    base = datetime(2026, 1, 1)
     out = []
     for i, p in enumerate(prices):
         out.append({"date": f"2026-01-{i + 1:02d}", "average": p})
