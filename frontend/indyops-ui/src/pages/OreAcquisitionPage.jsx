@@ -327,11 +327,12 @@ function PasteAdder({ kind, label, onParsed }) {
 
 function ComparisonTab({ rigs, hubs, cj }) {
   const [minerals, setMinerals] = useState([])
+  const [moonMats, setMoonMats] = useState([])
 
   const [target, setTarget] = useState('')
   const [sources, setSources] = useState([])          // [{key,label,region_id,system_name,cj}]
   const [needs, setNeeds] = useState({})              // {type_id: {name, qty, on}}
-  const [include, setInclude] = useState({ minerals: true, raw: true, compressed: true })
+  const [include, setInclude] = useState({ minerals: true, raw: true, compressed: true, exotic: false })
   const [basis, setBasis] = useState('sell')
   const [refine, setRefine] = useState(defaultRefine())
   const [shipping, setShipping] = useState(defaultShipping())
@@ -342,7 +343,9 @@ function ComparisonTab({ rigs, hubs, cj }) {
   const [res, setRes] = useState(null)
 
   useEffect(() => {
-    get('/ore/catalog').then(r => setMinerals(r.minerals || [])).catch(() => {})
+    get('/ore/catalog')
+      .then(r => { setMinerals(r.minerals || []); setMoonMats(r.moon_materials || []) })
+      .catch(() => {})
   }, [])
 
   function toggleNeed(m) {
@@ -359,6 +362,20 @@ function ComparisonTab({ rigs, hubs, cj }) {
   }
   const toggleInc = (k) => setInclude({ ...include, [k]: !include[k] })
 
+  // one selectable resource row — shared by the minerals and moon-materials lists
+  const needRow = (m) => (
+    <div key={m.type_id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, fontSize: 12, cursor: 'pointer' }}>
+        <input type="checkbox" checked={!!needs[m.type_id]?.on} onChange={() => toggleNeed(m)} style={CHK} />
+        <span style={{ color: 'var(--text-white)' }}>{m.name}</span>
+      </label>
+      {needs[m.type_id]?.on && (
+        <input type="number" placeholder="qty" value={needs[m.type_id]?.qty || ''}
+               onChange={e => setNeedQty(m.type_id, e.target.value)} style={{ width: 110, flex: 'none' }} />
+      )}
+    </div>
+  )
+
   async function run() {
     const chosenNeeds = Object.entries(needs).filter(([, v]) => v.on)
       .map(([tid, v]) => ({ type_id: Number(tid), qty: v.qty }))
@@ -373,6 +390,7 @@ function ComparisonTab({ rigs, hubs, cj }) {
         include_minerals: include.minerals,
         include_raw: include.raw,
         include_compressed: include.compressed,
+        include_exotic: include.exotic,
         basis,
         refine,
         shipping: shippingPayload(shipping),
@@ -395,11 +413,14 @@ function ComparisonTab({ rigs, hubs, cj }) {
           <div style={{ marginTop: 10 }}>
             <span style={{ display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>Analyze (what to consider)</span>
             <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-              {[['minerals', 'Buy minerals'], ['raw', 'Raw ore'], ['compressed', 'Compressed ore']].map(([k, lab]) => (
+              {[['minerals', 'Buy minerals'], ['raw', 'Raw ore'], ['compressed', 'Compressed ore'], ['exotic', 'Exotic ores']].map(([k, lab]) => (
                 <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-white)' }}>
                   <input type="checkbox" checked={include[k]} onChange={() => toggleInc(k)} /> {lab}
                 </label>
               ))}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--border2)', marginTop: 3 }}>
+              Exotic = Equinox/Triglavian ores (Kylixium, Bezdnacine…). Dead event/grade ores are always hidden.
             </div>
           </div>
           <div style={{ marginTop: 10 }}>
@@ -413,21 +434,25 @@ function ComparisonTab({ rigs, hubs, cj }) {
         </Panel>
 
         <Panel title="Resources needed">
+          <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>MINERALS</div>
           <PasteAdder kind="mineral" label="minerals" onParsed={mergeParsed} />
-          <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-            {minerals.map(m => (
-              <div key={m.type_id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, fontSize: 12, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={!!needs[m.type_id]?.on} onChange={() => toggleNeed(m)} style={CHK} />
-                  <span style={{ color: 'var(--text-white)' }}>{m.name}</span>
-                </label>
-                {needs[m.type_id]?.on && (
-                  <input type="number" placeholder="qty" value={needs[m.type_id]?.qty || ''}
-                         onChange={e => setNeedQty(m.type_id, e.target.value)} style={{ width: 110, flex: 'none' }} />
-                )}
-              </div>
-            ))}
+          <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+            {minerals.map(needRow)}
           </div>
+          {moonMats.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, letterSpacing: 1, margin: '14px 0 4px' }}>MOON MATERIALS</div>
+              <PasteAdder kind="moon" label="moon materials" onParsed={mergeParsed} />
+              <details>
+                <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text)' }}>
+                  Pick moon materials ({moonMats.length}) — pulls in moon ores
+                </summary>
+                <div style={{ maxHeight: 220, overflowY: 'auto', marginTop: 4 }}>
+                  {moonMats.map(needRow)}
+                </div>
+              </details>
+            </>
+          )}
         </Panel>
 
         <Panel title="Refining setup">
@@ -438,7 +463,7 @@ function ComparisonTab({ rigs, hubs, cj }) {
           <TransportControls shipping={shipping} setShipping={setShipping} />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 4 }}>
             <input type="checkbox" checked={volAlert} onChange={e => setVolAlert(e.target.checked)} />
-            Low-volatility / liquidity alert
+            Liquidity alert (thin / no-volume markets)
           </label>
         </Panel>
 
@@ -573,7 +598,10 @@ function Results({ res }) {
             <tbody>
               {res.items.map(it => (
                 <tr key={it.type_id}>
-                  <td style={{ color: 'var(--text-white)' }}>{it.name}</td>
+                  <td style={{ color: 'var(--text-white)' }}>
+                    {it.name}
+                    {it.legacy && <span title="legacy ore — being phased out, mine the graded variant instead" style={{ marginLeft: 6, color: '#c8a951', fontSize: 10 }}>legacy</span>}
+                  </td>
                   <td style={{ fontSize: 11, color: 'var(--text)' }}>{it.kind === 'ore' ? (it.compressed ? 'compressed' : 'raw ore') : 'mineral'}</td>
                   {it.cells.map((c, i) => {
                     const best = it.best && c.delivered != null && c.delivered === it.best.delivered
@@ -707,7 +735,7 @@ function GasTab({ hubs, cj }) {
         <Panel title="Transport">
           <TransportControls shipping={shipping} setShipping={setShipping} />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 4 }}>
-            <input type="checkbox" checked={volAlert} onChange={e => setVolAlert(e.target.checked)} /> Low-volatility / liquidity alert
+            <input type="checkbox" checked={volAlert} onChange={e => setVolAlert(e.target.checked)} /> Liquidity alert (thin / no-volume markets)
           </label>
         </Panel>
 
@@ -802,6 +830,16 @@ function ReprocessTab({ rigs }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
 
+  // ore catalog picker (same cleaned catalog as the comparison tab: dead event/grade
+  // ores hidden, exotic ores behind the toggle)
+  const [ores, setOres] = useState([])
+  const [oreExotic, setOreExotic] = useState(false)
+  const [oreFilter, setOreFilter] = useState('')
+
+  useEffect(() => {
+    get(`/ore/catalog?include_exotic=${oreExotic}`).then(r => setOres(r.ores || [])).catch(() => {})
+  }, [oreExotic])
+
   const VALUE_REGIONS = { forge: 10000002, domain: 10000043, sinq: 10000032 }
 
   function addItem() {
@@ -811,6 +849,11 @@ function ReprocessTab({ rigs }) {
   }
   const setQty = (i, q) => setItems(items.map((it, j) => j === i ? { ...it, qty: num(q) } : it))
   const removeItem = (i) => setItems(items.filter((_, j) => j !== i))
+  function toggleOre(o) {
+    setItems(items.some(it => it.type_id === o.type_id)
+      ? items.filter(it => it.type_id !== o.type_id)
+      : [...items, { type_id: o.type_id, name: o.name, qty: 1000 }])
+  }
   function addParsed(parsed) {
     const byId = new Map(items.map(it => [it.type_id, { ...it }]))
     parsed.forEach(n => {
@@ -855,6 +898,28 @@ function ReprocessTab({ rigs }) {
               ))}
             </tbody>
           </table>
+        </Panel>
+
+        <Panel title="Add from ore catalog">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-white)' }}>
+              <input type="checkbox" checked={oreExotic} onChange={e => setOreExotic(e.target.checked)} style={CHK} /> Show exotic ores
+            </label>
+            <input placeholder="filter ore…" value={oreFilter} onChange={e => setOreFilter(e.target.value)}
+                   style={{ flex: 1, minWidth: 120 }} />
+          </div>
+          <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border2)', borderRadius: 4, padding: 6 }}>
+            {ores.filter(o => o.name.toLowerCase().includes(oreFilter.toLowerCase())).map(o => (
+              <label key={o.type_id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '2px 0', cursor: 'pointer' }}>
+                <input type="checkbox" checked={items.some(it => it.type_id === o.type_id)} onChange={() => toggleOre(o)} style={CHK} />
+                <span style={{ color: 'var(--text-white)' }}>{o.name}</span>
+                {o.compressed && <span style={{ color: 'var(--border2)', fontSize: 10 }}>(c)</span>}
+                {o.exotic && <span title="exotic ore" style={{ color: '#c8a951', fontSize: 10 }}>★</span>}
+                {o.legacy && <span title="legacy ore — being phased out" style={{ color: '#c8a951', fontSize: 10 }}>legacy</span>}
+              </label>
+            ))}
+            {ores.length === 0 && <div style={{ fontSize: 11, color: 'var(--border2)' }}>No ores in SDE — run an EVE sync.</div>}
+          </div>
         </Panel>
 
         <Panel title="Refining setup">

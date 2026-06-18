@@ -33,6 +33,7 @@ class OreInfo:
     compressed: bool
     portion_size: int
     materials: tuple[dict, ...]
+    legacy: bool = False       # plain base ore being phased out (graded variant exists)
 
 
 # outputs
@@ -55,6 +56,7 @@ class ItemRow:
     volume: Optional[float]
     cells: list[Cell]
     best: Optional[Cell] = None
+    legacy: bool = False
 
 
 @dataclass
@@ -185,7 +187,8 @@ def compare(
     need_by_id = {n.type_id: n for n in needs}
 
     # ----- big price table: minerals first, then ores -------------------------
-    def build_row(tid: int, name: str, kind: str, compressed: bool) -> ItemRow:
+    def build_row(tid: int, name: str, kind: str, compressed: bool,
+                  legacy: bool = False) -> ItemRow:
         vol = volumes.get(tid)
         cells: list[Cell] = []
         for s in sources:
@@ -199,11 +202,11 @@ def compare(
         priced = [c for c in cells if c.delivered is not None]
         best = min(priced, key=lambda c: c.delivered) if priced else None
         return ItemRow(type_id=tid, name=name, kind=kind, compressed=compressed,
-                       volume=vol, cells=cells, best=best)
+                       volume=vol, cells=cells, best=best, legacy=legacy)
 
     items: list[ItemRow] = [build_row(n.type_id, n.name, "mineral", False) for n in needs]
     for o in ores:
-        items.append(build_row(o.type_id, o.name, "ore", o.compressed))
+        items.append(build_row(o.type_id, o.name, "ore", o.compressed, o.legacy))
 
     # ----- per-(ore, source) refine evaluation --------------------------------
     ore_evals: list[OreEval] = []
