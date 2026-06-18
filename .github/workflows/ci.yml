@@ -44,14 +44,61 @@ jobs:
             backend/requirements-dev.txt
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
-      - name: Run pytest with coverage
-        run: pytest --cov=app --cov-report=xml --cov-report=term-missing
+      - name: Run pytest with coverage + junit
+        run: pytest --cov=app --cov-report=xml --cov-report=term-missing --junitxml=junit.xml -o junit_family=legacy
       - name: Upload coverage reports to Codecov
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: backend/coverage.xml
           flags: backend
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: backend/junit.xml
+          flags: backend
+
+  # -------------------------------------------------------------------------
+  # Frontend — vitest tests + coverage + bundle analysis → Codecov
+  # -------------------------------------------------------------------------
+  frontend:
+    name: Frontend tests + coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/indyops-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/indyops-ui/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run vitest with coverage + junit
+        run: npx vitest run --reporter=default --reporter=junit --outputFile=test-report.junit.xml --coverage
+      - name: Build (uploads bundle analysis to Codecov)
+        run: npm run build
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: frontend/indyops-ui/coverage/lcov.info
+          flags: frontend
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: frontend/indyops-ui/test-report.junit.xml
+          flags: frontend
 
   # -------------------------------------------------------------------------
   # Fortran analytics-engine parity — build the native engine and check it

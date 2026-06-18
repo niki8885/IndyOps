@@ -50,3 +50,25 @@ ESI_TOKEN_ISSUERS = ("login.eveonline.com", "https://login.eveonline.com")
 ESI_BASE_URL = "https://esi.evetech.net/latest"
 
 SSO_STATE_EXPIRE_MINUTES = 15
+
+# --- TRADE (cross-hub optimizer + station trading data layer) ---------------
+# Tunable preprocessing thresholds — all env-overridable so they can be retuned
+# in production without a code change.
+TRADE_LIQUIDITY_MIN_VOLUME = int(os.getenv("TRADE_LIQUIDITY_MIN_VOLUME", "20"))   # daily traded units floor
+TRADE_VOLATILITY_MAX_CV    = float(os.getenv("TRADE_VOLATILITY_MAX_CV", "0.15"))   # reject CV above this
+TRADE_HISTORY_DAYS         = int(os.getenv("TRADE_HISTORY_DAYS", "14"))            # CV/volume lookback window
+TRADE_BROKER_FEE           = float(os.getenv("TRADE_BROKER_FEE", "0.03"))          # 3% per order placed
+TRADE_SALES_TAX            = float(os.getenv("TRADE_SALES_TAX", "0.045"))          # 4.5% on sale
+TRADE_ISK_PER_JUMP_M3      = float(os.getenv("TRADE_ISK_PER_JUMP_M3", "1200"))     # courier rate ISK / (jump·m³)
+TRADE_MIN_HUBS             = int(os.getenv("TRADE_MIN_HUBS", "2"))                 # require presence in ≥N hubs
+TRADE_MIN_BOOK_VOLUME      = int(os.getenv("TRADE_MIN_BOOK_VOLUME", "50"))         # min order-book depth to consider
+TRADE_MAX_UNIVERSE         = int(os.getenv("TRADE_MAX_UNIVERSE", "1500"))          # cap discovered types (bounds ESI)
+TRADE_MAX_ORDER_PAGES      = int(os.getenv("TRADE_MAX_ORDER_PAGES", "300"))        # per-region order-book page cap
+TRADE_TTL_SECONDS          = int(os.getenv("TRADE_TTL_SECONDS", "900"))            # candidate freshness (query layer)
+
+# Market category_ids that may become trade candidates (SDE invCategories):
+# 6 Ship, 7 Module, 8 Charge, 18 Drone, 87 Fighter. Excludes blueprints (9),
+# skillbooks (16), SKINs (91), etc. Override with a CSV env var.
+TRADE_CATEGORY_ALLOWLIST = {
+    int(x) for x in os.getenv("TRADE_CATEGORY_ALLOWLIST", "6,7,8,18,87").split(",") if x.strip()
+}
