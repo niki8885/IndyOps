@@ -241,6 +241,24 @@ class ProductionJob(Base):
     owner = relationship("UserDB", backref="production_jobs")
     project = relationship("Projects", backref="production_jobs")
     facility = relationship("Facility", backref="production_jobs")
+    status_events = relationship(
+        "ProductionStatusEvent", backref="job",
+        order_by="ProductionStatusEvent.at", cascade="all, delete-orphan",
+    )
+
+
+class ProductionStatusEvent(Base):
+    """Append-only status history for a PAK production job — one row per transition
+    (Planning → Preparing → In Progress → Completed/Cancelled), with timestamp, so the
+    timeline is persisted. Mirrors DeliveryStatusEvent. See [[indyops-io13-ore-refining]]."""
+    __tablename__ = "production_status_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("production_jobs.id"), nullable=False, index=True)
+    from_status = Column(String(20), nullable=True)
+    status = Column(String(20), nullable=False)
+    note = Column(String(300), nullable=True)
+    at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
 
 
 class InventoryItem(Base):
@@ -352,6 +370,24 @@ class Delivery(Base):
     owner = relationship("UserDB", backref="deliveries")
     project = relationship("Projects", backref="deliveries")
     organisation = relationship("Organisation", backref="deliveries")
+    status_events = relationship(
+        "DeliveryStatusEvent", backref="delivery",
+        order_by="DeliveryStatusEvent.at", cascade="all, delete-orphan",
+    )
+
+
+class DeliveryStatusEvent(Base):
+    """Append-only status history for a delivery — one row per transition, so the
+    timeline (created → in transit → completed/failed, when and how long) is
+    persisted rather than only the latest status. See [[indyops-io13-ore-refining]]."""
+    __tablename__ = "delivery_status_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    delivery_id = Column(Integer, ForeignKey("deliveries.id"), nullable=False, index=True)
+    from_status = Column(String(12), nullable=True)
+    status = Column(String(12), nullable=False)
+    note = Column(String(300), nullable=True)
+    at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
 
 
 class TrackedPlace(Base):

@@ -36,10 +36,11 @@ export default function OreAcquisitionPage() {
   return (
     <div>
       <h2 style={{ marginBottom: 6 }}>Ore Acquisition &amp; Refining</h2>
-      <p style={{ color: 'var(--text)', fontSize: 13, marginBottom: 18, maxWidth: 760 }}>
+      <p style={{ color: 'var(--text)', fontSize: 13, marginBottom: 10, maxWidth: 760 }}>
         Compare buying minerals, raw ore, or compressed ore — transport and refining
         yield/tax included — and find the cheapest way to stock each mineral.
       </p>
+      <SdeSyncButton />
       <div className="tabs">
         {TABS.map((t, i) => (
           <button key={i} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
@@ -48,6 +49,43 @@ export default function OreAcquisitionPage() {
       {tab === 0 && <ComparisonTab rigs={rigs} hubs={hubs} cj={cj} />}
       {tab === 1 && <GasTab hubs={hubs} cj={cj} />}
       {tab === 2 && <ReprocessTab rigs={rigs} />}
+    </div>
+  )
+}
+
+// Always-visible SDE sync control. The global header banner only appears when the
+// SDE has 0 types; a forced re-sync (this button) is what populates the newer
+// eve_type_materials / reprocessing-rig / gas tables that refining depends on.
+function SdeSyncButton() {
+  const [status, setStatus] = useState(null)   // {synced, type_count}
+  const [started, setStarted] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => { get('/eve/sde/status').then(setStatus).catch(() => {}) }, [])
+
+  async function sync() {
+    setMsg('')
+    try {
+      const r = await post('/eve/sde/update', {})
+      setStarted(true)
+      setMsg(r.message || 'Sync started — 5–15 min.')
+      const poll = setInterval(async () => {
+        try { setStatus(await get('/eve/sde/status')) } catch { /* ignore */ }
+      }, 30000)
+      setTimeout(() => clearInterval(poll), 20 * 60 * 1000)
+    } catch (e) { setMsg(e.message) }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16, fontSize: 12, color: 'var(--text)' }}>
+      <button className="btn btn-ghost btn-sm" onClick={sync} disabled={started}>
+        {started ? 'Sync running…' : '⚡ Sync EVE SDE (refining data)'}
+      </button>
+      {status && <span>{fmtNum(status.type_count)} types in DB</span>}
+      <span style={{ color: 'var(--border2)' }}>
+        — forces a full re-import (5–15 min); run once to populate ore/gas reprocessing yields
+      </span>
+      {msg && <span style={{ color: 'var(--accent)' }}>{msg}</span>}
     </div>
   )
 }
@@ -110,6 +148,9 @@ function Field({ label, children, hint }) {
 
 // inputs/selects fill their grid cell and never overflow it
 const FIT = { width: '100%', boxSizing: 'border-box', maxWidth: '100%' }
+// checkbox kept at its natural size (the global `input{width:100%}` otherwise
+// stretches its box and shoves the label to the far right)
+const CHK = { width: 'auto', flex: 'none', margin: 0 }
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 
@@ -375,14 +416,14 @@ function ComparisonTab({ rigs, hubs, cj }) {
           <PasteAdder kind="mineral" label="minerals" onParsed={mergeParsed} />
           <div style={{ maxHeight: 200, overflowY: 'auto' }}>
             {minerals.map(m => (
-              <div key={m.type_id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, fontSize: 12 }}>
-                  <input type="checkbox" checked={!!needs[m.type_id]?.on} onChange={() => toggleNeed(m)} />
+              <div key={m.type_id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, fontSize: 12, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!needs[m.type_id]?.on} onChange={() => toggleNeed(m)} style={CHK} />
                   <span style={{ color: 'var(--text-white)' }}>{m.name}</span>
                 </label>
                 {needs[m.type_id]?.on && (
                   <input type="number" placeholder="qty" value={needs[m.type_id]?.qty || ''}
-                         onChange={e => setNeedQty(m.type_id, e.target.value)} style={{ width: 110 }} />
+                         onChange={e => setNeedQty(m.type_id, e.target.value)} style={{ width: 110, flex: 'none' }} />
                 )}
               </div>
             ))}
@@ -647,15 +688,15 @@ function GasTab({ hubs, cj }) {
           <PasteAdder kind="gas" label="gases" onParsed={mergeParsed} />
           <div style={{ maxHeight: 240, overflowY: 'auto' }}>
             {gases.map(g => (
-              <div key={g.reg_type_id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, fontSize: 12 }}>
-                  <input type="checkbox" checked={!!needs[g.reg_type_id]?.on} onChange={() => toggleNeed(g)} />
+              <div key={g.reg_type_id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, fontSize: 12, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!needs[g.reg_type_id]?.on} onChange={() => toggleNeed(g)} style={CHK} />
                   <span style={{ color: 'var(--text-white)' }}>{g.reg_name}</span>
                   {!g.comp_type_id && <span title="no compressed variant" style={{ color: 'var(--border2)', fontSize: 10 }}>(no comp.)</span>}
                 </label>
                 {needs[g.reg_type_id]?.on && (
                   <input type="number" placeholder="qty" value={needs[g.reg_type_id]?.qty || ''}
-                         onChange={e => setQty(g.reg_type_id, e.target.value)} style={{ width: 110 }} />
+                         onChange={e => setQty(g.reg_type_id, e.target.value)} style={{ width: 110, flex: 'none' }} />
                 )}
               </div>
             ))}

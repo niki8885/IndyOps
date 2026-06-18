@@ -5,7 +5,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.deliveries_router import _match_contracts, _annotate, _apply_complete
-from app.core.database import Base, Delivery, InventoryItem, EsiContract, LinkedCharacter
+from app.core.database import (
+    Base, Delivery, DeliveryStatusEvent, InventoryItem, EsiContract, LinkedCharacter,
+)
 
 CODE = "ABC1234567"
 TITLE = f"Fuel Blocks | 2026-06-17 | {CODE} | -> RYC-19"
@@ -14,7 +16,7 @@ TITLE = f"Fuel Blocks | 2026-06-17 | {CODE} | -> RYC-19"
 def _session():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine, tables=[
-        Delivery.__table__, InventoryItem.__table__,
+        Delivery.__table__, DeliveryStatusEvent.__table__, InventoryItem.__table__,
         EsiContract.__table__, LinkedCharacter.__table__,
     ])
     return sessionmaker(bind=engine)()
@@ -91,6 +93,23 @@ def test_apply_complete_moves_items_to_target():
     lot = s.query(InventoryItem).first()
     assert lot.place == "RYC-19"
     assert lot.delivery_id is None
+    s.close()
+
+
+def test_apply_complete_records_status_event():
+    s = _session()
+    d = Delivery(user_id=1, code=CODE, status="pending",
+                 source_place="Jita", target_place="RYC-19")
+    s.add(d); s.flush()
+    _apply_complete(s, d, datetime.datetime.utcnow())
+    s.commit()
+
+    events = s.query(DeliveryStatusEvent).filter(
+        DeliveryStatusEvent.delivery_id == d.id).all()
+    assert len(events) == 1
+    assert events[0].status == "completed"
+    assert events[0].from_status == "pending"
+    assert "RYC-19" in (events[0].note or "")
     s.close()
 
 
