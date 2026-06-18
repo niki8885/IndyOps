@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
@@ -16,7 +17,24 @@ INDUSTRY_ACTIVITIES = (MANUFACTURING, REACTION)
 
 # SDE classification constants (stable across releases).
 CATEGORY_ASTEROID = 25   # invCategories: ore / compressed ore live here
-GROUP_MINERAL = 18       # invGroups: the eight minerals + Morphite
+GROUP_MINERAL = 18       # invGroups: the eight minerals + Morphite (and, since
+                         # Equinox, the exotic refine products — see below)
+GROUP_MOON_MATERIAL = 427  # invGroups: raw moon materials (moon-ore reprocess output)
+
+# The eight classic minerals. Group 18 now ALSO holds the Equinox/Triglavian
+# advanced refine products (Neo-Jadarite, Chromodynamic Tricarboxyls, Crystalline
+# Raspite/Polycrase/Moissanite/Kangite, Eleutrium…), which are NOT what the
+# acquisition calculators mean by "minerals". These ids are stable across releases.
+CLASSIC_MINERAL_IDS = frozenset({
+    34,     # Tritanium
+    35,     # Pyerite
+    36,     # Mexallon
+    37,     # Isogen
+    38,     # Nocxium
+    39,     # Zydrine
+    40,     # Megacyte
+    11399,  # Morphite
+})
 
 
 @dataclass
@@ -184,22 +202,127 @@ def types_by_name(eve_db, names: list[str]) -> dict[str, dict]:
 # ── Reprocessing / ore-acquisition reads ────────────────────────────────────
 
 def mineral_catalog(eve_db) -> list[dict]:
-    """Published minerals (group 18: Tritanium … Megacyte + Morphite), with volume."""
+    """The eight classic minerals (Tritanium … Megacyte + Morphite), with volume.
+
+    Group 18 now also holds the Equinox/exotic refine products — those are excluded
+    here; see :data:`CLASSIC_MINERAL_IDS`."""
     rows = (
         eve_db.query(EveType.type_id, EveType.type_name, EveType.volume)
-        .filter(EveType.group_id == GROUP_MINERAL, EveType.published.is_(True))
+        .filter(EveType.type_id.in_(CLASSIC_MINERAL_IDS))
         .order_by(EveType.type_id)
         .all()
     )
     return [{"type_id": tid, "name": name, "volume": vol} for tid, name, vol in rows]
 
 
-def ore_catalog(eve_db, compressed: Optional[bool] = None) -> list[dict]:
+def moon_material_catalog(eve_db) -> list[dict]:
+    """Published raw moon materials (group 427) — the reprocess output of moon ore.
+
+    Selectable as "needs" for the moon-ore acquisition comparison, mirroring the
+    mineral flow (the eight ubiquitous/common/… moon goos plus the rare ones)."""
+    rows = (
+        eve_db.query(EveType.type_id, EveType.type_name, EveType.volume)
+        .filter(EveType.group_id == GROUP_MOON_MATERIAL, EveType.published.is_(True))
+        .order_by(EveType.type_name)
+        .all()
+    )
+    return [{"type_id": tid, "name": name, "volume": vol} for tid, name, vol in rows]
+
+
+def _is_dead_ore(name: Optional[str]) -> bool:
+    """Event compression that can't be mined in normal space — only ``Batch
+    Compressed …`` now. Post-patch the ``… <tier>-Grade`` ores are the *current* ore
+    system (kept); the plain base ores are flagged ``legacy`` instead (see below)."""
+    return (name or "").strip().lower().startswith("batch compressed")
+
+
+_GRADE_SUFFIX_RE = re.compile(r"\s+\S+-grade$", re.IGNORECASE)
+
+
+def _is_graded_ore(name: Optional[str]) -> bool:
+    """True for the current graded ores (``Spodumain II-Grade``, ``Kangite X-Grade``…)."""
+    return bool(_GRADE_SUFFIX_RE.search(name or ""))
+
+
+def _grade_base_name(name: Optional[str]) -> Optional[str]:
+    """Plain base name (lowercased) of a graded ore — ``Spodumain II-Grade`` →
+    ``spodumain``, ``Compressed Spodumain II-Grade`` → ``compressed spodumain`` —
+    else None. Used to flag the deprecating plain base ores as legacy."""
+    m = _GRADE_SUFFIX_RE.search(name or "")
+    return name[:m.start()].strip().lower() if m else None
+
+
+def _exotic_material_ids(eve_db) -> set[int]:
+    """Group-18 types that are NOT one of the eight classic minerals — i.e. the
+    Equinox/Triglavian advanced refine products (Neo-Jadarite, Crystalline …)."""
+    rows = (
+        eve_db.query(EveType.type_id)
+        .filter(EveType.group_id == GROUP_MINERAL, EveType.published.is_(True))
+        .all()
+    )
+    return {tid for (tid,) in rows if tid not in CLASSIC_MINERAL_IDS}
+
+
+def _exotic_ore_ids(eve_db, ore_ids: list[int]) -> set[int]:
+    """Subset of ``ore_ids`` that reprocess into any exotic (non-classic) material —
+    the Equinox/Triglavian ores (Kylixium, Bezdnacine, Raspite…). Data-driven, so it
+    stays correct as CCP adds ores, without a name blocklist."""
+    exo = _exotic_material_ids(eve_db)
+    if not exo or not ore_ids:
+        return set()
+    rows = (
+        eve_db.query(EveTypeMaterial.type_id)
+        .filter(EveTypeMaterial.type_id.in_(ore_ids),
+                EveTypeMaterial.material_type_id.in_(exo))
+        .distinct()
+        .all()
+    )
+    return {tid for (tid,) in rows}
+
+
+def _ore_rows(eve_db, query, compressed: Optional[bool], include_exotic: bool) -> list[dict]:
+    """Materialise an ore query into catalog dicts, applying the shared filters:
+    always drop dead (``Batch Compressed``) ores, gate exotic ores on
+    ``include_exotic``, and split raw vs compressed on ``compressed`` (True
+    compressed-only / False raw-only / None both). Each row is tagged ``compressed``,
+    ``exotic`` and ``legacy`` (a plain base ore whose graded variant exists — being
+    phased out) for the UI."""
+    raw = query.all()
+    exotic_ids = _exotic_ore_ids(eve_db, [r[0] for r in raw])
+    # plain base ores that have a graded sibling are "legacy" (deprecating post-patch)
+    graded_bases = {_grade_base_name(name) for _, name, *_ in raw}
+    graded_bases.discard(None)
+    out = []
+    for tid, name, vol, portion, gid, gname in raw:
+        if _is_dead_ore(name):
+            continue
+        is_comp = (name or "").lower().startswith("compressed")
+        if compressed is True and not is_comp:
+            continue
+        if compressed is False and is_comp:
+            continue
+        is_exotic = tid in exotic_ids
+        if is_exotic and not include_exotic:
+            continue
+        is_legacy = (not _is_graded_ore(name)
+                     and (name or "").strip().lower() in graded_bases)
+        out.append({
+            "type_id": tid, "name": name, "volume": vol,
+            "portion_size": portion or 1, "group_id": gid,
+            "group_name": gname, "compressed": is_comp,
+            "exotic": is_exotic, "legacy": is_legacy,
+        })
+    return out
+
+
+def ore_catalog(eve_db, compressed: Optional[bool] = None,
+                include_exotic: bool = False) -> list[dict]:
     """Published ore types (Asteroid category) that have a reprocessing yield.
 
     ``compressed``: True → only "Compressed …" variants, False → only raw ore,
-    None → both. ``portion_size`` is the reprocess batch size for the yields.
-    """
+    None → both. ``include_exotic`` gates the Equinox/Triglavian exotic ores. Dead
+    ``Batch Compressed`` ores are always excluded; graded ores are kept and plain base
+    ores tagged ``legacy``. ``portion_size`` is the reprocess batch size."""
     q = (
         eve_db.query(EveType.type_id, EveType.type_name, EveType.volume,
                      EveType.portion_size, EveType.group_id, EveGroup.group_name)
@@ -208,24 +331,18 @@ def ore_catalog(eve_db, compressed: Optional[bool] = None) -> list[dict]:
         .filter(EveType.type_id.in_(eve_db.query(EveTypeMaterial.type_id).distinct()))
         .order_by(EveType.type_name)
     )
-    out = []
-    for tid, name, vol, portion, gid, gname in q.all():
-        is_comp = (name or "").lower().startswith("compressed")
-        if compressed is True and not is_comp:
-            continue
-        if compressed is False and is_comp:
-            continue
-        out.append({
-            "type_id": tid, "name": name, "volume": vol,
-            "portion_size": portion or 1, "group_id": gid,
-            "group_name": gname, "compressed": is_comp,
-        })
-    return out
+    return _ore_rows(eve_db, q, compressed, include_exotic)
 
 
 def ores_yielding(eve_db, mineral_type_ids: list[int],
-                  compressed: Optional[bool] = None) -> list[dict]:
-    """Ore types whose reprocessing yield includes any of ``mineral_type_ids``."""
+                  compressed: Optional[bool] = None,
+                  include_exotic: bool = False) -> list[dict]:
+    """Ore types whose reprocessing yield includes any of ``mineral_type_ids``.
+
+    Works for any need (classic minerals *or* moon materials): a moon material in
+    ``mineral_type_ids`` brings in the moon ores that yield it. Dead ``Batch
+    Compressed`` ores are always dropped; exotic ores are gated on ``include_exotic``;
+    plain base ores with a graded variant are tagged ``legacy``."""
     if not mineral_type_ids:
         return []
     ore_ids = [
@@ -243,19 +360,7 @@ def ores_yielding(eve_db, mineral_type_ids: list[int],
         .filter(EveType.type_id.in_(ore_ids))
         .order_by(EveType.type_name)
     )
-    out = []
-    for tid, name, vol, portion, gid, gname in q.all():
-        is_comp = (name or "").lower().startswith("compressed")
-        if compressed is True and not is_comp:
-            continue
-        if compressed is False and is_comp:
-            continue
-        out.append({
-            "type_id": tid, "name": name, "volume": vol,
-            "portion_size": portion or 1, "group_id": gid,
-            "group_name": gname, "compressed": is_comp,
-        })
-    return out
+    return _ore_rows(eve_db, q, compressed, include_exotic)
 
 
 def reprocessing_yields(eve_db, type_ids: list[int]) -> dict[int, dict]:

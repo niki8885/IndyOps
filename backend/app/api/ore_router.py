@@ -122,6 +122,7 @@ class CompareRequest(BaseModel):
     include_minerals: bool = True          # direct mineral buy
     include_raw: bool = True               # raw ore → refine
     include_compressed: bool = True        # compressed ore → refine
+    include_exotic: bool = False           # also consider Equinox/Triglavian exotic ores
     basis: str = "sell"                    # buy | sell (price side you pay)
     refine: RefineIn = RefineIn()
     shipping: ShippingIn = ShippingIn()
@@ -304,10 +305,14 @@ async def _resolve_sources(eve_db: Session, src_list: list[SourceIn], all_ids: l
 
 def _volatility_alerts(region_id: Optional[int], type_ids: list[int],
                        threshold: float) -> dict[int, dict]:
-    """Per-type daily-return volatility + liquidity at one region (best-effort).
+    """Per-type liquidity check at one region (best-effort); daily-return volatility
+    is reported for context.
 
-    Flags a type when its 30-day return stdev is below ``threshold`` (a stable/thin
-    market the user should double-check) or it has effectively no traded volume.
+    Flags a type only when its market is genuinely thin — no recent history, or no
+    traded volume. A deep, liquid market (e.g. Isogen at Jita) naturally has *low*
+    price volatility, so low volatility on its own is **not** an alert (that was a
+    false positive on the major minerals). ``threshold`` is kept for the reason
+    wording only; it no longer decides whether the alert fires.
     """
     if not region_id:
         return {}
@@ -324,12 +329,12 @@ def _volatility_alerts(region_id: Optional[int], type_ids: list[int],
                 for i in range(1, len(prices)) if prices[i - 1] and prices[i]]
         vol = statistics.pstdev(rets) if len(rets) > 1 else 0.0
         avg_volume = sum(vols) / len(vols) if vols else 0.0
-        low = vol < threshold or avg_volume <= 0
+        illiquid = avg_volume <= 0
         alerts[tid] = {
             "volatility": round(vol, 4), "avg_volume": round(avg_volume, 1),
-            "alert": low,
-            "reason": ("low volatility — stable/thin market" if vol < threshold
-                       else ("no traded volume" if avg_volume <= 0 else "ok")),
+            "alert": illiquid,
+            "reason": ("no traded volume — thin market, double-check the price"
+                       if illiquid else "ok"),
         }
     return alerts
 
@@ -347,13 +352,18 @@ async def list_hubs(current_user: UserDB = Depends(get_current_user)):
 @router.get("/catalog")
 async def catalog(
         compressed: Optional[bool] = None,
+        include_exotic: bool = False,
         current_user: UserDB = Depends(get_current_user),
         eve_db: Session = Depends(_get_eve_db),
 ):
-    """Minerals + ore types (for the resource selector). ``compressed`` filters ores."""
+    """Minerals + moon materials + ore types (for the resource selectors).
+
+    ``compressed`` filters ores; ``include_exotic`` adds the Equinox/Triglavian
+    exotic ores (dead event/grade ores are always excluded)."""
     return {
         "minerals": eve_repo.mineral_catalog(eve_db),
-        "ores": eve_repo.ore_catalog(eve_db, compressed=compressed),
+        "moon_materials": eve_repo.moon_material_catalog(eve_db),
+        "ores": eve_repo.ore_catalog(eve_db, compressed=compressed, include_exotic=include_exotic),
     }
 
 
@@ -403,7 +413,8 @@ class ParseNeedsRequest(BaseModel):
 def _parse_items(eve_db: Session, text: str, kind: str) -> dict:
     """Shared paste parser: resolve names → type_ids, filter by ``kind`` and sum dupes.
 
-    kind 'mineral' keeps group-18 minerals, 'gas' keeps harvestable gases, 'any'
+    kind 'mineral' keeps the eight classic minerals (not the group-18 exotic refine
+    products), 'moon' keeps raw moon materials, 'gas' keeps harvestable gases, 'any'
     keeps everything resolved (the reprocessing calculator reprocesses any item).
     """
     parsed = _parse_need_lines(text or "")
@@ -419,7 +430,9 @@ def _parse_items(eve_db: Session, text: str, kind: str) -> dict:
 
     def keep(tid: int) -> bool:
         if kind == "mineral":
-            return groups.get(tid) == eve_repo.GROUP_MINERAL
+            return tid in eve_repo.CLASSIC_MINERAL_IDS
+        if kind == "moon":
+            return groups.get(tid) == eve_repo.GROUP_MOON_MATERIAL
         if kind == "gas":
             return tid in gas_ids
         return True
@@ -610,14 +623,18 @@ async def compare_acquisition(
     dst = _resolve_system(eve_db, body.target_system)
     band = facility_bonus.band_of(dst.security) if dst else "hi"
 
+    # needs may be classic minerals and/or moon materials — the ore lookup is
+    # need-driven, so moon materials pull in the moon ores that yield them.
     mineral_ids = [n.type_id for n in body.needs]
 
     # ----- ore candidates per analyze checkboxes ------------------------------
     ore_rows: list[dict] = []
     if body.include_raw:
-        ore_rows += eve_repo.ores_yielding(eve_db, mineral_ids, compressed=False)
+        ore_rows += eve_repo.ores_yielding(eve_db, mineral_ids, compressed=False,
+                                           include_exotic=body.include_exotic)
     if body.include_compressed:
-        ore_rows += eve_repo.ores_yielding(eve_db, mineral_ids, compressed=True)
+        ore_rows += eve_repo.ores_yielding(eve_db, mineral_ids, compressed=True,
+                                           include_exotic=body.include_exotic)
     ore_ids = [o["type_id"] for o in ore_rows]
     ore_yields = eve_repo.reprocessing_yields(eve_db, ore_ids)
 
@@ -661,6 +678,7 @@ async def compare_acquisition(
             type_id=o["type_id"], name=o["name"], compressed=o["compressed"],
             portion_size=(ore_yields.get(o["type_id"], {}).get("portion_size") or 1),
             materials=tuple(ore_yields.get(o["type_id"], {}).get("materials") or []),
+            legacy=o.get("legacy", False),
         )
         for o in ore_rows
     ]
