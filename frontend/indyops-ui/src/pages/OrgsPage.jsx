@@ -14,6 +14,47 @@ const WRITE_ROLES = new Set(['OWNER', 'ADMIN', 'SENIOR'])
 
 function canWrite(role) { return WRITE_ROLES.has(role) }
 
+// EVE image-server corp logo — derived straight from the corp id, no ESI call.
+const corpLogo = (id, size = 64) =>
+  id ? `https://images.evetech.net/corporations/${id}/logo?size=${size}` : null
+
+// Look up a corp id against ESI to fill in (link) its real name + ticker.
+// `setField('corporation_name', value)` writes back into whichever form is editing.
+async function lookupCorp(id, setField, setMsg, setBusy) {
+  if (!id) return
+  setBusy(true); setMsg('')
+  try {
+    const info = await get(`/organisations/lookup/corporation/${id}`)
+    if (info.name) setField('corporation_name', info.name)
+    setMsg(`✓ ${info.name}${info.ticker ? ` [${info.ticker}]` : ''}`)
+  } catch (e) { setMsg(e.message) }
+  finally { setBusy(false) }
+}
+
+function CorpIdField({ id, name, onIdChange, onNameLink }) {
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <input type="number" value={id} onChange={onIdChange} placeholder="ESI id" style={{ flex: 1, minWidth: 0 }} />
+        <button type="button" className="btn btn-ghost btn-sm"
+          onClick={() => lookupCorp(id, (_k, v) => onNameLink(v), setMsg, setBusy)}
+          disabled={!id || busy}>
+          {busy ? '…' : 'Link'}
+        </button>
+      </div>
+      {id ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, fontSize: 11, color: 'var(--text)' }}>
+          <img src={corpLogo(id, 32)} alt="" width={28} height={28}
+            style={{ borderRadius: 4, background: 'var(--surface3)' }} />
+          <span>{msg || name || 'Click Link to fetch the corp name'}</span>
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 export default function OrgsPage() {
   const [orgs, setOrgs]         = useState([])
   const [publicOrgs, setPublicOrgs] = useState([])
@@ -104,7 +145,12 @@ export default function OrgsPage() {
               </div>
               <div>
                 <L>Corp ID</L>
-                <input type="number" value={form.corporation_id} onChange={setF('corporation_id')} placeholder="ESI id" />
+                <CorpIdField
+                  id={form.corporation_id}
+                  name={form.corporation_name}
+                  onIdChange={setF('corporation_id')}
+                  onNameLink={v => setForm(f => ({ ...f, corporation_name: v }))}
+                />
               </div>
             </>
           )}
@@ -151,6 +197,10 @@ export default function OrgsPage() {
                 borderRadius: 6, padding: '10px 16px',
               }}>
                 <span style={{ color: 'var(--text)', fontSize: 13 }}>#{o.id}</span>
+                {o.corporation_logo && (
+                  <img src={o.corporation_logo} alt="" width={26} height={26}
+                    style={{ borderRadius: 4, background: 'var(--surface3)', flexShrink: 0 }} />
+                )}
                 <span style={{ color: 'var(--accent)', fontWeight: 500 }}>{o.name}</span>
                 <span className="badge" style={{ background: '#1a2a1a', color: '#4caf7d' }}>Public</span>
                 <span className="badge" style={{ background: o.org_type === 'Corporation' ? '#10243d' : '#1d2135', color: o.org_type === 'Corporation' ? '#3a9bd6' : '#8b93b0' }}>
@@ -289,6 +339,10 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px', cursor: 'pointer', userSelect: 'none' }} onClick={onToggle}>
         <span style={{ color: 'var(--text)', fontSize: 13 }}>#{org.id}</span>
+        {org.corporation_logo && (
+          <img src={org.corporation_logo} alt="" width={26} height={26}
+            style={{ borderRadius: 4, background: 'var(--surface3)', flexShrink: 0 }} />
+        )}
         <span style={{ color: 'var(--accent)', fontWeight: 500 }}>{org.name}</span>
         <span className="badge" style={{ background: org.org_type === 'Corporation' ? '#10243d' : '#1d2135', color: org.org_type === 'Corporation' ? '#3a9bd6' : '#8b93b0' }}>
           {org.org_type || 'Personal'}
@@ -332,7 +386,14 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
                   </select>
                 </div>
                 <div><L>Corp name</L><input value={edit.corporation_name} onChange={setE('corporation_name')} /></div>
-                <div><L>Corp ID</L><input type="number" value={edit.corporation_id} onChange={setE('corporation_id')} /></div>
+                <div><L>Corp ID</L>
+                  <CorpIdField
+                    id={edit.corporation_id}
+                    name={edit.corporation_name}
+                    onIdChange={setE('corporation_id')}
+                    onNameLink={v => setEdit(f => ({ ...f, corporation_name: v }))}
+                  />
+                </div>
               </div>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text)', marginTop: 10, cursor: 'pointer' }}>
                 <input type="checkbox" checked={edit.is_public} onChange={setEBool('is_public')} />

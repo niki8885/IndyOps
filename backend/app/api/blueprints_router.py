@@ -1,4 +1,5 @@
 import datetime
+from app.core.timeutil import utcnow
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -45,21 +46,20 @@ class BlueprintUpdate(BaseModel):
 class BlueprintOut(BaseModel):
     id: int
     user_id: int
-    organisation_id: Optional[int]
+    organisation_id: Optional[int] = None
     blueprint_type_id: int
     product_type_id: int
     name: str
     is_bpo: bool
     me: int
     te: int
-    runs: Optional[int]
+    runs: Optional[int] = None
     quantity: int
-    cost: Optional[float]
-    facility_id: Optional[int]
-    note: Optional[str]
+    cost: Optional[float] = None
+    facility_id: Optional[int] = None
+    note: Optional[str] = None
     created_at: datetime.datetime
-    updated_at: Optional[datetime.datetime]
-
+    updated_at: Optional[datetime.datetime] = None
     class Config:
         from_attributes = True
 
@@ -164,7 +164,7 @@ async def update_blueprint(
         setattr(bp, field, val)
     if bp.is_bpo:
         bp.runs = None
-    bp.updated_at = datetime.datetime.utcnow()
+    bp.updated_at = utcnow()
     db.commit()
     db.refresh(bp)
     return bp

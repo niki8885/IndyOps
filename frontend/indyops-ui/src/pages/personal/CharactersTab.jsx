@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { get, patch, post, del } from '../../api/client'
 import { fmtIsk, fmtNum, fmtDate } from './common'
 
-export default function CharactersTab({ chars, reload }) {
+export default function CharactersTab({ chars, reload, onOpen }) {
   const [busy, setBusy]   = useState(false)
   const [error, setError] = useState('')
 
@@ -52,6 +52,7 @@ export default function CharactersTab({ chars, reload }) {
           <CharacterCard
             key={c.id} c={c}
             onToggle={() => toggle(c)} onSync={() => sync(c)} onUnlink={() => unlink(c)}
+            onOpen={() => onOpen?.(c.id)}
           />
         ))}
       </div>
@@ -59,20 +60,27 @@ export default function CharactersTab({ chars, reload }) {
   )
 }
 
-function CharacterCard({ c, onToggle, onSync, onUnlink }) {
+function CharacterCard({ c, onToggle, onSync, onUnlink, onOpen }) {
   const expired = c.status === 'token_expired'
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'flex', gap: 14 }}>
+      <div onClick={onOpen} style={{ display: 'flex', gap: 14, cursor: 'pointer' }} title="Open character page">
         <img
           src={c.portrait} alt={c.character_name} width={72} height={72}
           style={{ borderRadius: 8, border: '1px solid var(--border)', flexShrink: 0 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ color: 'var(--text-white)', fontWeight: 600, fontSize: 15 }}>{c.character_name}</div>
-          <div style={{ fontSize: 12, color: 'var(--text)' }}>ID {c.character_id}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: 'var(--text-white)', fontWeight: 600, fontSize: 15 }}>{c.character_name}</span>
+            <span style={{ color: 'var(--accent)', fontSize: 13 }}>›</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', marginTop: 2 }}>
+            {c.corporation_logo && <img src={c.corporation_logo} alt="" width={16} height={16} style={{ borderRadius: 3 }} />}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.corporation_name || `ID ${c.character_id}`}</span>
+          </div>
           <div style={{ marginTop: 6 }}>
             <span className={`badge ${c.is_active ? 'badge-ok' : 'badge-warn'}`}>{c.is_active ? 'Active' : 'Paused'}</span>
+            {c.online != null && <span className={`badge ${c.online ? 'badge-ok' : 'badge-warn'}`} style={{ marginLeft: 6 }}>{c.online ? 'Online' : 'Offline'}</span>}
             {expired && <span className="badge badge-bad" style={{ marginLeft: 6 }}>Token expired</span>}
           </div>
         </div>

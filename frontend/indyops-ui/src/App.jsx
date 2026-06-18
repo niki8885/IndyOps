@@ -10,12 +10,12 @@ import ManufacturingPage from './pages/ManufacturingPage'
 import OreAcquisitionPage from './pages/OreAcquisitionPage'
 import OrganisationsHub from './pages/OrganisationsHub'
 import PersonalFilePage from './pages/PersonalFilePage'
-import TradeOptimizerPage from './pages/TradeOptimizerPage'
+import MarketHub from './pages/MarketHub'
 
-// Analysis and Market both pull in Plotly (~4MB) — load them on demand so they
-// can never block the rest of the app and stay out of the main bundle.
+// Analysis pulls in Plotly (~4MB) — load it on demand so it can never block the
+// rest of the app and stays out of the main bundle. (The Market Browser is lazy
+// the same way, internally, inside MarketHub.)
 const AnalysisPage = lazy(() => import('./pages/AnalysisPage'))
-const MarketPage   = lazy(() => import('./pages/MarketPage'))
 
 export default function App() {
   return (
@@ -29,13 +29,8 @@ export default function App() {
               <Route index element={<Navigate to="/manufacturing" replace />} />
               <Route path="/manufacturing" element={<ManufacturingPage />} />
               <Route path="/ore"           element={<OreAcquisitionPage />} />
-              <Route path="/trade"         element={<TradeOptimizerPage />} />
               <Route path="/inventory"     element={<InventoryPage />} />
-              <Route path="/market"        element={
-                <Suspense fallback={<div className="empty-state">Loading market…</div>}>
-                  <MarketPage />
-                </Suspense>
-              } />
+              <Route path="/market"        element={<MarketHub />} />
               <Route path="/analysis"      element={
                 <Suspense fallback={<div className="empty-state">Loading analytics…</div>}>
                   <AnalysisPage />
@@ -44,6 +39,7 @@ export default function App() {
               <Route path="/organisations" element={<OrganisationsHub />} />
               <Route path="/personal"      element={<PersonalFilePage />} />
               {/* legacy redirects */}
+              <Route path="/trade"      element={<Navigate to="/market" replace />} />
               <Route path="/facilities" element={<Navigate to="/organisations" replace />} />
               <Route path="/projects"   element={<Navigate to="/organisations" replace />} />
               <Route path="/orgs"       element={<Navigate to="/organisations" replace />} />

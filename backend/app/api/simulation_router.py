@@ -1,5 +1,5 @@
 from __future__ import annotations
-import datetime
+from app.core.timeutil import utcnow
 from dataclasses import asdict
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -81,7 +81,7 @@ def _persist(db: Session, sim_req, *, source: str, user_id: int, project_id: Opt
     report = {
         "label": sim_req.label, "source": source, "product_name": product_name,
         "target_type_id": product_type_id, "engine": engine,
-        "created_at": datetime.datetime.utcnow().isoformat(timespec="seconds"),
+        "created_at": utcnow().isoformat(timespec="seconds"),
         "params": asdict(sim_req.params), "metrics": metrics,
     }
     pdf = sim_report_pdf.render_run_pdf(report)

@@ -1,4 +1,5 @@
 import datetime
+from app.core.timeutil import utcnow
 import logging
 from collections import defaultdict
 from dataclasses import asdict, replace
@@ -56,12 +57,12 @@ def _activity_caps(facility_type) -> tuple[bool, bool]:
 
 class BlueprintInfoOut(BaseModel):
     blueprint_type_id: int
-    blueprint_name: Optional[str]
+    blueprint_name: Optional[str] = None
     product_type_id: int
     product_name: str
     qty_per_run: int
     base_time_per_run: int
-    max_production_limit: Optional[int]
+    max_production_limit: Optional[int] = None
     materials: list
 
 
@@ -169,40 +170,39 @@ class JobUpdate(BaseModel):
 class JobOut(BaseModel):
     id: int
     user_id: int
-    project_id: Optional[int]
-    facility_id: Optional[int]
-    blueprint_type_id: Optional[int]
-    blueprint_name: Optional[str]
+    project_id: Optional[int] = None
+    facility_id: Optional[int] = None
+    blueprint_type_id: Optional[int] = None
+    blueprint_name: Optional[str] = None
     product_type_id: int
     product_name: str
     runs: int
     windows: Optional[int] = 1
     me: int
     te: int
-    bpc_cost: Optional[float]
-    paks: Optional[int]
-    units_per_pak: Optional[int]
-    pack_tier: Optional[str]
-    pak_reward: Optional[float]
-    sell_price: Optional[float]
-    jita_sell: Optional[float]
-    jita_buy: Optional[float]
-    cj_sell: Optional[float]
-    cj_buy: Optional[float]
-    initial_contract_price: Optional[float]
-    return_contract_price: Optional[float]
-    calc_snapshot: Optional[dict]
+    bpc_cost: Optional[float] = None
+    paks: Optional[int] = None
+    units_per_pak: Optional[int] = None
+    pack_tier: Optional[str] = None
+    pak_reward: Optional[float] = None
+    sell_price: Optional[float] = None
+    jita_sell: Optional[float] = None
+    jita_buy: Optional[float] = None
+    cj_sell: Optional[float] = None
+    cj_buy: Optional[float] = None
+    initial_contract_price: Optional[float] = None
+    return_contract_price: Optional[float] = None
+    calc_snapshot: Optional[dict] = None
     status: ProductionStatus
-    target: Optional[ProductionTarget]
-    place: Optional[str]
-    date_planned: Optional[datetime.datetime]
-    date_released: Optional[datetime.datetime]
-    code: Optional[str]
-    contract_code: Optional[str]
-    note: Optional[str]
+    target: Optional[ProductionTarget] = None
+    place: Optional[str] = None
+    date_planned: Optional[datetime.datetime] = None
+    date_released: Optional[datetime.datetime] = None
+    code: Optional[str] = None
+    contract_code: Optional[str] = None
+    note: Optional[str] = None
     created_at: datetime.datetime
-    updated_at: Optional[datetime.datetime]
-
+    updated_at: Optional[datetime.datetime] = None
     class Config:
         from_attributes = True
 
@@ -1077,7 +1077,7 @@ async def create_job(
     db.flush()  # assign j.id
     db.add(ProductionStatusEvent(
         job_id=j.id, from_status=None, status=_status_val(j.status),
-        note="created", at=datetime.datetime.utcnow()))
+        note="created", at=utcnow()))
     db.commit()
     db.refresh(j)
     return j
@@ -1142,7 +1142,7 @@ async def update_job(
     # Entering In Progress auto-stamps the release date (unless the caller set one).
     if entered_progress and "date_released" not in changes:
         _mark_released(j)
-    j.updated_at = datetime.datetime.utcnow()
+    j.updated_at = utcnow()
     db.commit()
     db.refresh(j)
     return j
@@ -1374,7 +1374,7 @@ async def issue_job_materials(
         _log_job_status(db, job, ProductionStatus.IN_PROGRESS, note="materials issued")
         job.status = ProductionStatus.IN_PROGRESS
         _mark_released(job)
-    job.updated_at = datetime.datetime.utcnow()
+    job.updated_at = utcnow()
     db.commit()
 
     return {
@@ -1461,7 +1461,7 @@ async def receive_job_output(
     _log_job_status(db, job, ProductionStatus.COMPLETED, note="output received")
     job.status = ProductionStatus.COMPLETED
     _mark_released(job)  # set-if-empty: keep the In-Progress stamp if it has one
-    job.updated_at = datetime.datetime.utcnow()
+    job.updated_at = utcnow()
     db.commit()
     db.refresh(item)
 
@@ -1506,7 +1506,7 @@ def _log_job_status(db: Session, job: ProductionJob, new_status, note: Optional[
     db.add(ProductionStatusEvent(
         job_id=job.id, from_status=_status_val(job.status),
         status=_status_val(new_status), note=note,
-        at=datetime.datetime.utcnow()))
+        at=utcnow()))
 
 
 def _mark_released(job: ProductionJob) -> None:
@@ -1514,7 +1514,7 @@ def _mark_released(job: ProductionJob) -> None:
     Set-if-empty, so a later transition (e.g. Completed) keeps the original timestamp
     and a caller-supplied ``date_released`` is never overwritten."""
     if not job.date_released:
-        job.date_released = datetime.datetime.utcnow()
+        job.date_released = utcnow()
 
 
 def _job_or_404(db: Session, job_id: int, user_id: int) -> ProductionJob:

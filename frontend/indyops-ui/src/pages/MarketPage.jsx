@@ -32,8 +32,6 @@ export default function MarketPage() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 14 }}>Market · Browser</h2>
-
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 18, alignItems: 'start' }}>
         {/* ── left rail: region + item search ── */}
         <div className="card" style={{ padding: 16, position: 'sticky', top: 16 }}>

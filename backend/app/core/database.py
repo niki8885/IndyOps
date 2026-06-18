@@ -1,9 +1,9 @@
-import datetime
 import os
 from app.core.config import SQLALCHEMY_DATABASE_URL
+from app.core.timeutil import utcnow
 from sqlalchemy import (
     create_engine, Column, Integer, Enum,
-    ForeignKey, String, DateTime, Boolean, Float, Text, BigInteger, JSON,
+    ForeignKey, String, DateTime, Date, Boolean, Float, Text, BigInteger, JSON,
     Index, UniqueConstraint, LargeBinary,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -50,7 +50,7 @@ class Organisation(Base):
     corporation_name = Column(String(200), nullable=True)
     is_public = Column(Boolean, nullable=False, default=False, server_default="false")
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     owner_user = relationship("UserDB", back_populates="organisations")
     employees = relationship("Employee", back_populates="organisation")
@@ -67,7 +67,7 @@ class OrganisationMember(Base):
     org_id = Column(Integer, ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(20), nullable=False, default="JUNIOR")
-    joined_at = Column(DateTime, default=datetime.datetime.utcnow)
+    joined_at = Column(DateTime, default=utcnow)
 
     organisation = relationship("Organisation", back_populates="members")
     member_user = relationship("UserDB")
@@ -84,7 +84,7 @@ class Employee(Base):
 
     status = Column(Enum(EmployeeType), nullable=False, index=True, default=EmployeeType.OTHER)
 
-    added_at = Column(DateTime, default=datetime.datetime.utcnow)
+    added_at = Column(DateTime, default=utcnow)
     modified_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)
 
@@ -112,7 +112,7 @@ class Projects(Base):
     closed = Column(Boolean, nullable=False, default=False)
     priority = Column(String(10), nullable=False, default="medium")
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     modified_at = Column(DateTime, nullable=True)
     deadline_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)
@@ -147,7 +147,7 @@ class Facility(Base):
     rig3_type_id = Column(Integer, nullable=True)
     rig3_name = Column(String(200), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="facilities")
@@ -176,7 +176,7 @@ class Blueprint(Base):
     facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
     note = Column(String(500), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="blueprints")
@@ -227,7 +227,7 @@ class ProductionJob(Base):
     target = Column(Enum(ProductionTarget), nullable=True)
     place = Column(String(200), nullable=True)
 
-    date_planned = Column(DateTime, default=datetime.datetime.utcnow)
+    date_planned = Column(DateTime, default=utcnow)
     date_released = Column(DateTime, nullable=True)
 
     # Codes
@@ -235,7 +235,7 @@ class ProductionJob(Base):
     contract_code = Column(String(500), nullable=True)
     note = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="production_jobs")
@@ -258,7 +258,7 @@ class ProductionStatusEvent(Base):
     from_status = Column(String(20), nullable=True)
     status = Column(String(20), nullable=False)
     note = Column(String(300), nullable=True)
-    at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
+    at = Column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class InventoryItem(Base):
@@ -284,7 +284,7 @@ class InventoryItem(Base):
     # warehouse). Cleared on delivery completion; the lot is deleted on failure.
     delivery_id = Column(Integer, ForeignKey("deliveries.id"), nullable=True, index=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="inventory")
@@ -309,7 +309,7 @@ class StockMovement(Base):
     reason = Column(String(200), nullable=True)  # e.g. "PAK #12 issue"
     note = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     owner = relationship("UserDB", backref="stock_movements")
     project = relationship("Projects", backref="stock_movements")
@@ -364,7 +364,7 @@ class Delivery(Base):
     status = Column(String(10), nullable=False, default="pending", index=True)  # pending|completed|failed
     items_snapshot = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     completed_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="deliveries")
@@ -387,7 +387,7 @@ class DeliveryStatusEvent(Base):
     from_status = Column(String(12), nullable=True)
     status = Column(String(12), nullable=False)
     note = Column(String(300), nullable=True)
-    at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
+    at = Column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class TrackedPlace(Base):
@@ -401,7 +401,7 @@ class TrackedPlace(Base):
     region_id = Column(Integer, nullable=True)  # used for Fuzzwork fetch
     solar_system_id = Column(Integer, nullable=True)
     special_parser = Column(Boolean, nullable=False, default=False)  # C-J → appraise.gnf.lt
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class TrackedItem(Base):
@@ -413,7 +413,7 @@ class TrackedItem(Base):
     type_id = Column(Integer, nullable=False)
     name = Column(String(200), nullable=False)
     place_ids = Column(JSON, nullable=True)  # [tracked_place_id, …]
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class TrackPrice(Base):
@@ -424,7 +424,7 @@ class TrackPrice(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     type_id = Column(Integer, nullable=False)
     place_id = Column(Integer, nullable=False)
-    timestamp = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    timestamp = Column(DateTime, nullable=False, default=utcnow)
     buy = Column(Float, nullable=True)
     sell = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
@@ -442,7 +442,7 @@ class MarketIndexSnapshot(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     index_key = Column(String(20), nullable=False, index=True)  # plex, mineral, …
-    timestamp = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utcnow, index=True)
     price_index = Column(Float, nullable=True)
     volume_index = Column(Float, nullable=True)
     top3_share = Column(Float, nullable=True)
@@ -460,7 +460,7 @@ class AnalyticsCache(Base):
     cache_key = Column(String(80), nullable=False)    # index_key, or 'item:{id}:{place}'
     window = Column(Integer, nullable=False)
     payload = Column(JSON, nullable=False)
-    computed_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    computed_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         UniqueConstraint("kind", "cache_key", "window", name="uq_analytics_cache"),
@@ -492,7 +492,7 @@ class TradeCandidate(Base):
     daily_volume = Column(Float, nullable=True)
     volatility_cv = Column(Float, nullable=True)
     volume_score = Column(Float, nullable=True)            # 0..1
-    updated_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         Index("ix_trade_candidates_updated_at", "updated_at"),
@@ -516,7 +516,7 @@ class StationTradeCandidate(Base):
     daily_volume = Column(Float, nullable=True)
     volatility_cv = Column(Float, nullable=True)
     volume_score = Column(Float, nullable=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         Index("ix_station_trade_candidates_updated_at", "updated_at"),
@@ -533,7 +533,7 @@ class TradeTypeStat(Base):
     daily_volume = Column(Float, nullable=True)
     volatility_cv = Column(Float, nullable=True)
     sample_days = Column(Integer, nullable=True)
-    computed_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    computed_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         Index("ix_trade_type_stats_computed_at", "computed_at"),
@@ -560,7 +560,7 @@ class SimulationRun(Base):
     metrics = Column(JSON, nullable=False)      # SimMetrics (asdict)
     pdf = Column(LargeBinary, nullable=True)    # rendered per-run report
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
 
     owner = relationship("UserDB", backref="simulation_runs")
     project = relationship("Projects", backref="simulation_runs")
@@ -580,7 +580,9 @@ class LinkedCharacter(Base):
     character_id = Column(Integer, nullable=False, unique=True, index=True)
     character_name = Column(String(200), nullable=False)
     corporation_id = Column(Integer, nullable=True)
+    corporation_name = Column(String(200), nullable=True)
     alliance_id = Column(Integer, nullable=True)
+    alliance_name = Column(String(200), nullable=True)
     owner_hash = Column(String(255), nullable=True)  # ESI 'owner' claim — detects char transfer
 
     scopes = Column(Text, nullable=True)             # space-separated granted scopes
@@ -589,12 +591,22 @@ class LinkedCharacter(Base):
     token_expires_at = Column(DateTime, nullable=True)
 
     wallet_balance = Column(Float, nullable=True)
+    assets_value = Column(Float, nullable=True)       # ESI-average-priced assets (latest sync)
     total_sp = Column(BigInteger, nullable=True)
+
+    # current location / ship / online — from the esi-location + clones scopes
+    location_system_id = Column(Integer, nullable=True)
+    location_id = Column(BigInteger, nullable=True)   # station or structure holding the char
+    location_type = Column(String(20), nullable=True)  # 'station' | 'structure' | 'system'
+    ship_type_id = Column(Integer, nullable=True)
+    ship_name = Column(String(200), nullable=True)
+    online = Column(Boolean, nullable=True)
+    last_login = Column(DateTime, nullable=True)
 
     is_active = Column(Boolean, nullable=False, default=True)        # activation status
     status = Column(String(20), nullable=False, default="active")   # active|token_expired|invalid
 
-    added_at = Column(DateTime, default=datetime.datetime.utcnow)
+    added_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
     last_sync_at = Column(DateTime, nullable=True)
 
@@ -645,6 +657,94 @@ class EsiAsset(Base):
     location_type = Column(String(30), nullable=True)
     is_singleton = Column(Boolean, nullable=True)
     is_blueprint_copy = Column(Boolean, nullable=True)
+
+
+class EsiStructure(Base):
+    """
+    Cache of resolved Upwell structure names (IO asset-location recursion).
+
+    Player structure ids only become names via ESI /universe/structures/{id}/,
+    which needs the read_structures scope + docking access. Keyed globally by
+    structure_id and shared across characters: once any character with access
+    resolves a name it's reused. ``error`` records a 403/404 so we can back off
+    instead of re-hammering, and a different character can retry later.
+    """
+    __tablename__ = "esi_structures"
+
+    structure_id = Column(BigInteger, primary_key=True)
+    name = Column(String(255), nullable=True)
+    solar_system_id = Column(Integer, nullable=True)
+    type_id = Column(Integer, nullable=True)
+    error = Column(String(20), nullable=True)        # 'forbidden' | 'not_found' | 'error'
+    updated_at = Column(DateTime, nullable=True)      # last fetch attempt
+
+
+class EsiImplant(Base):
+    """A character's currently-plugged implants (replaced each sync)."""
+    __tablename__ = "esi_implants"
+    __table_args__ = (UniqueConstraint("character_id", "type_id", name="uq_esi_implant"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    type_id = Column(Integer, nullable=False)
+
+
+class CharacterWealthSnapshot(Base):
+    """Append-only wealth history (one row per sync) backing the overview's plot."""
+    __tablename__ = "character_wealth_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    liquid = Column(Float, nullable=True)         # wallet balance
+    assets_value = Column(Float, nullable=True)   # ESI-average-priced assets
+    total = Column(Float, nullable=True)          # liquid + assets
+
+
+class EsiMiningLedger(Base):
+    """A character's mining ledger (one row per day × ore type × system).
+
+    ESI only keeps ~30 days, so sync **upserts** (not replace) — older rows persist
+    so the journal's month/quarter/year reports accumulate history over time."""
+    __tablename__ = "esi_mining_ledger"
+    __table_args__ = (UniqueConstraint("character_id", "date", "type_id", "solar_system_id",
+                                       name="uq_mining_entry"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    type_id = Column(Integer, nullable=False)
+    solar_system_id = Column(Integer, nullable=True)
+    quantity = Column(BigInteger, nullable=True)
+
+
+class CharacterSettings(Base):
+    """Per-character journal settings (edited in the Statistics tab)."""
+    __tablename__ = "character_settings"
+
+    character_id = Column(Integer, primary_key=True)   # LinkedCharacter.character_id
+    mining_tax_pct = Column(Float, nullable=False, default=0.0)      # corp mining tax %
+    price_basis = Column(String(10), nullable=False, default="sell")  # buy | sell | split
+    refine_base_yield = Column(Float, nullable=False, default=0.50)   # structure base yield
+
+
+class MiningTaxWriteoff(Base):
+    """A persisted 'tax written off' record for a journal period (the Списать налог button)."""
+    __tablename__ = "mining_tax_writeoffs"
+    __table_args__ = (UniqueConstraint("user_id", "scope", "character_id", "period_type", "period_key",
+                                       name="uq_mining_writeoff"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    character_id = Column(Integer, nullable=True)        # null when scope = 'all'
+    scope = Column(String(12), nullable=False)           # 'character' | 'all'
+    period_type = Column(String(8), nullable=False)      # day | month | quarter | year
+    period_key = Column(String(16), nullable=False)      # e.g. 2026-06, 2026-Q2, 2026
+    gross_value = Column(Float, nullable=True)
+    tax_pct = Column(Float, nullable=True)
+    tax_amount = Column(Float, nullable=True)
+    net_value = Column(Float, nullable=True)
+    created_at = Column(DateTime, nullable=True)
 
 
 class EsiContract(Base):
