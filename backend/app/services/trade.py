@@ -94,6 +94,31 @@ def passes_filters(daily_vol: float, cv: float | None, margin_pct: float, *,
     return True
 
 
+def plan_trade(buy_price: float, item_volume_m3: float, profit_isk: float | None,
+               daily_volume: float | None, budget: float | None = None,
+               cargo: float | None = None) -> dict:
+    """Size a single trip for one route given the trader's budget / cargo.
+
+    Units are the tightest of the applicable caps: capital (budget / buy_price),
+    cargo hold (cargo / item_volume_m3), and a day's market liquidity
+    (daily_volume — you can't realistically offload more than that). Returns
+    ``units`` plus the resulting ``trip_profit`` / ``trip_cost`` (None when no
+    cap applies or inputs are missing)."""
+    caps: list[int] = []
+    if budget is not None and buy_price and buy_price > 0:
+        caps.append(int(budget // buy_price))
+    if cargo is not None and item_volume_m3 and item_volume_m3 > 0:
+        caps.append(int(cargo // item_volume_m3))
+    if daily_volume:
+        caps.append(int(daily_volume))
+    if not caps:
+        return {"units": None, "trip_profit": None, "trip_cost": None}
+    units = max(min(caps), 0)
+    trip_profit = round(units * profit_isk, 2) if profit_isk is not None else None
+    trip_cost = round(units * buy_price, 2) if buy_price is not None else None
+    return {"units": units, "trip_profit": trip_profit, "trip_cost": trip_cost}
+
+
 def volume_scores(daily_volumes: dict[int, float]) -> dict[int, float]:
     """Normalise each type's daily volume to 0..1 via log1p min-max over the set.
 

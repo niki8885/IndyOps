@@ -9,6 +9,7 @@ advances deterministically each run.
 """
 from __future__ import annotations
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.database import TradeCandidate, StationTradeCandidate, TradeTypeStat
@@ -56,6 +57,46 @@ def upsert_type_stats(db, rows: list[dict]) -> int:
 def distinct_candidate_type_ids(db) -> list[int]:
     """Distinct type_ids currently present in trade_candidates (history-job universe)."""
     return [r[0] for r in db.query(TradeCandidate.item_id).distinct().all()]
+
+
+def query_candidates(db, *, buy_stations: list[int] | None = None,
+                     sell_stations: list[int] | None = None,
+                     max_buy_price: float | None = None, max_volume: float | None = None,
+                     min_margin: float = 0.0, strategy: str = "patient",
+                     limit: int = 50) -> list[TradeCandidate]:
+    """Cross-hub candidates filtered by the user's constraints, ranked by
+    (chosen-strategy margin · volume_score) descending — the Layer-3 read."""
+    margin_col = (TradeCandidate.margin_pct_instant if strategy == "instant"
+                  else TradeCandidate.margin_pct_patient)
+    q = db.query(TradeCandidate).filter(margin_col.isnot(None), margin_col >= min_margin)
+    if buy_stations:
+        q = q.filter(TradeCandidate.buy_hub.in_(buy_stations))
+    if sell_stations:
+        q = q.filter(TradeCandidate.sell_hub.in_(sell_stations))
+    if max_buy_price is not None:
+        q = q.filter(TradeCandidate.buy_price <= max_buy_price)
+    if max_volume is not None:
+        q = q.filter(TradeCandidate.item_volume_m3 <= max_volume)
+    return q.order_by((margin_col * TradeCandidate.volume_score).desc()).limit(limit).all()
+
+
+def query_station_candidates(db, *, stations: list[int] | None = None,
+                             min_margin: float = 0.0, limit: int = 50) -> list[StationTradeCandidate]:
+    """In-station flips filtered by hub, ranked by (margin · volume_score) desc."""
+    q = db.query(StationTradeCandidate).filter(
+        StationTradeCandidate.margin_pct.isnot(None),
+        StationTradeCandidate.margin_pct >= min_margin,
+    )
+    if stations:
+        q = q.filter(StationTradeCandidate.hub.in_(stations))
+    return q.order_by(
+        (StationTradeCandidate.margin_pct * StationTradeCandidate.volume_score).desc()
+    ).limit(limit).all()
+
+
+def latest_updated_at(db, model):
+    """Newest updated_at across a candidate table (for the TTL freshness check)."""
+    return db.query(func.max(model.updated_at)).scalar()
 
 
 def load_type_stats(db, region_id: int, type_ids: list[int]) -> dict[int, dict]:

@@ -67,6 +67,34 @@ def test_passes_filters_each_rejects_independently():
     assert trade.passes_filters(100, 0.1, -0.01, **kw) is False  # spread
 
 
+def test_plan_trade_caps_by_tightest_constraint():
+    # budget 1000/price 100 = 10; cargo 50/vol 2 = 25; liquidity 1000 → min = 10
+    p = trade.plan_trade(100, 2.0, profit_isk=20, daily_volume=1000, budget=1000, cargo=50)
+    assert p["units"] == 10
+    assert p["trip_profit"] == 200.0
+    assert p["trip_cost"] == 1000.0
+
+
+def test_plan_trade_cargo_binds():
+    p = trade.plan_trade(100, 10.0, profit_isk=5, daily_volume=1e9, budget=1e9, cargo=50)
+    assert p["units"] == 5    # 50 / 10
+
+
+def test_plan_trade_liquidity_only_when_no_budget_or_cargo():
+    p = trade.plan_trade(100, 2.0, profit_isk=5, daily_volume=7, budget=None, cargo=None)
+    assert p["units"] == 7
+
+
+def test_plan_trade_no_caps_returns_none():
+    assert trade.plan_trade(100, 2.0, 5, None, None, None) == {
+        "units": None, "trip_profit": None, "trip_cost": None}
+
+
+def test_plan_trade_ignores_zero_buy_price_for_budget_cap():
+    p = trade.plan_trade(0, 2.0, profit_isk=5, daily_volume=1e9, budget=1000, cargo=10)
+    assert p["units"] == 5    # budget cap skipped (price 0), cargo 10/2 binds
+
+
 def test_volume_scores_monotonic_and_edges():
     scores = trade.volume_scores({1: 0.0, 2: 100.0, 3: 10.0})
     assert scores[1] == 0.0 and scores[2] == 1.0

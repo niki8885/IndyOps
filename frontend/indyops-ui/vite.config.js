@@ -1,12 +1,20 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import babel from '@rolldown/plugin-babel'
+import { codecovVitePlugin } from '@codecov/vite-plugin'
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
-    babel({ presets: [reactCompilerPreset()] })
+    babel({ presets: [reactCompilerPreset()] }),
+    // Codecov bundle analysis
+    codecovVitePlugin({
+      enableBundleAnalysis: process.env.CODECOV_TOKEN !== undefined,
+      bundleName: 'indyops-ui',
+      uploadToken: process.env.CODECOV_TOKEN,
+    }),
   ],
   server: {
     proxy: {
@@ -16,13 +24,22 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       output: {
-        // Plotly (~4MB) is only used by the lazy Analysis + Market pages. Pin it
-        // to its own chunk so it stays out of the entry bundle and is fetched
-        // on demand the first time either of those routes is opened.
         advancedChunks: {
           groups: [{ name: 'plotly', test: /plotly/ }],
         },
       },
+    },
+  },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/test/setup.js',
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'lcov'],
+      reportsDirectory: './coverage',
+      include: ['src/**/*.{js,jsx}'],
+      exclude: ['src/main.jsx', 'src/**/*.test.{js,jsx}', 'src/test/**'],
     },
   },
 })

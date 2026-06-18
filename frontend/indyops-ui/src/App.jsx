@@ -10,6 +10,7 @@ import ManufacturingPage from './pages/ManufacturingPage'
 import OreAcquisitionPage from './pages/OreAcquisitionPage'
 import OrganisationsHub from './pages/OrganisationsHub'
 import PersonalFilePage from './pages/PersonalFilePage'
+import TradeOptimizerPage from './pages/TradeOptimizerPage'
 
 // Analysis and Market both pull in Plotly (~4MB) — load them on demand so they
 // can never block the rest of the app and stay out of the main bundle.
@@ -28,6 +29,7 @@ export default function App() {
               <Route index element={<Navigate to="/manufacturing" replace />} />
               <Route path="/manufacturing" element={<ManufacturingPage />} />
               <Route path="/ore"           element={<OreAcquisitionPage />} />
+              <Route path="/trade"         element={<TradeOptimizerPage />} />
               <Route path="/inventory"     element={<InventoryPage />} />
               <Route path="/market"        element={
                 <Suspense fallback={<div className="empty-state">Loading market…</div>}>
