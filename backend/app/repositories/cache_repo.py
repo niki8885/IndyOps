@@ -6,7 +6,7 @@ recomputes on a miss / when stale. Keyed by (kind, cache_key, window).
 """
 from __future__ import annotations
 
-import datetime
+from app.core.timeutil import utcnow
 from typing import Optional
 
 from app.core.database import AnalyticsCache
@@ -24,7 +24,7 @@ def get_cached(db, kind: str, cache_key: str, window: int,
     if not row:
         return None
     if max_age_seconds is not None:
-        age = (datetime.datetime.utcnow() - row.computed_at).total_seconds()
+        age = (utcnow() - row.computed_at).total_seconds()
         if age > max_age_seconds:
             return None
     return row.payload
@@ -38,7 +38,7 @@ def set_cached(db, kind: str, cache_key: str, window: int, payload: dict) -> Non
                 AnalyticsCache.window == window)
         .first()
     )
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     if row:
         row.payload = payload
         row.computed_at = now

@@ -20,6 +20,7 @@ from app.core.database import (
     EsiMiningLedger,
     CharacterWealthSnapshot,
 )
+from app.core.timeutil import utcnow
 from app.services import asset_location
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def _has_scope(char: LinkedCharacter, scope: str) -> bool:
 
 def _market_prices() -> dict:
     """``{type_id: average_price}`` from ESI, cached for an hour. {} on failure."""
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     if _price_cache["prices"] is not None and _price_cache["ts"] and now - _price_cache["ts"] < _PRICE_TTL:
         return _price_cache["prices"]
     try:
@@ -199,7 +200,7 @@ def _resolve_structures(db, token, structure_ids) -> int:
     if not structure_ids:
         return 0
 
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     existing = {
         s.structure_id: s
         for s in db.query(EsiStructure).filter(EsiStructure.structure_id.in_(structure_ids)).all()
@@ -379,7 +380,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         liquid = char.wallet_balance or 0.0
         char.assets_value = assets_value
         db.add(CharacterWealthSnapshot(
-            character_id=cid, timestamp=datetime.datetime.utcnow(),
+            character_id=cid, timestamp=utcnow(),
             liquid=liquid, assets_value=assets_value, total=liquid + assets_value,
         ))
         db.commit()
@@ -414,7 +415,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("standings", _standings)
     step("wealth", _wealth)
 
-    char.last_sync_at = datetime.datetime.utcnow()
+    char.last_sync_at = utcnow()
     db.commit()
     return summary
 

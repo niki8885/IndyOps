@@ -26,9 +26,8 @@ def _get_eve_db():
 class SystemOut(BaseModel):
     solar_system_id: int
     solar_system_name: str
-    security: Optional[float]
-    region_id: Optional[int]
-
+    security: Optional[float] = None
+    region_id: Optional[int] = None
     class Config:
         from_attributes = True
 
@@ -36,9 +35,9 @@ class SystemOut(BaseModel):
 class TypeOut(BaseModel):
     type_id: int
     type_name: str
-    volume: Optional[float]
-    portion_size: Optional[int]
-    market_group_id: Optional[int]
+    volume: Optional[float] = None
+    portion_size: Optional[int] = None
+    market_group_id: Optional[int] = None
     group_name: Optional[str] = None
 
     class Config:

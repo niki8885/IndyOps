@@ -1,4 +1,5 @@
 import datetime
+from app.core.timeutil import utcnow
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
@@ -51,21 +52,20 @@ class InventoryUpdate(BaseModel):
 class InventoryOut(BaseModel):
     id: int
     user_id: int
-    project_id: Optional[int]
-    eve_type_id: Optional[int]
+    project_id: Optional[int] = None
+    eve_type_id: Optional[int] = None
     name: str
-    volume: Optional[float]
+    volume: Optional[float] = None
     quantity: int
-    price: Optional[float]
-    place: Optional[str]
-    note: Optional[str]
+    price: Optional[float] = None
+    place: Optional[str] = None
+    note: Optional[str] = None
     flow: Optional[str] = "input"
     item_status: Optional[str] = "in_stock"
     sale_price: Optional[float] = None
     delivery_id: Optional[int] = None
     created_at: datetime.datetime
-    updated_at: Optional[datetime.datetime]
-
+    updated_at: Optional[datetime.datetime] = None
     class Config:
         from_attributes = True
 
@@ -95,12 +95,10 @@ class BulkParseResult(BaseModel):
 class PreviewItem(BaseModel):
     name: str
     quantity: int
-    eve_type_id: Optional[int]
-    volume: Optional[float]
-    volume_total: Optional[float]
-    warning: Optional[str]
-
-
+    eve_type_id: Optional[int] = None
+    volume: Optional[float] = None
+    volume_total: Optional[float] = None
+    warning: Optional[str] = None
 class PreviewResult(BaseModel):
     items: List[PreviewItem]
     warnings: List[str]
@@ -451,7 +449,7 @@ def _split_off(db: Session, item: InventoryItem, qty: Optional[int]) -> Inventor
     if take >= item.quantity:
         return item
     item.quantity -= take
-    item.updated_at = datetime.datetime.utcnow()
+    item.updated_at = utcnow()
     clone = InventoryItem(
         user_id=item.user_id, project_id=item.project_id, eve_type_id=item.eve_type_id,
         name=item.name, volume=item.volume, quantity=take, price=item.price,
@@ -474,7 +472,7 @@ async def sell_item(
     target = _split_off(db, item, body.quantity)
     target.item_status = "sold"
     target.sale_price = body.sale_price
-    target.updated_at = datetime.datetime.utcnow()
+    target.updated_at = utcnow()
     db.add(StockMovement(
         user_id=current_user.id, project_id=target.project_id,
         eve_type_id=target.eve_type_id, name=target.name,
@@ -521,7 +519,7 @@ async def use_item(
     item = _get_item_or_404(db, item_id, current_user.id)
     target = _split_off(db, item, body.quantity)
     target.item_status = "used"
-    target.updated_at = datetime.datetime.utcnow()
+    target.updated_at = utcnow()
     db.add(StockMovement(
         user_id=current_user.id, project_id=target.project_id,
         eve_type_id=target.eve_type_id, name=target.name,
@@ -564,7 +562,7 @@ async def update_item(
     if body.note is not None:
         item.note = body.note
 
-    item.updated_at = datetime.datetime.utcnow()
+    item.updated_at = utcnow()
     db.commit()
     db.refresh(item)
     return item

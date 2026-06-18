@@ -1,4 +1,5 @@
 import datetime
+from app.core.timeutil import utcnow
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -87,8 +88,8 @@ class EmployeeOut(BaseModel):
     id: int
     name: str
     user_id: int
-    character_id: Optional[int]
-    organisation_id: Optional[int]
+    character_id: Optional[int] = None
+    organisation_id: Optional[int] = None
     status: EmployeeType
     added_at: datetime.datetime
 
@@ -463,7 +464,7 @@ async def update_employee(
     if body.status is not None:
         emp.status = body.status
 
-    emp.modified_at = datetime.datetime.utcnow()
+    emp.modified_at = utcnow()
     db.commit()
     db.refresh(emp)
     return emp
@@ -484,7 +485,7 @@ async def remove_employee(
         raise HTTPException(status_code=403, detail="This character does not belong to you")
 
     emp.status = EmployeeType.INACTIVE
-    emp.deleted_at = datetime.datetime.utcnow()
+    emp.deleted_at = utcnow()
     db.commit()
 
 

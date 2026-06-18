@@ -1,5 +1,6 @@
 import base64
 import datetime
+from app.core.timeutil import utcnow
 import logging
 import time
 from typing import Optional
@@ -132,7 +133,7 @@ def valid_access_token(db, char) -> str:
     rotated tokens) if the current one is missing or about to expire. Marks the
     character ``token_expired`` and raises on refresh failure.
     """
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     fresh_enough = (
         char.token_expires_at is not None
         and char.token_expires_at - now > datetime.timedelta(seconds=60)
@@ -169,7 +170,7 @@ def store_tokens(char, data: dict) -> None:
     if data.get("refresh_token"):
         char.refresh_token_enc = crypto.encrypt(data["refresh_token"])
     expires_in = int(data.get("expires_in", 1200))
-    char.token_expires_at = datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in)
+    char.token_expires_at = utcnow() + datetime.timedelta(seconds=expires_in)
 
 # ESI data endpoints
 

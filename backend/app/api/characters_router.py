@@ -19,6 +19,7 @@ from app.core.database import (
 from app.core.database_eve import EveSessionLocal, EveType, EveStation, EveSolarSystem, EveTypeMaterial
 from app.core.schemas import ProductionStatus
 from app.core.security import get_current_user
+from app.core.timeutil import utcnow
 from app.repositories import eve as eve_repo
 from app.services import asset_location, skills, mining_journal
 from app.services.refining import RefineSetup, compute_yield, reprocess
@@ -174,7 +175,7 @@ async def sso_callback(code: str = Query(...), state: str = Query(...), db: Sess
     if char and char.user_id != user_id:
         return _frontend_redirect(error="owned_by_other")
 
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     if not char:
         char = LinkedCharacter(user_id=user_id, character_id=info["character_id"], added_at=now)
         db.add(char)
@@ -255,7 +256,7 @@ async def patch_character(
     char = _owned_char(db, char_id, current_user)
     if patch.is_active is not None:
         char.is_active = patch.is_active
-        char.updated_at = datetime.datetime.utcnow()
+        char.updated_at = utcnow()
         db.commit()
     return _char_out(char)
 
@@ -698,7 +699,7 @@ def _compute_journal(db, eve_db, user, viewed, period_type, offset, scope, basis
     use_basis = basis or (s.price_basis if s else "sell")
 
     char_ids = _scope_character_ids(db, user, viewed, scope)
-    today = datetime.datetime.utcnow().date()
+    today = utcnow().date()
     start, end = mining_journal.period_bounds(period_type, today, offset)
     key = mining_journal.period_key(period_type, start)
 
@@ -797,7 +798,7 @@ async def get_mining_journal(
 
     # rolling 30-day stats (always available from ESI's window)
     s = _settings_for(db, char.character_id)
-    today = datetime.datetime.utcnow().date()
+    today = utcnow().date()
     char_ids = _scope_character_ids(db, current_user, char, scope)
     levels = {sk.skill_id: (sk.trained_level or 0)
               for sk in db.query(EsiSkill).filter(EsiSkill.character_id == char.character_id).all()}
@@ -844,7 +845,7 @@ async def writeoff_tax(
     rec.tax_pct = j["tax_pct"]
     rec.tax_amount = j["tax_amount"]
     rec.net_value = j["net_value"]
-    rec.created_at = datetime.datetime.utcnow()
+    rec.created_at = utcnow()
     db.commit()
     return {"id": rec.id, "period_key": rec.period_key, "tax_pct": rec.tax_pct,
             "tax_amount": rec.tax_amount, "net_value": rec.net_value, "created_at": rec.created_at}
@@ -860,7 +861,7 @@ async def undo_writeoff(
     db: Session = Depends(get_db),
 ):
     char = _owned_char(db, char_id, current_user)
-    today = datetime.datetime.utcnow().date()
+    today = utcnow().date()
     start, _ = mining_journal.period_bounds(period, today, offset)
     key = mining_journal.period_key(period, start)
     (db.query(MiningTaxWriteoff)
@@ -896,7 +897,7 @@ async def import_assets(
         agg[a.type_id] = agg.get(a.type_id, 0) + (a.quantity or 0)
 
     names = _type_names(eve_db, list(agg))
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     imported = 0
     for type_id, qty in agg.items():
         meta = names.get(type_id, {})
@@ -930,7 +931,7 @@ async def import_industry_jobs(
         raise HTTPException(400, "No synced industry jobs to import — run a sync first")
 
     names = _type_names(eve_db, [j.product_type_id for j in jobs] + [j.blueprint_type_id for j in jobs])
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     imported, skipped = 0, 0
     for j in jobs:
         if not j.product_type_id:

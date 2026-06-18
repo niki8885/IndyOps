@@ -42,8 +42,8 @@ class PlaceOut(BaseModel):
     id: int
     kind: str
     name: str
-    region_id: Optional[int]
-    solar_system_id: Optional[int]
+    region_id: Optional[int] = None
+    solar_system_id: Optional[int] = None
     special_parser: bool
 
     class Config:
@@ -64,8 +64,7 @@ class ItemOut(BaseModel):
     id: int
     type_id: int
     name: str
-    place_ids: Optional[List[int]]
-
+    place_ids: Optional[List[int]] = None
     class Config:
         from_attributes = True
 

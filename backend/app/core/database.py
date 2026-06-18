@@ -1,6 +1,6 @@
-import datetime
 import os
 from app.core.config import SQLALCHEMY_DATABASE_URL
+from app.core.timeutil import utcnow
 from sqlalchemy import (
     create_engine, Column, Integer, Enum,
     ForeignKey, String, DateTime, Date, Boolean, Float, Text, BigInteger, JSON,
@@ -50,7 +50,7 @@ class Organisation(Base):
     corporation_name = Column(String(200), nullable=True)
     is_public = Column(Boolean, nullable=False, default=False, server_default="false")
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     owner_user = relationship("UserDB", back_populates="organisations")
     employees = relationship("Employee", back_populates="organisation")
@@ -67,7 +67,7 @@ class OrganisationMember(Base):
     org_id = Column(Integer, ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(20), nullable=False, default="JUNIOR")
-    joined_at = Column(DateTime, default=datetime.datetime.utcnow)
+    joined_at = Column(DateTime, default=utcnow)
 
     organisation = relationship("Organisation", back_populates="members")
     member_user = relationship("UserDB")
@@ -84,7 +84,7 @@ class Employee(Base):
 
     status = Column(Enum(EmployeeType), nullable=False, index=True, default=EmployeeType.OTHER)
 
-    added_at = Column(DateTime, default=datetime.datetime.utcnow)
+    added_at = Column(DateTime, default=utcnow)
     modified_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)
 
@@ -112,7 +112,7 @@ class Projects(Base):
     closed = Column(Boolean, nullable=False, default=False)
     priority = Column(String(10), nullable=False, default="medium")
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     modified_at = Column(DateTime, nullable=True)
     deadline_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)
@@ -147,7 +147,7 @@ class Facility(Base):
     rig3_type_id = Column(Integer, nullable=True)
     rig3_name = Column(String(200), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="facilities")
@@ -176,7 +176,7 @@ class Blueprint(Base):
     facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
     note = Column(String(500), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="blueprints")
@@ -227,7 +227,7 @@ class ProductionJob(Base):
     target = Column(Enum(ProductionTarget), nullable=True)
     place = Column(String(200), nullable=True)
 
-    date_planned = Column(DateTime, default=datetime.datetime.utcnow)
+    date_planned = Column(DateTime, default=utcnow)
     date_released = Column(DateTime, nullable=True)
 
     # Codes
@@ -235,7 +235,7 @@ class ProductionJob(Base):
     contract_code = Column(String(500), nullable=True)
     note = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="production_jobs")
@@ -258,7 +258,7 @@ class ProductionStatusEvent(Base):
     from_status = Column(String(20), nullable=True)
     status = Column(String(20), nullable=False)
     note = Column(String(300), nullable=True)
-    at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
+    at = Column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class InventoryItem(Base):
@@ -284,7 +284,7 @@ class InventoryItem(Base):
     # warehouse). Cleared on delivery completion; the lot is deleted on failure.
     delivery_id = Column(Integer, ForeignKey("deliveries.id"), nullable=True, index=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="inventory")
@@ -309,7 +309,7 @@ class StockMovement(Base):
     reason = Column(String(200), nullable=True)  # e.g. "PAK #12 issue"
     note = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     owner = relationship("UserDB", backref="stock_movements")
     project = relationship("Projects", backref="stock_movements")
@@ -364,7 +364,7 @@ class Delivery(Base):
     status = Column(String(10), nullable=False, default="pending", index=True)  # pending|completed|failed
     items_snapshot = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     completed_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="deliveries")
@@ -387,7 +387,7 @@ class DeliveryStatusEvent(Base):
     from_status = Column(String(12), nullable=True)
     status = Column(String(12), nullable=False)
     note = Column(String(300), nullable=True)
-    at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
+    at = Column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class TrackedPlace(Base):
@@ -401,7 +401,7 @@ class TrackedPlace(Base):
     region_id = Column(Integer, nullable=True)  # used for Fuzzwork fetch
     solar_system_id = Column(Integer, nullable=True)
     special_parser = Column(Boolean, nullable=False, default=False)  # C-J → appraise.gnf.lt
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class TrackedItem(Base):
@@ -413,7 +413,7 @@ class TrackedItem(Base):
     type_id = Column(Integer, nullable=False)
     name = Column(String(200), nullable=False)
     place_ids = Column(JSON, nullable=True)  # [tracked_place_id, …]
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class TrackPrice(Base):
@@ -424,7 +424,7 @@ class TrackPrice(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     type_id = Column(Integer, nullable=False)
     place_id = Column(Integer, nullable=False)
-    timestamp = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    timestamp = Column(DateTime, nullable=False, default=utcnow)
     buy = Column(Float, nullable=True)
     sell = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
@@ -442,7 +442,7 @@ class MarketIndexSnapshot(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     index_key = Column(String(20), nullable=False, index=True)  # plex, mineral, …
-    timestamp = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utcnow, index=True)
     price_index = Column(Float, nullable=True)
     volume_index = Column(Float, nullable=True)
     top3_share = Column(Float, nullable=True)
@@ -460,7 +460,7 @@ class AnalyticsCache(Base):
     cache_key = Column(String(80), nullable=False)    # index_key, or 'item:{id}:{place}'
     window = Column(Integer, nullable=False)
     payload = Column(JSON, nullable=False)
-    computed_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    computed_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         UniqueConstraint("kind", "cache_key", "window", name="uq_analytics_cache"),
@@ -492,7 +492,7 @@ class TradeCandidate(Base):
     daily_volume = Column(Float, nullable=True)
     volatility_cv = Column(Float, nullable=True)
     volume_score = Column(Float, nullable=True)            # 0..1
-    updated_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         Index("ix_trade_candidates_updated_at", "updated_at"),
@@ -516,7 +516,7 @@ class StationTradeCandidate(Base):
     daily_volume = Column(Float, nullable=True)
     volatility_cv = Column(Float, nullable=True)
     volume_score = Column(Float, nullable=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         Index("ix_station_trade_candidates_updated_at", "updated_at"),
@@ -533,7 +533,7 @@ class TradeTypeStat(Base):
     daily_volume = Column(Float, nullable=True)
     volatility_cv = Column(Float, nullable=True)
     sample_days = Column(Integer, nullable=True)
-    computed_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    computed_at = Column(DateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
         Index("ix_trade_type_stats_computed_at", "computed_at"),
@@ -560,7 +560,7 @@ class SimulationRun(Base):
     metrics = Column(JSON, nullable=False)      # SimMetrics (asdict)
     pdf = Column(LargeBinary, nullable=True)    # rendered per-run report
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
 
     owner = relationship("UserDB", backref="simulation_runs")
     project = relationship("Projects", backref="simulation_runs")
@@ -606,7 +606,7 @@ class LinkedCharacter(Base):
     is_active = Column(Boolean, nullable=False, default=True)        # activation status
     status = Column(String(20), nullable=False, default="active")   # active|token_expired|invalid
 
-    added_at = Column(DateTime, default=datetime.datetime.utcnow)
+    added_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
     last_sync_at = Column(DateTime, nullable=True)
 

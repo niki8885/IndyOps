@@ -1,4 +1,5 @@
 import datetime
+from app.core.timeutil import utcnow
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -43,18 +44,17 @@ class ProjectOut(BaseModel):
     name: str
     organisation_id: int
     created_by: int
-    supervised_by: Optional[int]
+    supervised_by: Optional[int] = None
     project_type: ProjectsType
     status: ProjectsStatus
-    org_project_code: Optional[str]
-    note: Optional[str]
+    org_project_code: Optional[str] = None
+    note: Optional[str] = None
     repeatable: bool
     closed: Optional[bool] = False
     priority: Optional[str] = "medium"
     created_at: datetime.datetime
-    modified_at: Optional[datetime.datetime]
-    deadline_at: Optional[datetime.datetime]
-
+    modified_at: Optional[datetime.datetime] = None
+    deadline_at: Optional[datetime.datetime] = None
     class Config:
         from_attributes = True
 
@@ -168,7 +168,7 @@ async def update_project(
             raise HTTPException(status_code=400, detail="Supervisor is not in this organisation")
         project.supervised_by = body.supervised_by
 
-    project.modified_at = datetime.datetime.utcnow()
+    project.modified_at = utcnow()
     db.commit()
     db.refresh(project)
     return project
@@ -186,7 +186,7 @@ async def delete_project(
     project = _get_project_or_404(db, project_id, org_id)
 
     project.status = ProjectsStatus.DELETED
-    project.deleted_at = datetime.datetime.utcnow()
+    project.deleted_at = utcnow()
     db.commit()
 
 
