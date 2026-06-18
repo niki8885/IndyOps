@@ -1132,10 +1132,16 @@ async def update_job(
     j = _job_or_404(db, job_id, current_user.id)
     changes = body.model_dump(exclude_none=True)
     new_status = changes.get("status")
+    entered_progress = (new_status is not None
+                        and _status_val(new_status) != _status_val(j.status)
+                        and _status_val(new_status) == _status_val(ProductionStatus.IN_PROGRESS))
     if new_status is not None and _status_val(new_status) != _status_val(j.status):
         _log_job_status(db, j, new_status, note="manual status change")
     for field, val in changes.items():
         setattr(j, field, val)
+    # Entering In Progress auto-stamps the release date (unless the caller set one).
+    if entered_progress and "date_released" not in changes:
+        _mark_released(j)
     j.updated_at = datetime.datetime.utcnow()
     db.commit()
     db.refresh(j)
@@ -1367,6 +1373,7 @@ async def issue_job_materials(
     if job.status in (ProductionStatus.PLANNING, ProductionStatus.PREPARING):
         _log_job_status(db, job, ProductionStatus.IN_PROGRESS, note="materials issued")
         job.status = ProductionStatus.IN_PROGRESS
+        _mark_released(job)
     job.updated_at = datetime.datetime.utcnow()
     db.commit()
 
@@ -1453,7 +1460,7 @@ async def receive_job_output(
 
     _log_job_status(db, job, ProductionStatus.COMPLETED, note="output received")
     job.status = ProductionStatus.COMPLETED
-    job.date_released = datetime.datetime.utcnow()
+    _mark_released(job)  # set-if-empty: keep the In-Progress stamp if it has one
     job.updated_at = datetime.datetime.utcnow()
     db.commit()
     db.refresh(item)
@@ -1500,6 +1507,14 @@ def _log_job_status(db: Session, job: ProductionJob, new_status, note: Optional[
         job_id=job.id, from_status=_status_val(job.status),
         status=_status_val(new_status), note=note,
         at=datetime.datetime.utcnow()))
+
+
+def _mark_released(job: ProductionJob) -> None:
+    """Stamp the release date the first time a PAK becomes active (In Progress).
+    Set-if-empty, so a later transition (e.g. Completed) keeps the original timestamp
+    and a caller-supplied ``date_released`` is never overwritten."""
+    if not job.date_released:
+        job.date_released = datetime.datetime.utcnow()
 
 
 def _job_or_404(db: Session, job_id: int, user_id: int) -> ProductionJob:

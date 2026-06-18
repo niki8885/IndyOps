@@ -2,7 +2,9 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.api.manufacturing_router import _log_job_status, _status_val
+import datetime
+
+from app.api.manufacturing_router import _log_job_status, _mark_released, _status_val
 from app.core.database import Base, ProductionJob, ProductionStatusEvent
 from app.core.schemas import ProductionStatus
 
@@ -36,3 +38,23 @@ def test_log_job_status_records_transition():
     assert ev[0].status == "In Progress"
     assert ev[0].note == "materials issued"
     s.close()
+
+
+def test_mark_released_stamps_once():
+    # entering In Progress stamps the release date…
+    j = ProductionJob(user_id=1, product_type_id=1, product_name="X",
+                      status=ProductionStatus.IN_PROGRESS)
+    assert j.date_released is None
+    _mark_released(j)
+    first = j.date_released
+    assert first is not None
+
+    # …and a later transition (e.g. Completed) keeps the original timestamp.
+    _mark_released(j)
+    assert j.date_released == first
+
+    # a caller-supplied date is never overwritten.
+    preset = datetime.datetime(2020, 1, 1)
+    j2 = ProductionJob(user_id=1, product_type_id=1, product_name="Y", date_released=preset)
+    _mark_released(j2)
+    assert j2.date_released == preset
