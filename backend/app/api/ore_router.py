@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters import market
 from app.core.database import UserDB, get_db, LinkedCharacter, EsiSkill
-from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType
+from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveTypeMaterial
 from app.core.security import get_current_user
 from app.repositories import eve as eve_repo
 from app.services import delivery as dsvc
@@ -63,13 +63,18 @@ def _get_eve_db():
 
 
 def _resolve_system(eve_db: Session, name: Optional[str]) -> Optional[EveSolarSystem]:
+    """Resolve a system by exact name, falling back to a prefix match so a partial
+    name like ``C-J6MT`` finds ``C-J6MT-A``."""
     if not name:
         return None
-    return (
-        eve_db.query(EveSolarSystem)
-        .filter(EveSolarSystem.solar_system_name.ilike(name.strip()))
-        .first()
-    )
+    n = name.strip()
+    exact = (eve_db.query(EveSolarSystem)
+             .filter(EveSolarSystem.solar_system_name.ilike(n)).first())
+    if exact:
+        return exact
+    return (eve_db.query(EveSolarSystem)
+            .filter(EveSolarSystem.solar_system_name.ilike(f"{n}%"))
+            .order_by(EveSolarSystem.solar_system_name).first())
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +105,9 @@ class RefineIn(BaseModel):
 
 
 class ShippingIn(BaseModel):
-    mode: str = "regular"                  # regular | jf
+    mode: str = "regular"                  # regular | jf | flat
     isk_per_jump_m3: float = 0.0
+    isk_per_m3: float = 0.0                # flat mode: ISK/m³ regardless of jumps
     jf_ship: Optional[str] = None
     isotopes_per_ly: float = 0.0
     isotope_price: float = 0.0
@@ -112,7 +118,10 @@ class CompareRequest(BaseModel):
     target_system: Optional[str] = None
     needs: List[NeedIn]
     sources: List[SourceIn]
-    analyze_mode: str = "all"              # minerals | raw | compressed | all
+    # which acquisition forms to consider (checkboxes in the UI)
+    include_minerals: bool = True          # direct mineral buy
+    include_raw: bool = True               # raw ore → refine
+    include_compressed: bool = True        # compressed ore → refine
     basis: str = "sell"                    # buy | sell (price side you pay)
     refine: RefineIn = RefineIn()
     shipping: ShippingIn = ShippingIn()
@@ -143,7 +152,8 @@ class ReprocessRequest(BaseModel):
     refine: RefineIn = RefineIn()
     system_name: Optional[str] = None      # derives the rig security band (else hi)
     region_id: Optional[int] = None        # value minerals at this region (optional)
-    basis: str = "sell"
+    value_cj: bool = False                 # value minerals at C-J6MT (scrape) instead
+    basis: str = "sell"                    # sell | buy | split (mid)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +165,16 @@ def _fnum(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _basis_price(two: dict, basis: str) -> Optional[float]:
+    """Pick buy / sell / split (mid) from a ``{'buy','sell'}`` pair."""
+    b, s = two.get("buy"), two.get("sell")
+    if basis == "split":
+        if b is not None and s is not None:
+            return (b + s) / 2
+        return b if b is not None else s
+    return two.get(basis)
 
 
 def _region_two_sided(region_id: int, type_ids: list[int]) -> dict[int, dict]:
@@ -189,9 +209,12 @@ async def _cj_two_sided(type_ids: list[int]) -> dict[int, dict]:
 def _cost_per_m3(eve_db: Session, src_system: Optional[str], dst: Optional[EveSolarSystem],
                  shipping: ShippingIn) -> tuple[float, Optional[str]]:
     """Transport rate (ISK/m³) from a source system to the target. (rate, warning)."""
+    if shipping.mode == "flat":
+        # flat ISK/m³ — no route or system lookup needed (works for any target, incl. C-J)
+        return round(shipping.isk_per_m3 or 0.0, 4), None
     src = _resolve_system(eve_db, src_system)
     if not src or not dst:
-        return 0.0, "system not found in SDE — transport = 0"
+        return 0.0, "system not found in SDE — transport = 0 (use Flat ISK/m³ mode)"
     if src.solar_system_id == dst.solar_system_id:
         return 0.0, None
     if shipping.mode == "jf":
@@ -206,6 +229,17 @@ def _cost_per_m3(eve_db: Session, src_system: Optional[str], dst: Optional[EveSo
         return 0.0, "ESI route unavailable — transport = 0"
     jumps = len(route) - 1
     return round(jumps * (shipping.isk_per_jump_m3 or 0.0), 4), None
+
+
+def _yields_synced(eve_db: Session) -> bool:
+    """True once invTypeMaterials (eve_type_materials) has been imported. When False,
+    refining yields are empty and ore/compressed/gas paths can't be computed — the
+    user needs a *forced* EVE SDE sync (a normal sync skips an unchanged build)."""
+    return eve_db.query(EveTypeMaterial.type_id).first() is not None
+
+
+_SYNC_HINT = ("no reprocessing yields in the SDE — run a forced EVE sync "
+              "(Sync EVE SDE button) to populate ore/gas refining data")
 
 
 def _build_rigs(eve_db: Session, rig_type_ids: list[int]) -> tuple[RigYield, ...]:
@@ -363,27 +397,32 @@ def _parse_need_lines(text: str) -> list[tuple[str, float]]:
 
 class ParseNeedsRequest(BaseModel):
     text: str
+    kind: str = "mineral"                  # mineral | gas | any
 
 
-@router.post("/parse-minerals")
-async def parse_minerals(
-        body: ParseNeedsRequest,
-        current_user: UserDB = Depends(get_current_user),
-        eve_db: Session = Depends(_get_eve_db),
-):
-    """Parse a pasted list and keep only the minerals (summing duplicates).
+def _parse_items(eve_db: Session, text: str, kind: str) -> dict:
+    """Shared paste parser: resolve names → type_ids, filter by ``kind`` and sum dupes.
 
-    Returns ``needs`` ready to feed the comparison, plus the names it skipped
-    (recognised but not a mineral) and the ones it could not match.
+    kind 'mineral' keeps group-18 minerals, 'gas' keeps harvestable gases, 'any'
+    keeps everything resolved (the reprocessing calculator reprocesses any item).
     """
-    parsed = _parse_need_lines(body.text or "")
+    parsed = _parse_need_lines(text or "")
     if not parsed:
-        return {"needs": [], "skipped_non_mineral": [], "unmatched": []}
+        return {"needs": [], "skipped": [], "unmatched": []}
 
     resolved = eve_repo.types_by_name(eve_db, [n for n, _ in parsed])
     tids = [r["type_id"] for r in resolved.values()]
     groups = {tid: gid for tid, gid in
-              eve_db.query(EveType.type_id, EveType.group_id).filter(EveType.type_id.in_(tids or [-1])).all()}
+              eve_db.query(EveType.type_id, EveType.group_id)
+              .filter(EveType.type_id.in_(tids or [-1])).all()}
+    gas_ids = ({g["reg_type_id"] for g in eve_repo.gas_catalog(eve_db)} if kind == "gas" else set())
+
+    def keep(tid: int) -> bool:
+        if kind == "mineral":
+            return groups.get(tid) == eve_repo.GROUP_MINERAL
+        if kind == "gas":
+            return tid in gas_ids
+        return True
 
     agg: dict[int, dict] = {}
     skipped: list[str] = []
@@ -393,7 +432,7 @@ async def parse_minerals(
         if not r:
             unmatched.append(name)
             continue
-        if groups.get(r["type_id"]) != eve_repo.GROUP_MINERAL:
+        if not keep(r["type_id"]):
             skipped.append(r["name"])
             continue
         a = agg.setdefault(r["type_id"], {"type_id": r["type_id"], "name": r["name"], "qty": 0.0})
@@ -401,9 +440,31 @@ async def parse_minerals(
 
     return {
         "needs": sorted(agg.values(), key=lambda x: x["type_id"]),
-        "skipped_non_mineral": sorted(set(skipped)),
+        "skipped": sorted(set(skipped)),
         "unmatched": sorted(set(unmatched)),
     }
+
+
+@router.post("/parse-items")
+async def parse_items(
+        body: ParseNeedsRequest,
+        current_user: UserDB = Depends(get_current_user),
+        eve_db: Session = Depends(_get_eve_db),
+):
+    """Parse a pasted list, filtered by ``kind`` (mineral | gas | any). Sums dupes,
+    and reports recognised-but-filtered (``skipped``) and unrecognised (``unmatched``)."""
+    return _parse_items(eve_db, body.text, body.kind)
+
+
+@router.post("/parse-minerals")
+async def parse_minerals(
+        body: ParseNeedsRequest,
+        current_user: UserDB = Depends(get_current_user),
+        eve_db: Session = Depends(_get_eve_db),
+):
+    """Back-compat alias: parse a list keeping only minerals."""
+    out = _parse_items(eve_db, body.text, "mineral")
+    return {"needs": out["needs"], "skipped_non_mineral": out["skipped"], "unmatched": out["unmatched"]}
 
 
 @router.get("/character-skills")
@@ -503,18 +564,22 @@ async def reprocess_calc(
             agg = aggregate.setdefault(m.type_id, {"type_id": m.type_id, "name": m.name, "qty": 0})
             agg["qty"] += m.qty
 
-    # optional ISK valuation of the refined minerals
+    # optional ISK valuation of the refined minerals (region hub or C-J scrape)
     total_value = None
-    if body.region_id and aggregate:
-        sides = _region_two_sided(body.region_id, list(aggregate))
+    if (body.region_id or body.value_cj) and aggregate:
+        sides = (await _cj_two_sided(list(aggregate)) if body.value_cj
+                 else _region_two_sided(body.region_id, list(aggregate)))
         total_value = 0.0
         for tid, agg in aggregate.items():
-            px = (sides.get(tid) or {}).get(body.basis)
+            px = _basis_price(sides.get(tid) or {}, body.basis)
             if px:
                 agg["unit_price"] = round(px, 2)
                 agg["value"] = round(px * agg["qty"], 2)
                 total_value += agg["value"]
         total_value = round(total_value, 2)
+
+    warnings = [] if any(r["minerals"] for r in results) else (
+        [_SYNC_HINT] if not _yields_synced(eve_db) else [])
 
     return {
         "refine_yield": asdict(ry),
@@ -522,6 +587,7 @@ async def reprocess_calc(
         "items": results,
         "minerals": sorted(aggregate.values(), key=lambda a: a["type_id"]),
         "total_value": total_value,
+        "warnings": warnings,
     }
 
 
@@ -546,11 +612,11 @@ async def compare_acquisition(
 
     mineral_ids = [n.type_id for n in body.needs]
 
-    # ----- ore candidates per analyze mode ------------------------------------
+    # ----- ore candidates per analyze checkboxes ------------------------------
     ore_rows: list[dict] = []
-    if body.analyze_mode in ("raw", "all"):
+    if body.include_raw:
         ore_rows += eve_repo.ores_yielding(eve_db, mineral_ids, compressed=False)
-    if body.analyze_mode in ("compressed", "all"):
+    if body.include_compressed:
         ore_rows += eve_repo.ores_yielding(eve_db, mineral_ids, compressed=True)
     ore_ids = [o["type_id"] for o in ore_rows]
     ore_yields = eve_repo.reprocessing_yields(eve_db, ore_ids)
@@ -606,8 +672,13 @@ async def compare_acquisition(
         basis=body.basis, needs=needs, sources=sources,
         item_prices=item_prices, volumes=volumes, ores=ores,
         effective_yield=ry.effective_yield, mineral_ref_price=mineral_ref_price,
-        flags=flags,
+        flags=flags, allow_direct=body.include_minerals,
     )
+
+    # Heads-up when ore/compressed paths were requested but no yields exist yet.
+    if (body.include_raw or body.include_compressed) and not any(o.materials for o in ores):
+        warnings.append(_SYNC_HINT if not _yields_synced(eve_db)
+                        else "no ores found yielding the selected minerals")
 
     # ----- optimal basket (min-cost ore mix) when quantities are given --------
     # True joint-product optimisation: one ore covers several minerals, so this beats
@@ -616,14 +687,15 @@ async def compare_acquisition(
     if any(n.qty and n.qty > 0 for n in body.needs):
         options: list[ore_basket.BuyOption] = []
         for s in sources:
-            for n in body.needs:
-                px = item_prices[s.key].get(n.type_id)
-                if px is not None:
-                    cost = px + (volumes.get(n.type_id) or 0.0) * s.cost_per_m3
-                    options.append(ore_basket.BuyOption(
-                        key=f"m{n.type_id}@{s.key}", kind="mineral", type_id=n.type_id,
-                        name=names.get(n.type_id, str(n.type_id)), source=s.label,
-                        cost_per_unit=cost, yields={n.type_id: 1.0}))
+            if body.include_minerals:
+                for n in body.needs:
+                    px = item_prices[s.key].get(n.type_id)
+                    if px is not None:
+                        cost = px + (volumes.get(n.type_id) or 0.0) * s.cost_per_m3
+                        options.append(ore_basket.BuyOption(
+                            key=f"m{n.type_id}@{s.key}", kind="mineral", type_id=n.type_id,
+                            name=names.get(n.type_id, str(n.type_id)), source=s.label,
+                            cost_per_unit=cost, yields={n.type_id: 1.0}))
             for o in ore_rows:
                 px = item_prices[s.key].get(o["type_id"])
                 if px is None:
@@ -722,6 +794,11 @@ async def compare_gas(
     if body.volatility_alert:
         region = next((s.region_id for s in body.sources if s.region_id), None)
         alerts = _volatility_alerts(region, reg_ids, body.low_vol_threshold)
+
+    # heads-up when no gas has a known compression ratio (compressed path unavailable)
+    if not any(g.units_per_compressed for g in gas_infos):
+        warnings.append(_SYNC_HINT if not _yields_synced(eve_db)
+                        else "no compression ratio for these gases — only the regular form is compared")
 
     payload = asdict(result)
     payload.update({"sources": source_meta, "alerts": alerts, "warnings": warnings})
