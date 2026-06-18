@@ -888,6 +888,19 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_deliveries_status ON deliveries (status)",
     "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS delivery_id INTEGER REFERENCES deliveries(id)",
     "CREATE INDEX IF NOT EXISTS ix_inventory_delivery_id ON inventory (delivery_id)",
+    # linked_characters overview columns (Alembic 0013) — mirrored here because the
+    # Alembic upgrade is best-effort and never lands on a create_all-built DB, while
+    # create_all itself cannot ALTER the pre-existing linked_characters table.
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS corporation_name VARCHAR(200)",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS alliance_name VARCHAR(200)",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS assets_value DOUBLE PRECISION",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS location_system_id INTEGER",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS location_id BIGINT",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS location_type VARCHAR(20)",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS ship_type_id INTEGER",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS ship_name VARCHAR(200)",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS online BOOLEAN",
+    "ALTER TABLE linked_characters ADD COLUMN IF NOT EXISTS last_login TIMESTAMP",
 ]
 
 
