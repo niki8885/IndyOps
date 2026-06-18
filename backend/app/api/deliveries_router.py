@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from app.adapters import market
 from app.api.inventory_router import _split_off, _get_item_or_404, _accessible_org_ids, _resolve_eve_type
 from app.core.database import (
-    get_db, Delivery, InventoryItem, Projects, StockMovement, Employee, UserDB,
-    EsiContract, LinkedCharacter,
+    get_db, Delivery, DeliveryStatusEvent, InventoryItem, Projects, StockMovement,
+    Employee, UserDB, EsiContract, LinkedCharacter,
 )
 from app.core.database_eve import EveSessionLocal, EveSolarSystem
 from app.core.security import get_current_user
@@ -183,6 +183,13 @@ def _annotate(d: Delivery, matches: dict[str, list[EsiContract]]) -> None:
         d.contract_status = latest.status
 
 
+def _log_status(db: Session, d: Delivery, new_status: str,
+                at: datetime.datetime, note: Optional[str] = None) -> None:
+    """Append a status-history row (append-only timeline of the delivery's lifecycle)."""
+    db.add(DeliveryStatusEvent(
+        delivery_id=d.id, from_status=d.status, status=new_status, at=at, note=note))
+
+
 def _apply_complete(db: Session, d: Delivery, now: datetime.datetime) -> None:
     """Move the delivery's lots to the destination and release them."""
     target = d.target_place or d.target_system
@@ -190,6 +197,8 @@ def _apply_complete(db: Session, d: Delivery, now: datetime.datetime) -> None:
         lot.place = target
         lot.delivery_id = None
         lot.updated_at = now
+    _log_status(db, d, "completed", now,
+                note=f"{d.source_place or d.source_system or '?'} → {d.target_place or d.target_system or '?'}")
     d.status = "completed"
     d.completed_at = now
 
@@ -205,6 +214,7 @@ def _apply_fail(db: Session, d: Delivery, user_id: int, now: datetime.datetime) 
             reason=f"Delivery {d.code} failed",
         ))
         db.delete(lot)
+    _log_status(db, d, "failed", now, note="goods written off")
     d.status = "failed"
     d.completed_at = now
 
@@ -396,6 +406,11 @@ async def create_delivery(
     for lot in lots:
         lot.delivery_id = d.id
 
+    db.add(DeliveryStatusEvent(
+        delivery_id=d.id, from_status=None, status="pending",
+        at=d.created_at or datetime.datetime.utcnow(),
+        note=f"created · {d.source_place or d.source_system or '?'} → {target_place or '?'}"))
+
     db.commit()
     db.refresh(d)
     return d
@@ -458,6 +473,36 @@ async def get_delivery(
     d = _get_delivery_or_404(db, delivery_id, current_user.id)
     _annotate(d, _match_contracts(db, current_user.id, [d.code]))
     return d
+
+
+@router.get("/{delivery_id}/history")
+async def delivery_history(
+        delivery_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Status timeline for one delivery — each transition with its timestamp, plus the
+    route and total elapsed time (from where, to where, how long, what changed when)."""
+    d = _get_delivery_or_404(db, delivery_id, current_user.id)
+    events = (db.query(DeliveryStatusEvent)
+              .filter(DeliveryStatusEvent.delivery_id == d.id)
+              .order_by(DeliveryStatusEvent.at).all())
+    elapsed = ((d.completed_at - d.created_at).total_seconds()
+               if d.completed_at and d.created_at else None)
+    return {
+        "delivery_id": d.id, "code": d.code,
+        "source": d.source_place or d.source_system,
+        "target": d.target_place or d.target_system,
+        "status": d.status,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "completed_at": d.completed_at.isoformat() if d.completed_at else None,
+        "elapsed_seconds": elapsed,
+        "events": [
+            {"from_status": e.from_status, "status": e.status,
+             "at": e.at.isoformat() if e.at else None, "note": e.note}
+            for e in events
+        ],
+    }
 
 
 @router.patch("/{delivery_id}/status", response_model=DeliveryOut)

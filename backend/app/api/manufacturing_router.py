@@ -10,8 +10,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.adapters import market
 from app.core.database import (
-    get_db, ProductionJob, Facility, UserDB, InventoryItem, StockMovement, Blueprint,
-    LinkedCharacter, EsiSkill, EsiStanding,
+    get_db, ProductionJob, ProductionStatusEvent, Facility, UserDB, InventoryItem,
+    StockMovement, Blueprint, LinkedCharacter, EsiSkill, EsiStanding,
 )
 from app.core.database_eve import (
     EveSessionLocal, EveType, EveRigBonus, EveGroup, EveSolarSystem,
@@ -1074,6 +1074,10 @@ async def create_job(
 ):
     j = ProductionJob(user_id=current_user.id, **body.model_dump())
     db.add(j)
+    db.flush()  # assign j.id
+    db.add(ProductionStatusEvent(
+        job_id=j.id, from_status=None, status=_status_val(j.status),
+        note="created", at=datetime.datetime.utcnow()))
     db.commit()
     db.refresh(j)
     return j
@@ -1088,6 +1092,36 @@ async def get_job(
     return _job_or_404(db, job_id, current_user.id)
 
 
+@router.get("/jobs/{job_id}/history")
+async def job_history(
+        job_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Status timeline for one PAK job — each transition with its timestamp, plus the
+    planned/released times and total elapsed (what changed when, and how long it took)."""
+    j = _job_or_404(db, job_id, current_user.id)
+    events = (db.query(ProductionStatusEvent)
+              .filter(ProductionStatusEvent.job_id == j.id)
+              .order_by(ProductionStatusEvent.at).all())
+    elapsed = ((j.date_released - j.date_planned).total_seconds()
+               if j.date_released and j.date_planned else None)
+    return {
+        "job_id": j.id,
+        "product": j.product_name,
+        "place": j.place,
+        "status": _status_val(j.status),
+        "date_planned": j.date_planned.isoformat() if j.date_planned else None,
+        "date_released": j.date_released.isoformat() if j.date_released else None,
+        "elapsed_seconds": elapsed,
+        "events": [
+            {"from_status": e.from_status, "status": e.status,
+             "at": e.at.isoformat() if e.at else None, "note": e.note}
+            for e in events
+        ],
+    }
+
+
 @router.patch("/jobs/{job_id}", response_model=JobOut)
 async def update_job(
         job_id: int,
@@ -1096,7 +1130,11 @@ async def update_job(
         db: Session = Depends(get_db),
 ):
     j = _job_or_404(db, job_id, current_user.id)
-    for field, val in body.model_dump(exclude_none=True).items():
+    changes = body.model_dump(exclude_none=True)
+    new_status = changes.get("status")
+    if new_status is not None and _status_val(new_status) != _status_val(j.status):
+        _log_job_status(db, j, new_status, note="manual status change")
+    for field, val in changes.items():
         setattr(j, field, val)
     j.updated_at = datetime.datetime.utcnow()
     db.commit()
@@ -1327,6 +1365,7 @@ async def issue_job_materials(
     job.calc_snapshot = snap  # reassign new dict → JSON column marked dirty
 
     if job.status in (ProductionStatus.PLANNING, ProductionStatus.PREPARING):
+        _log_job_status(db, job, ProductionStatus.IN_PROGRESS, note="materials issued")
         job.status = ProductionStatus.IN_PROGRESS
     job.updated_at = datetime.datetime.utcnow()
     db.commit()
@@ -1412,6 +1451,7 @@ async def receive_job_output(
         reason=f"PAK #{job.id} received — {job.product_name}",
     ))
 
+    _log_job_status(db, job, ProductionStatus.COMPLETED, note="output received")
     job.status = ProductionStatus.COMPLETED
     job.date_released = datetime.datetime.utcnow()
     job.updated_at = datetime.datetime.utcnow()
@@ -1444,6 +1484,22 @@ async def job_movements(
         }
         for r in rows
     ]
+
+
+def _status_val(s) -> Optional[str]:
+    """Normalise a ProductionStatus enum (or raw string) to its string value."""
+    if s is None:
+        return None
+    return s.value if hasattr(s, "value") else str(s)
+
+
+def _log_job_status(db: Session, job: ProductionJob, new_status, note: Optional[str] = None) -> None:
+    """Append a PAK status-history row (append-only timeline). Call *before* setting
+    ``job.status`` so ``from_status`` captures the previous value."""
+    db.add(ProductionStatusEvent(
+        job_id=job.id, from_status=_status_val(job.status),
+        status=_status_val(new_status), note=note,
+        at=datetime.datetime.utcnow()))
 
 
 def _job_or_404(db: Session, job_id: int, user_id: int) -> ProductionJob:
