@@ -12,14 +12,16 @@ function asFn(m) {
   return null
 }
 
-export let Plot = null
-try {
-  const create = asFn(factoryModule)
-  const Plotly = plotlyModule.default || plotlyModule
-  if (create) Plot = create(Plotly)
-} catch (e) {
-  console.error('Plotly init failed', e)
-}
+export const Plot = (() => {
+  try {
+    const create = asFn(factoryModule)
+    const Plotly = plotlyModule.default || plotlyModule
+    if (create) return create(Plotly)
+  } catch (e) {
+    console.error('Plotly init failed', e)
+  }
+  return null
+})()
 
 export const C = {
   text: '#8b93b0', grid: '#252a40', accent: '#c8a951', white: '#e8ecf4',

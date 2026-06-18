@@ -36,7 +36,7 @@ def test_picks_cheapest_source_for_same_ore():
     plan = optimize_basket(needs, options)
     assert plan.status == "optimal"
     assert plan.buys[0].source == "Cheap"
-    assert plan.total_cost == pytest.approx(6 * 90.0)   # ceil(1000/173)=6
+    assert plan.total_cost == pytest.approx(6 * 90.0)   # ceil(1000/173) → 6
 
 
 def test_direct_buy_used_when_no_ore_is_cheaper():

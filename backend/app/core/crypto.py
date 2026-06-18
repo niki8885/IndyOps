@@ -11,7 +11,7 @@ def _fernet() -> Fernet:
     return Fernet(key)
 
 
-def encrypt(plaintext: str) -> str:
+def encrypt(plaintext: str | None) -> str | None:
     if plaintext is None:
         return None
     return _fernet().encrypt(plaintext.encode()).decode()

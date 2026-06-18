@@ -18,6 +18,11 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# FK targets / cascade strings reused across models (extracted to avoid duplicate literals)
+_FK_ORGANISATIONS_ID = "organisations.id"
+_FK_EMPLOYEES_ID = "employees.id"
+_CASCADE_ALL_DELETE_ORPHAN = "all, delete-orphan"
+
 
 class UserDB(Base):
     __tablename__ = "users"
@@ -55,7 +60,7 @@ class Organisation(Base):
     owner_user = relationship("UserDB", back_populates="organisations")
     employees = relationship("Employee", back_populates="organisation")
     projects = relationship("Projects", back_populates="organisation")
-    members = relationship("OrganisationMember", back_populates="organisation", cascade="all, delete-orphan")
+    members = relationship("OrganisationMember", back_populates="organisation", cascade=_CASCADE_ALL_DELETE_ORPHAN)
 
 
 class OrganisationMember(Base):
@@ -64,7 +69,7 @@ class OrganisationMember(Base):
     __table_args__ = (UniqueConstraint("org_id", "user_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False)
+    org_id = Column(Integer, ForeignKey(_FK_ORGANISATIONS_ID, ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(20), nullable=False, default="JUNIOR")
     joined_at = Column(DateTime, default=utcnow)
@@ -80,7 +85,7 @@ class Employee(Base):
     name = Column(String, unique=True, index=True, nullable=False)  # character name
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     character_id = Column(Integer, nullable=True)  # EVE character ID from ESI
-    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=True)
+    organisation_id = Column(Integer, ForeignKey(_FK_ORGANISATIONS_ID), nullable=True)
 
     status = Column(Enum(EmployeeType), nullable=False, index=True, default=EmployeeType.OTHER)
 
@@ -100,9 +105,9 @@ class Projects(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True, nullable=False)
-    created_by = Column(Integer, ForeignKey("employees.id"), nullable=False)
-    supervised_by = Column(Integer, ForeignKey("employees.id"), nullable=True)
-    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=False)
+    created_by = Column(Integer, ForeignKey(_FK_EMPLOYEES_ID), nullable=False)
+    supervised_by = Column(Integer, ForeignKey(_FK_EMPLOYEES_ID), nullable=True)
+    organisation_id = Column(Integer, ForeignKey(_FK_ORGANISATIONS_ID), nullable=False)
 
     org_project_code = Column(String, nullable=True, index=True)
     note = Column(String, nullable=True)
@@ -128,7 +133,7 @@ class Facility(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=True, index=True)
+    organisation_id = Column(Integer, ForeignKey(_FK_ORGANISATIONS_ID), nullable=True, index=True)
 
     name = Column(String(200), nullable=False)
     facility_type = Column(Enum(FacilityType), nullable=False, index=True)
@@ -161,7 +166,7 @@ class Blueprint(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=True, index=True)
+    organisation_id = Column(Integer, ForeignKey(_FK_ORGANISATIONS_ID), nullable=True, index=True)
 
     blueprint_type_id = Column(Integer, nullable=False, index=True)
     product_type_id = Column(Integer, nullable=False, index=True)   # what it makes — chain join key
@@ -243,7 +248,7 @@ class ProductionJob(Base):
     facility = relationship("Facility", backref="production_jobs")
     status_events = relationship(
         "ProductionStatusEvent", backref="job",
-        order_by="ProductionStatusEvent.at", cascade="all, delete-orphan",
+        order_by="ProductionStatusEvent.at", cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
 
 
@@ -327,7 +332,7 @@ class Delivery(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    organisation_id = Column(Integer, ForeignKey("organisations.id"), nullable=True, index=True)
+    organisation_id = Column(Integer, ForeignKey(_FK_ORGANISATIONS_ID), nullable=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
 
     source_place = Column(String(200), nullable=True)   # origin warehouse / system
@@ -337,7 +342,7 @@ class Delivery(Base):
 
     mode = Column(String(10), nullable=False, default="regular")  # regular | jf
     sender_character = Column(String(200), nullable=True)
-    sender_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    sender_employee_id = Column(Integer, ForeignKey(_FK_EMPLOYEES_ID), nullable=True)
 
     # regular (gate freighter)
     jumps = Column(Integer, nullable=True)
@@ -372,7 +377,7 @@ class Delivery(Base):
     organisation = relationship("Organisation", backref="deliveries")
     status_events = relationship(
         "DeliveryStatusEvent", backref="delivery",
-        order_by="DeliveryStatusEvent.at", cascade="all, delete-orphan",
+        order_by="DeliveryStatusEvent.at", cascade=_CASCADE_ALL_DELETE_ORPHAN,
     )
 
 

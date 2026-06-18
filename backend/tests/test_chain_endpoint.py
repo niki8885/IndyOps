@@ -3,6 +3,7 @@ Glue around the /calculate-chain endpoint: Fuzzwork price parsing, plan
 serialisation, and one end-to-end run of the whole left arm
 (bom_tree → from_bom → solve_chain → assign_jobs) without HTTP/DB session.
 """
+import pytest
 from app.adapters import market
 from app.api import manufacturing_router as mr
 from app.core.database_eve import (
@@ -37,9 +38,9 @@ def test_market_buy_prices_parses_both_sides(monkeypatch):
     }
     monkeypatch.setattr(market, "fuzzwork_aggregates_or_empty", lambda region, ids: agg)
     buy = mr._market_buy_prices(10000002, [34, 99], "buy")
-    assert buy[34] == 5.5 and buy[99] is None        # percentile preferred, missing → None
+    assert buy[34] == pytest.approx(5.5) and buy[99] is None        # percentile preferred, missing → None
     sell = mr._market_buy_prices(10000002, [34, 99], "sell")
-    assert sell[34] == 7.5
+    assert sell[34] == pytest.approx(7.5)
 
 
 def test_plan_dict_serialises_computed_job_fields():
@@ -140,7 +141,7 @@ def test_bpc_cost_folds_into_make_cost_and_total():
     withbp = solve_chain(from_bom(1, 3, tree, buy, {}, LocationParams(1, "P"),
                                   bpc_unit={1: 1000.0}))           # 1000/unit × 3 units = 3000
     assert float(withbp.total_cost) == float(base.total_cost) + 3000.0
-    assert sum(float(j.bpc_cost) for j in withbp.jobs if j.type_id == 1) == 3000.0
+    assert sum(float(j.bpc_cost) for j in withbp.jobs if j.type_id == 1) == pytest.approx(3000.0)
 
 
 def test_reactions_off_force_buys_reaction_nodes():

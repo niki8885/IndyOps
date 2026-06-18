@@ -222,7 +222,12 @@ def _resolve_structures(db, token, structure_ids) -> int:
             type_id = info.get("type_id")
         except requests.HTTPError as exc:
             code = exc.response.status_code if exc.response is not None else None
-            error = "forbidden" if code == 403 else "not_found" if code in (404, 422) else "error"
+            if code == 403:
+                error = "forbidden"
+            elif code in (404, 422):
+                error = "not_found"
+            else:
+                error = "error"
         except Exception:  # noqa: BLE001
             error = "error"
 
@@ -438,7 +443,7 @@ def sync_all_active() -> dict:
                 res["seconds"] = round(time.time() - t0, 1)
                 summary["results"].append(res)
             except Exception as exc:  # noqa: BLE001
-                logger.error("esi sync for %s failed: %s", char.character_id, exc)
+                logger.exception("esi sync for %s failed", char.character_id)
                 summary["errors"].append(f"{char.character_id}: {exc}")
     finally:
         db.close()

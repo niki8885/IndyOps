@@ -85,7 +85,7 @@ def test_apply_complete_moves_items_to_target():
                         place="Jita", delivery_id=d.id))
     s.commit()
 
-    _apply_complete(s, d, datetime.datetime.utcnow())
+    _apply_complete(s, d, datetime.datetime.now(datetime.timezone.utc))
     s.commit()
 
     assert d.status == "completed"
@@ -101,7 +101,7 @@ def test_apply_complete_records_status_event():
     d = Delivery(user_id=1, code=CODE, status="pending",
                  source_place="Jita", target_place="RYC-19")
     s.add(d); s.flush()
-    _apply_complete(s, d, datetime.datetime.utcnow())
+    _apply_complete(s, d, datetime.datetime.now(datetime.timezone.utc))
     s.commit()
 
     events = s.query(DeliveryStatusEvent).filter(

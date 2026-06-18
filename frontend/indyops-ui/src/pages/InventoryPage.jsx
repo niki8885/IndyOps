@@ -817,7 +817,9 @@ function DeliveryTab() {
 
   return (
     <div>
-      {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
+      {error && <div className="error-box" role="button" tabIndex={0}
+        onClick={() => setError('')}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setError('') } }}>{error}</div>}
 
       {/* ── BUILDER ── */}
       <div className="card" style={{ marginBottom: 20 }}>

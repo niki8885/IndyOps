@@ -3,6 +3,7 @@ make-vs-buy core tests. Golden values are hand-computed (not produced by the
 code) so a formula/recursion regression is caught — same discipline as
 test_manufacturing_golden.py. Plus structural properties over the DAG.
 """
+import pytest
 from app.services.chain import (
     ChainRequest, LocationParams, Node, Recipe, RecipeLocation, from_bom, solve_chain,
 )
@@ -36,8 +37,8 @@ def test_golden_two_tier_make():
     assert plan.decisions[1].decision == "make"
     assert plan.decisions[2].decision == "make"
     assert plan.decisions[3].decision == "buy"
-    assert plan.unit_cost == 2050.0
-    assert plan.total_cost == 6150.0          # 2050 × 3, integer runs divide cleanly
+    assert plan.unit_cost == pytest.approx(2050.0)
+    assert plan.total_cost == pytest.approx(6150.0)          # 2050 × 3, integer runs divide cleanly
 
     # A is needed 30 (10/widget × 3). base_time 600s × 30 ≪ 30 days → one job, not split.
     a_jobs = [j for j in plan.jobs if j.type_id == 2]
@@ -48,7 +49,7 @@ def test_golden_two_tier_make():
 
     raw = [s for s in plan.shopping_list if s.type_id == 3][0]
     assert raw.qty == 615                      # 15 (widget) + 600 (3×A×200)
-    assert raw.total == 6150.0
+    assert raw.total == pytest.approx(6150.0)
 
 
 def test_jobs_split_by_30_day_limit():
@@ -79,7 +80,7 @@ def test_golden_buy_beats_make():
     assert plan.decisions[1].decision == "make"
     a_line = [s for s in plan.shopping_list if s.type_id == 2][0]
     assert a_line.qty == 10
-    assert plan.total_cost == 10000.0
+    assert plan.total_cost == pytest.approx(10000.0)
 
 
 def test_golden_install_me_scc():
@@ -94,13 +95,13 @@ def test_golden_install_me_scc():
     }
     plan = solve_chain(ChainRequest(1, 1, nodes))
     # per-unit make (amortised, me as fraction, no ceil): 1000×0.9×1 + 100 = 1000.
-    assert plan.decisions[1].unit_make == 1000.0
+    assert plan.decisions[1].unit_make == pytest.approx(1000.0)
     assert plan.decisions[1].decision == "make"
     job = plan.jobs[0]
-    assert job.install_cost == 100.0
+    assert job.install_cost == pytest.approx(100.0)
     # integer ME rounding for the executable job: ceil(1000×0.9)=900.
     assert job.inputs[0].qty == 900
-    assert plan.total_cost == 1000.0          # 900 (RAW) + 100 install
+    assert plan.total_cost == pytest.approx(1000.0)          # 900 (RAW) + 100 install
 
 
 def test_reaction_then_manufacture():
@@ -114,7 +115,7 @@ def test_reaction_then_manufacture():
     plan = solve_chain(ChainRequest(20, 5, nodes))
     # COMP make: 2×100 / 10 per run = 20 < buy 5000 → make via reaction.
     assert plan.decisions[21].decision == "make"
-    assert plan.decisions[21].unit_make == 20.0
+    assert plan.decisions[21].unit_make == pytest.approx(20.0)
     comp_jobs = [j for j in plan.jobs if j.type_id == 21]
     assert all(j.activity == 11 and j.slot_kind == "manufacturing" for j in comp_jobs)
 
@@ -164,7 +165,8 @@ def test_shared_made_intermediate_demand_sums():
     raw = [s for s in plan.shopping_list if s.type_id == 5][0]
     assert raw.qty == 10                       # 2 × S × 5 RAW (NOT 5 — both parents counted)
     # phase-2 plan total must equal the phase-1 recursive unit cost (no install here).
-    assert plan.total_cost == plan.unit_cost == 1000.0
+    assert plan.total_cost == pytest.approx(1000.0)
+    assert plan.unit_cost == pytest.approx(1000.0)
 
 
 def test_property_total_matches_unit_when_clean():
@@ -196,10 +198,10 @@ def test_from_bom_builds_solvable_request():
     req = from_bom(2000, 2, tree, buy, adj, loc)
 
     comp_loc = req.nodes[3000].recipes[0].locations[0]
-    assert comp_loc.slot_kind == "reaction" and comp_loc.me_mult == 1.0   # reactions ignore ME
+    assert comp_loc.slot_kind == "reaction" and comp_loc.me_mult == pytest.approx(1.0)   # reactions ignore ME
     hull_loc = req.nodes[2000].recipes[0].locations[0]
-    assert hull_loc.slot_kind == "manufacturing" and hull_loc.me_mult == 0.95
-    assert hull_loc.eiv_unit == 16400.0          # (4×4000 + 100×4) / 1
+    assert hull_loc.slot_kind == "manufacturing" and hull_loc.me_mult == pytest.approx(0.95)
+    assert hull_loc.eiv_unit == pytest.approx(16400.0)          # (4×4000 + 100×4) / 1
 
     plan = solve_chain(req)
     assert plan.unit_cost is not None
@@ -284,7 +286,7 @@ def test_blueprint_me_te_override_node():
     req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [LocationParams(1, "P")],
                    node_overrides={1: (10, 20)})
     loc = req.nodes[1].recipes[0].locations[0]
-    assert loc.me_mult == 0.9 and loc.te_mult == 0.8
+    assert loc.me_mult == pytest.approx(0.9) and loc.te_mult == pytest.approx(0.8)
     job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
     assert job.inputs[0].qty == 900                       # ceil(1000 × 0.90)
 
@@ -306,7 +308,7 @@ def test_bpc_cost_folds_into_make_cost():
     req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [LocationParams(1, "P")],
                    bpc_unit={1: 5.0})
     job = [j for j in solve_chain(req).jobs if j.type_id == 1][0]
-    assert job.bpc_cost == 5.0 * job.qty_out
+    assert job.bpc_cost == pytest.approx(5.0 * job.qty_out)
 
 
 # ── reactions: only at refineries, only reactor rigs apply (IO-15) ──────────────
@@ -340,8 +342,8 @@ def test_reaction_runs_at_refinery_with_reactor_rig():
     req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
     loc = req.nodes[1].recipes[0].locations[0]
     assert loc.slot_kind == "reaction" and loc.place_id == 20
-    assert loc.me_mult == 1.0          # reactions ignore ME
-    assert loc.te_mult == 0.8          # 20% reactor TE applied
+    assert loc.me_mult == pytest.approx(1.0)          # reactions ignore ME
+    assert loc.te_mult == pytest.approx(0.8)          # 20% reactor TE applied
 
 
 def test_reactor_rig_ignored_for_manufacturing():
@@ -349,14 +351,14 @@ def test_reactor_rig_ignored_for_manufacturing():
                    te_bonus=-20.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
     tree = _tree_one_tier(cat_id=6, group_name="Battleship", qty=1000)
     req = from_bom(1, 1, tree, {1: 1e12, 2: 1.0}, {2: 0.0}, [LocationParams(10, "Sotiyo", rigs=(rig,), band="hi")])
-    assert req.nodes[1].recipes[0].locations[0].te_mult == 1.0
+    assert req.nodes[1].recipes[0].locations[0].te_mult == pytest.approx(1.0)
 
 
 def test_ship_rig_ignored_for_reaction():
     rig = RigBonus(type_id=500, name="Standup L-Set Ship Manufacturing Efficiency",
                    te_bonus=-20.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
     req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
-    assert req.nodes[1].recipes[0].locations[0].te_mult == 1.0
+    assert req.nodes[1].recipes[0].locations[0].te_mult == pytest.approx(1.0)
 
 
 def test_reactor_subtype_matches_product_family():
@@ -364,10 +366,10 @@ def test_reactor_subtype_matches_product_family():
                    te_bonus=-10.0, hisec_mod=1.0, lowsec_mod=1.9, nullsec_mod=2.1)
     # composite product → the composite-reactor rig applies
     req_c = from_bom(1, 10, _tree_reaction("Composite"), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
-    assert req_c.nodes[1].recipes[0].locations[0].te_mult == 0.9
+    assert req_c.nodes[1].recipes[0].locations[0].te_mult == pytest.approx(0.9)
     # hybrid-polymer product → it does not
     req_h = from_bom(1, 10, _tree_reaction("Hybrid Polymers"), {1: 5000.0, 2: 1.0}, {2: 0.0}, [_tatara(rig, band="hi")])
-    assert req_h.nodes[1].recipes[0].locations[0].te_mult == 1.0
+    assert req_h.nodes[1].recipes[0].locations[0].te_mult == pytest.approx(1.0)
 
 
 # ── reaction cost index (#2) ────────────────────────────────────────────────────
@@ -378,20 +380,20 @@ def test_reaction_node_uses_reaction_cost_index():
     fac = LocationParams(20, "Tatara", can_man=False, can_react=True, sci=0.05, react_sci=0.02)
     req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [fac])
     loc = req.nodes[1].recipes[0].locations[0]
-    assert loc.slot_kind == "reaction" and loc.sci == 0.02
+    assert loc.slot_kind == "reaction" and loc.sci == pytest.approx(0.02)
 
 
 def test_reaction_falls_back_to_mfg_index_when_react_sci_missing():
     fac = LocationParams(20, "Tatara", can_man=False, can_react=True, sci=0.05)  # react_sci None
     req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [fac])
-    assert req.nodes[1].recipes[0].locations[0].sci == 0.05
+    assert req.nodes[1].recipes[0].locations[0].sci == pytest.approx(0.05)
 
 
 def test_manufacturing_node_ignores_reaction_index():
     fac = LocationParams(10, "Sotiyo", sci=0.05, react_sci=0.02)
     req = from_bom(1, 1, _tree_one_tier(), {1: 1e12, 2: 1.0}, {2: 0.0}, [fac])
     loc = req.nodes[1].recipes[0].locations[0]
-    assert loc.slot_kind == "manufacturing" and loc.sci == 0.05
+    assert loc.slot_kind == "manufacturing" and loc.sci == pytest.approx(0.05)
 
 
 # ── producing-character skill time (#4 character selection) ──────────────────────
@@ -400,11 +402,11 @@ def test_producing_char_time_mult_applies_to_manufacturing_te():
     fac = LocationParams(10, "Sotiyo", te_mult=1.0)
     req = from_bom(1, 1, _tree_one_tier(), {1: 1e12, 2: 1.0}, {2: 0.0}, [fac],
                    time_mult_man=0.8, time_mult_react=0.85)
-    assert req.nodes[1].recipes[0].locations[0].te_mult == 0.8
+    assert req.nodes[1].recipes[0].locations[0].te_mult == pytest.approx(0.8)
 
 
 def test_producing_char_reaction_time_mult_applies_to_reaction_te():
     fac = LocationParams(20, "Tatara", can_man=False, can_react=True, te_mult=1.0)
     req = from_bom(1, 10, _tree_reaction(), {1: 5000.0, 2: 1.0}, {2: 0.0}, [fac],
                    time_mult_man=0.8, time_mult_react=0.85)
-    assert req.nodes[1].recipes[0].locations[0].te_mult == 0.85
+    assert req.nodes[1].recipes[0].locations[0].te_mult == pytest.approx(0.85)

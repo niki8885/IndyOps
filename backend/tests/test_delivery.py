@@ -8,7 +8,7 @@ from app.services import delivery as d
 
 
 def test_light_years_zero_for_same_point():
-    assert d.light_years(1, 2, 3, 1, 2, 3) == 0.0
+    assert d.light_years(1, 2, 3, 1, 2, 3) == pytest.approx(0.0)
 
 
 def test_light_years_one_ly():
@@ -33,7 +33,7 @@ def test_jf_cost_basic():
     # 1 trip, 5 ly × 100 iso/ly = 500 isotopes; × 10 ISK/iso = 5000 ISK
     r = d.jf_cost(100_000, ly=5.0, isotopes_per_ly=100.0, isotope_price=10.0)
     assert r["trips"] == 1
-    assert r["total_isotopes"] == 500.0
+    assert r["total_isotopes"] == pytest.approx(500.0)
     assert r["total_cost"] == 5_000.0
     assert r["cost_per_m3"] == pytest.approx(0.05)
 
@@ -55,8 +55,8 @@ def test_jf_cost_multiple_trips():
 def test_jf_cost_zero_volume_is_safe():
     r = d.jf_cost(0, 5.0, 100.0, 10.0)
     assert r["trips"] == 0
-    assert r["total_cost"] == 0.0
-    assert r["cost_per_m3"] == 0.0
+    assert r["total_cost"] == pytest.approx(0.0)
+    assert r["cost_per_m3"] == pytest.approx(0.0)
 
 
 def test_regular_cost():
@@ -67,8 +67,8 @@ def test_regular_cost():
 
 def test_regular_cost_zero_volume_is_safe():
     r = d.regular_cost(0, 8, 2.0)
-    assert r["total_cost"] == 0.0
-    assert r["cost_per_m3"] == 0.0
+    assert r["total_cost"] == pytest.approx(0.0)
+    assert r["cost_per_m3"] == pytest.approx(0.0)
 
 
 def test_gen_code_length_and_charset():

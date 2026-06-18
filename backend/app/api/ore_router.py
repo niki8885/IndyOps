@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.adapters import market
+from app.api.responses import ERR_400, ERR_404
 from app.core.database import UserDB, get_db, LinkedCharacter, EsiSkill
 from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveType, EveTypeMaterial
 from app.core.security import get_current_user
@@ -303,16 +304,14 @@ async def _resolve_sources(eve_db: Session, src_list: list[SourceIn], all_ids: l
     return sources, item_prices, flags, source_meta, warnings
 
 
-def _volatility_alerts(region_id: Optional[int], type_ids: list[int],
-                       threshold: float) -> dict[int, dict]:
+def _volatility_alerts(region_id: Optional[int], type_ids: list[int]) -> dict[int, dict]:
     """Per-type liquidity check at one region (best-effort); daily-return volatility
     is reported for context.
 
     Flags a type only when its market is genuinely thin — no recent history, or no
     traded volume. A deep, liquid market (e.g. Isogen at Jita) naturally has *low*
     price volatility, so low volatility on its own is **not** an alert (that was a
-    false positive on the major minerals). ``threshold`` is kept for the reason
-    wording only; it no longer decides whether the alert fires.
+    false positive on the major minerals).
     """
     if not region_id:
         return {}
@@ -480,7 +479,7 @@ async def parse_minerals(
     return {"needs": out["needs"], "skipped_non_mineral": out["skipped"], "unmatched": out["unmatched"]}
 
 
-@router.get("/character-skills")
+@router.get("/character-skills", responses={**ERR_404})
 async def character_skills(
         character_id: int = Query(..., description="LinkedCharacter.id"),
         current_user: UserDB = Depends(get_current_user),
@@ -542,7 +541,7 @@ async def yields(
 # Standalone reprocessing calculator
 # ---------------------------------------------------------------------------
 
-@router.post("/reprocess")
+@router.post("/reprocess", responses={**ERR_400})
 async def reprocess_calc(
         body: ReprocessRequest,
         current_user: UserDB = Depends(get_current_user),
@@ -591,8 +590,8 @@ async def reprocess_calc(
                 total_value += agg["value"]
         total_value = round(total_value, 2)
 
-    warnings = [] if any(r["minerals"] for r in results) else (
-        [_SYNC_HINT] if not _yields_synced(eve_db) else [])
+    sync_warn = [_SYNC_HINT] if not _yields_synced(eve_db) else []
+    warnings = [] if any(r["minerals"] for r in results) else sync_warn
 
     return {
         "refine_yield": asdict(ry),
@@ -608,7 +607,7 @@ async def reprocess_calc(
 # The comparison
 # ---------------------------------------------------------------------------
 
-@router.post("/compare")
+@router.post("/compare", responses={**ERR_400})
 async def compare_acquisition(
         body: CompareRequest,
         current_user: UserDB = Depends(get_current_user),
@@ -738,7 +737,7 @@ async def compare_acquisition(
     alerts: dict[int, dict] = {}
     if body.volatility_alert:
         region = next((s.region_id for s in body.sources if s.region_id), None)
-        alerts = _volatility_alerts(region, mineral_ids, body.low_vol_threshold)
+        alerts = _volatility_alerts(region, mineral_ids)
 
     payload = asdict(result)
     payload.update({
@@ -753,7 +752,7 @@ async def compare_acquisition(
     return payload
 
 
-@router.post("/gas-compare")
+@router.post("/gas-compare", responses={**ERR_400, **ERR_404})
 async def compare_gas(
         body: GasCompareRequest,
         current_user: UserDB = Depends(get_current_user),
@@ -811,7 +810,7 @@ async def compare_gas(
     alerts: dict[int, dict] = {}
     if body.volatility_alert:
         region = next((s.region_id for s in body.sources if s.region_id), None)
-        alerts = _volatility_alerts(region, reg_ids, body.low_vol_threshold)
+        alerts = _volatility_alerts(region, reg_ids)
 
     # heads-up when no gas has a known compression ratio (compressed path unavailable)
     if not any(g.units_per_compressed for g in gas_infos):

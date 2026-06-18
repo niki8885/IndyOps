@@ -1,3 +1,4 @@
+import PropTypes from 'prop-types'
 import * as factoryModule from 'react-plotly.js/factory'
 import * as plotlyModule from 'plotly.js-dist-min'
 
@@ -5,8 +6,8 @@ import * as plotlyModule from 'plotly.js-dist-min'
 // modules under `.default` (or double-wrap) depending on the build.
 function asFn(m) {
   if (typeof m === 'function') return m
-  if (m && typeof m.default === 'function') return m.default
-  if (m && m.default && typeof m.default.default === 'function') return m.default.default
+  if (typeof m?.default === 'function') return m.default
+  if (typeof m?.default?.default === 'function') return m.default.default
   return null
 }
 let Plot = null
@@ -96,4 +97,10 @@ export default function ChainGraph({ plan, forceBuy, onSkip }) {
       onClick={handleClick}
     />
   )
+}
+
+ChainGraph.propTypes = {
+  plan: PropTypes.object,
+  forceBuy: PropTypes.oneOfType([PropTypes.instanceOf(Set), PropTypes.array]),
+  onSkip: PropTypes.func,
 }

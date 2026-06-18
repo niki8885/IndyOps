@@ -1,4 +1,5 @@
 """FIFO consumption planner — concrete cases (invariants are in test_properties)."""
+import pytest
 from app.services.costing import plan_fifo
 
 
@@ -13,7 +14,7 @@ def test_partial_second_lot():
 def test_shortfall_consumes_all_available():
     plan = plan_fifo([(5, 2.0)], 100)
     assert plan.consumed == 5
-    assert plan.cost == 10.0
+    assert plan.cost == pytest.approx(10.0)
 
 
 def test_none_price_counts_as_zero():

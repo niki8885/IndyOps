@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.adapters import market
+from app.api.responses import ERR_404
 from app.core.database import get_db, UserDB
 from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
@@ -37,7 +38,7 @@ def _get_eve_db():
         db.close()
 
 
-@router.get("/type/{type_id}")
+@router.get("/type/{type_id}", responses={**ERR_404})
 async def type_header(
         type_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -131,7 +132,7 @@ async def history(
     return payload
 
 
-@router.get("/correlation")
+@router.get("/correlation", responses={**ERR_404})
 async def correlation(
         region_id: int = Query(...),
         type_id: int = Query(...),

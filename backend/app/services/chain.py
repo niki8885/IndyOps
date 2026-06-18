@@ -171,7 +171,7 @@ def solve_chain(req: ChainRequest) -> ChainPlan:
     )
 
 
-def _F(x):
+def _frac(x):
     """float → exact *decimal* Fraction (matches the Haskell decimal-JSON parse)."""
     return Fraction(str(x)) if x is not None else None
 
@@ -183,14 +183,14 @@ def _normalize(req: ChainRequest) -> ChainRequest:
     for tid, n in req.nodes.items():
         recipes = tuple(
             replace(r, locations=tuple(
-                replace(l, me_mult=_F(l.me_mult), te_mult=_F(l.te_mult),
-                        sci=_F(l.sci), tax=_F(l.tax), scc=_F(l.scc),
-                        struct_discount=_F(l.struct_discount),
-                        eiv_unit=_F(l.eiv_unit), bpc_unit=_F(l.bpc_unit))
+                replace(l, me_mult=_frac(l.me_mult), te_mult=_frac(l.te_mult),
+                        sci=_frac(l.sci), tax=_frac(l.tax), scc=_frac(l.scc),
+                        struct_discount=_frac(l.struct_discount),
+                        eiv_unit=_frac(l.eiv_unit), bpc_unit=_frac(l.bpc_unit))
                 for l in r.locations))
             for r in n.recipes
         )
-        nodes[tid] = replace(n, buy_price=_F(n.buy_price), recipes=recipes)
+        nodes[tid] = replace(n, buy_price=_frac(n.buy_price), recipes=recipes)
     return ChainRequest(req.target_type_id, req.target_qty, nodes)
 
 
@@ -406,7 +406,8 @@ def _decide(req: ChainRequest) -> dict[int, NodeDecision]:
         if unit_make is not None:
             choices.append(("make", unit_make))
 
-        act = node.recipes[best[1] if best else 0].activity if node.recipes else None
+        best_idx = best[1] if best else 0
+        act = node.recipes[best_idx].activity if node.recipes else None
         if not choices:
             dec = NodeDecision(tid, node.name, "unobtainable", None,
                                unit_buy=unit_buy, unit_make=unit_make, activity=act)

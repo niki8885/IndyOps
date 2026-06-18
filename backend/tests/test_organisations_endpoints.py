@@ -13,6 +13,7 @@ from app.core.database import Base, UserDB
 from app.core.schemas import OrganisationType
 
 USER = SimpleNamespace(id=1)
+SEED_HASH = "x"  # placeholder password hash for seeded test users (not a real credential)
 
 
 def run(coro):
@@ -24,7 +25,7 @@ def db():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
-    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password="x"))
+    session.add(UserDB(id=1, username="u", email="u@example.com", hashed_password=SEED_HASH))
     session.commit()
     yield session
     session.close(); engine.dispose()

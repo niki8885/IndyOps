@@ -1,4 +1,5 @@
 """Distribution & correlation estimation for the Monte-Carlo profit simulator."""
+import pytest
 import math
 import numpy as np
 from app.services import market_model as mm
@@ -13,14 +14,14 @@ def test_lognormal_params_basic():
 def test_lognormal_params_degenerate():
     assert mm.lognormal_params([]) == (0.0, 0.0)
     mu, sigma = mm.lognormal_params([50.0])     # single point → no spread
-    assert sigma == 0.0 and math.isclose(mu, math.log(50.0))
+    assert sigma == pytest.approx(0.0) and math.isclose(mu, math.log(50.0))
 
 
 def test_quantile_grid_shape_and_monotonic():
     grid = mm.quantile_grid([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     assert len(grid) == mm.QGRID_POINTS
     assert grid == sorted(grid)            # quantile function is non-decreasing
-    assert grid[0] == 1.0 and grid[-1] == 10.0
+    assert grid[0] == pytest.approx(1.0) and grid[-1] == pytest.approx(10.0)
 
 
 def test_quantile_grid_empty_and_flat():
@@ -31,7 +32,7 @@ def test_quantile_grid_empty_and_flat():
 def test_relative_spread():
     s = mm.relative_spread([100, 100], [110, 110])    # mid 105, spread 10 → ~0.0952
     assert math.isclose(s, 10 / 105, rel_tol=1e-9)
-    assert mm.relative_spread([], []) == 0.0
+    assert mm.relative_spread([], []) == pytest.approx(0.0)
 
 
 def test_correlation_matrix_identity_on_thin_data():
@@ -96,14 +97,14 @@ def test_fit_ar1_recovers_mean_reversion():
     for _ in range(2000):
         x.append(c + rho * x[-1] + rng.normal(0, 0.05))
     phi, step_sigma, theta, x0 = mm.fit_ar1(list(np.exp(x)))
-    assert abs((1.0 - phi) - rho) < 0.05          # phi = 1 - rho
+    assert abs((1.0 - phi) - rho) < 0.05          # phi → 1 - rho
     assert abs(theta - c / (1 - rho)) < 0.2        # long-run mean c/(1-rho)
     assert step_sigma > 0 and math.isclose(x0, x[-1], abs_tol=1e-9)
 
 
 def test_fit_ar1_short_series_is_random_walk():
     phi, step_sigma, theta, x0 = mm.fit_ar1([100.0, 101.0])
-    assert phi == 0.0                              # no reversion when too short
+    assert phi == pytest.approx(0.0)                              # no reversion when too short
 
 
 def test_garch_omega_variance_targets():

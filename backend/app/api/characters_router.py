@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.adapters import esi, market
+from app.api.responses import ERR_400, ERR_404, ERR_500
 from app.core import config
 from app.core.database import (
     get_db, SessionLocal, UserDB,
@@ -148,7 +149,7 @@ def _owned_char(db: Session, char_id: int, user: UserDB) -> LinkedCharacter:
 # SSO
 # ---------------------------------------------------------------------------
 
-@router.get("/sso/login", summary="Get the EVE SSO login URL")
+@router.get("/sso/login", summary="Get the EVE SSO login URL", responses={**ERR_500})
 async def sso_login(current_user: UserDB = Depends(get_current_user)):
     if not config.ESI_CLIENT_ID or not config.ESI_CALLBACK_URL:
         raise HTTPException(500, "ESI is not configured on the server (CLIENT_ID/CALLBACK_URL)")
@@ -219,7 +220,7 @@ def _char_out(c: LinkedCharacter) -> dict:
         "is_active": c.is_active,
         "status": c.status,
         "online": c.online,
-        "scopes": (c.scopes or "").split() if c.scopes else [],
+        "scopes": c.scopes.split() if c.scopes else [],
         "wallet_balance": c.wallet_balance,
         "assets_value": c.assets_value,
         "total_sp": c.total_sp,
@@ -246,7 +247,7 @@ class CharacterPatch(BaseModel):
     is_active: Optional[bool] = None
 
 
-@router.patch("/{char_id}", summary="Toggle a character's activation status")
+@router.patch("/{char_id}", summary="Toggle a character's activation status", responses={**ERR_404})
 async def patch_character(
     char_id: int,
     patch: CharacterPatch,
@@ -261,7 +262,7 @@ async def patch_character(
     return _char_out(char)
 
 
-@router.delete("/{char_id}", status_code=204, summary="Unlink a character (and its synced data)")
+@router.delete("/{char_id}", status_code=204, summary="Unlink a character (and its synced data)", responses={**ERR_404})
 async def delete_character(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -278,7 +279,7 @@ async def delete_character(
     return None
 
 
-@router.post("/{char_id}/sync", summary="Trigger an ESI sync for one character now")
+@router.post("/{char_id}/sync", summary="Trigger an ESI sync for one character now", responses={**ERR_404})
 async def sync_now(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -293,7 +294,7 @@ async def sync_now(
 # Read endpoints (synced data, name-enriched)
 # ---------------------------------------------------------------------------
 
-@router.get("/{char_id}/wallet", summary="Wallet balance + transactions")
+@router.get("/{char_id}/wallet", summary="Wallet balance + transactions", responses={**ERR_404})
 async def get_wallet(
     char_id: int,
     limit: int = Query(200, le=2500),
@@ -325,7 +326,7 @@ async def get_wallet(
     }
 
 
-@router.get("/{char_id}/skills", summary="Trained skills")
+@router.get("/{char_id}/skills", summary="Trained skills", responses={**ERR_404})
 async def get_skills(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -347,7 +348,7 @@ async def get_skills(
     return {"total_sp": char.total_sp, "skills": rows}
 
 
-@router.get("/{char_id}/assets", summary="Assets (inventory)")
+@router.get("/{char_id}/assets", summary="Assets (inventory)", responses={**ERR_404})
 async def get_assets(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -387,7 +388,7 @@ async def get_assets(
     ]
 
 
-@router.get("/{char_id}/contracts", summary="Contracts")
+@router.get("/{char_id}/contracts", summary="Contracts", responses={**ERR_404})
 async def get_contracts(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -412,7 +413,7 @@ async def get_contracts(
     ]
 
 
-@router.get("/{char_id}/industry-jobs", summary="Industry jobs (production chains)")
+@router.get("/{char_id}/industry-jobs", summary="Industry jobs (production chains)", responses={**ERR_404})
 async def get_industry_jobs(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -465,7 +466,7 @@ async def get_industry_jobs(
     }
 
 
-@router.get("/{char_id}/overview", summary="Character page overview (location, ship, wealth, implants)")
+@router.get("/{char_id}/overview", summary="Character page overview (location, ship, wealth, implants)", responses={**ERR_404})
 async def get_overview(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -518,7 +519,7 @@ async def get_overview(
     }
 
 
-@router.get("/{char_id}/standings", summary="NPC standings (faction / corp / agent)")
+@router.get("/{char_id}/standings", summary="NPC standings (faction / corp / agent)", responses={**ERR_404})
 async def get_standings(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -546,7 +547,7 @@ async def get_standings(
     ]
 
 
-@router.get("/{char_id}/wealth-history", summary="Wealth snapshots (liquid / assets / total) over time")
+@router.get("/{char_id}/wealth-history", summary="Wealth snapshots (liquid / assets / total) over time", responses={**ERR_404})
 async def get_wealth_history(
     char_id: int,
     limit: int = Query(365, le=2000),
@@ -751,7 +752,7 @@ def _settings_out(s) -> dict:
     }
 
 
-@router.get("/{char_id}/settings", summary="Journal settings (tax %, price basis, refine yield)")
+@router.get("/{char_id}/settings", summary="Journal settings (tax %, price basis, refine yield)", responses={**ERR_404})
 async def get_settings(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -761,7 +762,7 @@ async def get_settings(
     return _settings_out(_settings_for(db, char.character_id))
 
 
-@router.put("/{char_id}/settings", summary="Update journal settings")
+@router.put("/{char_id}/settings", summary="Update journal settings", responses={**ERR_400, **ERR_404})
 async def put_settings(
     char_id: int,
     body: SettingsIn,
@@ -782,7 +783,7 @@ async def put_settings(
     return _settings_out(s)
 
 
-@router.get("/{char_id}/mining-journal", summary="Mining ledger → refine → Jita profit, by category/period")
+@router.get("/{char_id}/mining-journal", summary="Mining ledger → refine → Jita profit, by category/period", responses={**ERR_404})
 async def get_mining_journal(
     char_id: int,
     period: str = Query("month", pattern="^(day|month|quarter|year)$"),
@@ -811,7 +812,7 @@ async def get_mining_journal(
     return payload
 
 
-@router.post("/{char_id}/mining-journal/writeoff", summary="Write off (record) tax for a period")
+@router.post("/{char_id}/mining-journal/writeoff", summary="Write off (record) tax for a period", responses={**ERR_400, **ERR_404})
 async def writeoff_tax(
     char_id: int,
     body: WriteoffIn,
@@ -851,7 +852,7 @@ async def writeoff_tax(
             "tax_amount": rec.tax_amount, "net_value": rec.net_value, "created_at": rec.created_at}
 
 
-@router.delete("/{char_id}/mining-journal/writeoff", status_code=204, summary="Undo a tax write-off")
+@router.delete("/{char_id}/mining-journal/writeoff", status_code=204, summary="Undo a tax write-off", responses={**ERR_404})
 async def undo_writeoff(
     char_id: int,
     period: str = Query(...),
@@ -877,7 +878,7 @@ async def undo_writeoff(
 # Deep integration — import ESI data into the user's own tables
 # ---------------------------------------------------------------------------
 
-@router.post("/{char_id}/import/assets", summary="Import assets into IndyOps inventory")
+@router.post("/{char_id}/import/assets", summary="Import assets into IndyOps inventory", responses={**ERR_400, **ERR_404})
 async def import_assets(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -918,7 +919,7 @@ async def import_assets(
     return {"imported": imported, "source_stacks": len(assets)}
 
 
-@router.post("/{char_id}/import/industry-jobs", summary="Import industry jobs into production")
+@router.post("/{char_id}/import/industry-jobs", summary="Import industry jobs into production", responses={**ERR_400, **ERR_404})
 async def import_industry_jobs(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),

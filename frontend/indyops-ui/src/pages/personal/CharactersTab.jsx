@@ -64,7 +64,9 @@ function CharacterCard({ c, onToggle, onSync, onUnlink, onOpen }) {
   const expired = c.status === 'token_expired'
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div onClick={onOpen} style={{ display: 'flex', gap: 14, cursor: 'pointer' }} title="Open character page">
+      <div onClick={onOpen} role="button" tabIndex={0}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(e) } }}
+        style={{ display: 'flex', gap: 14, cursor: 'pointer' }} title="Open character page">
         <img
           src={c.portrait} alt={c.character_name} width={72} height={72}
           style={{ borderRadius: 8, border: '1px solid var(--border)', flexShrink: 0 }}

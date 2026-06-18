@@ -8,6 +8,7 @@ from app.adapters import esi
 from app.core.database import get_db, Organisation, OrganisationMember, Employee, UserDB
 from app.core.schemas import EmployeeType, OrganisationType
 from app.core.security import get_current_user
+from app.api.responses import ERR_400, ERR_403, ERR_404
 
 
 def corp_logo_url(corporation_id: Optional[int], size: int = 64) -> Optional[str]:
@@ -154,7 +155,7 @@ def _org_out(db: Session, org: Organisation, user_id: int) -> OrganisationOut:
 # Organisation CRUD
 # ---------------------------------------------------------------------------
 
-@router.post("", response_model=OrganisationOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=OrganisationOut, status_code=status.HTTP_201_CREATED, responses={**ERR_400})
 async def create_organisation(
         body: OrganisationCreate,
         current_user: UserDB = Depends(get_current_user),
@@ -177,7 +178,7 @@ async def create_organisation(
     return _org_out(db, org, current_user.id)
 
 
-@router.patch("/{org_id}", response_model=OrganisationOut)
+@router.patch("/{org_id}", response_model=OrganisationOut, responses={**ERR_400, **ERR_403, **ERR_404})
 async def update_organisation(
         org_id: int,
         body: OrganisationUpdate,
@@ -239,7 +240,7 @@ async def list_public_organisations(
     return [_org_out(db, o, current_user.id) for o in orgs]
 
 
-@router.get("/lookup/corporation/{corporation_id}")
+@router.get("/lookup/corporation/{corporation_id}", responses={**ERR_404})
 async def lookup_corporation(
         corporation_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -259,7 +260,7 @@ async def lookup_corporation(
     }
 
 
-@router.get("/{org_id}", response_model=OrganisationOut)
+@router.get("/{org_id}", response_model=OrganisationOut, responses={**ERR_403, **ERR_404})
 async def get_organisation(
         org_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -272,7 +273,7 @@ async def get_organisation(
     return _org_out(db, org, current_user.id)
 
 
-@router.delete("/{org_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{org_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_403, **ERR_404})
 async def delete_organisation(
         org_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -288,7 +289,7 @@ async def delete_organisation(
 # Membership (user ↔ org)
 # ---------------------------------------------------------------------------
 
-@router.post("/{org_id}/join", response_model=OrganisationOut)
+@router.post("/{org_id}/join", response_model=OrganisationOut, responses={**ERR_400, **ERR_403, **ERR_404})
 async def join_organisation(
         org_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -311,7 +312,7 @@ async def join_organisation(
     return _org_out(db, org, current_user.id)
 
 
-@router.delete("/{org_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{org_id}/leave", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_400, **ERR_404})
 async def leave_organisation(
         org_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -330,7 +331,7 @@ async def leave_organisation(
     db.commit()
 
 
-@router.get("/{org_id}/members", response_model=List[MemberOut])
+@router.get("/{org_id}/members", response_model=List[MemberOut], responses={**ERR_403, **ERR_404})
 async def list_members(
         org_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -352,7 +353,7 @@ async def list_members(
     ]
 
 
-@router.patch("/{org_id}/members/{user_id}", response_model=MemberOut)
+@router.patch("/{org_id}/members/{user_id}", response_model=MemberOut, responses={**ERR_403, **ERR_404})
 async def update_member_role(
         org_id: int,
         user_id: int,
@@ -374,7 +375,7 @@ async def update_member_role(
     return MemberOut(user_id=m.user_id, username=m.member_user.username, role=m.role, joined_at=m.joined_at)
 
 
-@router.delete("/{org_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{org_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_403, **ERR_404})
 async def kick_member(
         org_id: int,
         user_id: int,
@@ -397,7 +398,7 @@ async def kick_member(
 # Employees (EVE characters — owner-only)
 # ---------------------------------------------------------------------------
 
-@router.post("/{org_id}/employees", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED)
+@router.post("/{org_id}/employees", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED, responses={**ERR_400, **ERR_403, **ERR_404})
 async def add_employee_to_org(
         org_id: int,
         body: EmployeeCreate,
@@ -423,7 +424,7 @@ async def add_employee_to_org(
     return emp
 
 
-@router.get("/{org_id}/employees", response_model=List[EmployeeOut])
+@router.get("/{org_id}/employees", response_model=List[EmployeeOut], responses={**ERR_403, **ERR_404})
 async def list_org_employees(
         org_id: int,
         current_user: UserDB = Depends(get_current_user),
@@ -434,7 +435,7 @@ async def list_org_employees(
     return db.query(Employee).filter(Employee.organisation_id == org_id).all()
 
 
-@router.patch("/{org_id}/employees/{emp_id}", response_model=EmployeeOut)
+@router.patch("/{org_id}/employees/{emp_id}", response_model=EmployeeOut, responses={**ERR_400, **ERR_403, **ERR_404})
 async def update_employee(
         org_id: int,
         emp_id: int,
@@ -470,7 +471,7 @@ async def update_employee(
     return emp
 
 
-@router.delete("/{org_id}/employees/{emp_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{org_id}/employees/{emp_id}", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_403, **ERR_404})
 async def remove_employee(
         org_id: int,
         emp_id: int,
@@ -504,7 +505,7 @@ async def list_my_characters(
     ).all()
 
 
-@router.post("/me/characters", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED, tags=["characters"])
+@router.post("/me/characters", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED, tags=["characters"], responses={**ERR_400})
 async def add_character(
         body: EmployeeCreate,
         current_user: UserDB = Depends(get_current_user),
