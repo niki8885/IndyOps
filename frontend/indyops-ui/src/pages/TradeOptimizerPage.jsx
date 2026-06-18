@@ -76,7 +76,6 @@ export default function TradeOptimizerPage() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 4 }}>Trade · Optimizer</h2>
       <div style={{ color: 'var(--text)', fontSize: 12, marginBottom: 14 }}>
         Precomputed trade candidates — filter and rank instantly, no live API calls.
       </div>

@@ -1,0 +1,57 @@
+# Codecov configuration.
+#
+# Coverage is ADVISORY here, not a merge gate: large parts of the codebase are
+# I/O orchestration (FastAPI routers, ESI/market adapters, worker tasks) that the
+# project verifies via integration rather than unit tests — the pure logic lives
+# in services/ and is well covered. So the project/patch statuses are
+# informational (they report, never fail a PR), and non-measurable files are
+# ignored so the percentage reflects real, testable code.
+
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+        flags:
+          - backend
+          - frontend
+    patch:
+      default:
+        informational: true
+
+flags:
+  backend:
+    paths:
+      - backend/app/
+    carryforward: true
+  frontend:
+    paths:
+      - frontend/indyops-ui/src/
+    carryforward: true
+
+# Paths that should never count toward coverage (generated, vendored, config,
+# entrypoints, schema migrations, tests/build artefacts).
+ignore:
+  - "**/__init__.py"
+  - "backend/app/main.py"
+  - "backend/app/worker.py"
+  - "backend/app/migrate.py"
+  - "backend/app/jobs.py"
+  - "backend/app/tasks/update_sde.py"
+  - "backend/migrations/**"
+  - "backend/tests/**"
+  - "backend/.venv/**"
+  - "frontend/indyops-ui/src/main.jsx"
+  - "frontend/indyops-ui/src/lib/plot.jsx"   # browser-only Plotly wrapper
+  - "frontend/indyops-ui/src/**/*.test.{js,jsx}"
+  - "frontend/indyops-ui/src/test/**"
+  - "frontend/indyops-ui/dist/**"
+  - "**/node_modules/**"
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: false
+
+# Don't fail the upload step when only one flag's report is present in a job.
+codecov:
+  require_ci_to_pass: true

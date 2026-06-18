@@ -13,14 +13,16 @@ from app.tasks import update_esi
 
 
 def test_crypto_round_trip():
-    token = "abc123.refresh-token_value-with-symbols/+="
-    enc = crypto.encrypt(token)
-    assert enc != token                 # actually encrypted
-    assert crypto.decrypt(enc) == token
+    # arbitrary plaintext (not a real credential) — exercises Fernet on the kind of
+    # base64/symbol content an ESI token contains, so encrypt/decrypt must round-trip it
+    plaintext = "round-trip sample with /+= and . symbols"
+    enc = crypto.encrypt(plaintext)
+    assert enc != plaintext             # actually encrypted
+    assert crypto.decrypt(enc) == plaintext
 
 
 def test_crypto_decrypt_garbage_is_none():
-    assert crypto.decrypt("not-a-valid-token") is None
+    assert crypto.decrypt("not-valid-ciphertext") is None
     assert crypto.decrypt("") is None
 
 

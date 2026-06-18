@@ -12,11 +12,21 @@ omit = [
     "app/main.py",
     "app/worker.py",
     "app/migrate.py",
+    "app/jobs.py",
     "app/tasks/update_sde.py",
+    "app/**/__init__.py",   # empty package markers — not code
 ]
 
 [tool.coverage.report]
 show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "\\.\\.\\.",
+]
 
 [tool.ruff]
 line-length = 120

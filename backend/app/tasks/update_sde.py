@@ -1,6 +1,6 @@
 import bz2
 import csv
-import datetime
+from app.core.timeutil import utcnow
 import io
 import logging
 import re
@@ -730,7 +730,7 @@ def run_sde_update(force: bool = False) -> dict:
             db.add(meta)
         meta.build_id = build_id
         meta.build_date = build_date
-        meta.updated_at = datetime.datetime.utcnow()
+        meta.updated_at = utcnow()
         db.commit()
 
     except Exception as exc:

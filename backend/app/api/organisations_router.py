@@ -1,11 +1,20 @@
 import datetime
+from app.core.timeutil import utcnow
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from app.adapters import esi
 from app.core.database import get_db, Organisation, OrganisationMember, Employee, UserDB
 from app.core.schemas import EmployeeType, OrganisationType
 from app.core.security import get_current_user
+
+
+def corp_logo_url(corporation_id: Optional[int], size: int = 64) -> Optional[str]:
+    """EVE image-server logo for a corporation id (None if no id)."""
+    if not corporation_id:
+        return None
+    return f"https://images.evetech.net/corporations/{corporation_id}/logo?size={size}"
 
 router = APIRouter()
 
@@ -40,6 +49,7 @@ class OrganisationOut(BaseModel):
     org_type: Optional[str] = None
     corporation_id: Optional[int] = None
     corporation_name: Optional[str] = None
+    corporation_logo: Optional[str] = None   # EVE image-server logo (corp orgs)
     is_public: bool = False
     created_at: datetime.datetime
     my_role: Optional[str] = None      # role of the current user in this org
@@ -78,8 +88,8 @@ class EmployeeOut(BaseModel):
     id: int
     name: str
     user_id: int
-    character_id: Optional[int]
-    organisation_id: Optional[int]
+    character_id: Optional[int] = None
+    organisation_id: Optional[int] = None
     status: EmployeeType
     added_at: datetime.datetime
 
@@ -134,6 +144,7 @@ def _org_out(db: Session, org: Organisation, user_id: int) -> OrganisationOut:
         id=org.id, name=org.name, owner_id=org.owner_id,
         org_type=org.org_type, corporation_id=org.corporation_id,
         corporation_name=org.corporation_name,
+        corporation_logo=corp_logo_url(org.corporation_id) if org.org_type == OrganisationType.CORPORATION.value else None,
         is_public=org.is_public, created_at=org.created_at,
         my_role=role, member_count=count,
     )
@@ -226,6 +237,26 @@ async def list_public_organisations(
     """All public orgs — includes is_member flag via my_role (None = not a member)."""
     orgs = db.query(Organisation).filter(Organisation.is_public == True).order_by(Organisation.name).all()  # noqa: E712
     return [_org_out(db, o, current_user.id) for o in orgs]
+
+
+@router.get("/lookup/corporation/{corporation_id}")
+async def lookup_corporation(
+        corporation_id: int,
+        current_user: UserDB = Depends(get_current_user),
+):
+    """Resolve a corporation id to its public name/ticker/logo (EVE ESI)."""
+    try:
+        info = esi.fetch_corporation(corporation_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail=f"Corporation {corporation_id} not found ({exc})")
+    return {
+        "corporation_id": corporation_id,
+        "name": info.get("name"),
+        "ticker": info.get("ticker"),
+        "alliance_id": info.get("alliance_id"),
+        "member_count": info.get("member_count"),
+        "logo": corp_logo_url(corporation_id),
+    }
 
 
 @router.get("/{org_id}", response_model=OrganisationOut)
@@ -433,7 +464,7 @@ async def update_employee(
     if body.status is not None:
         emp.status = body.status
 
-    emp.modified_at = datetime.datetime.utcnow()
+    emp.modified_at = utcnow()
     db.commit()
     db.refresh(emp)
     return emp
@@ -454,7 +485,7 @@ async def remove_employee(
         raise HTTPException(status_code=403, detail="This character does not belong to you")
 
     emp.status = EmployeeType.INACTIVE
-    emp.deleted_at = datetime.datetime.utcnow()
+    emp.deleted_at = utcnow()
     db.commit()
 
 

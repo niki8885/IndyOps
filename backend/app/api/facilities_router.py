@@ -1,4 +1,5 @@
 import datetime
+from app.core.timeutil import utcnow
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -46,26 +47,23 @@ class FacilityUpdate(BaseModel):
 
 
 class RigOut(BaseModel):
-    type_id: Optional[int]
-    name: Optional[str]
-
-
+    type_id: Optional[int] = None
+    name: Optional[str] = None
 class FacilityOut(BaseModel):
     id: int
     user_id: int
-    organisation_id: Optional[int]
+    organisation_id: Optional[int] = None
     name: str
     facility_type: FacilityType
-    tax: Optional[float]
-    cost_bonus: Optional[float]
-    system_name: Optional[str]
-    system_cost_index: Optional[float]
+    tax: Optional[float] = None
+    cost_bonus: Optional[float] = None
+    system_name: Optional[str] = None
+    system_cost_index: Optional[float] = None
     rig1: RigOut
     rig2: RigOut
     rig3: RigOut
     created_at: datetime.datetime
-    updated_at: Optional[datetime.datetime]
-
+    updated_at: Optional[datetime.datetime] = None
     class Config:
         from_attributes = True
 
@@ -174,7 +172,7 @@ async def update_facility(
         f.rig3_type_id = body.rig3.type_id
         f.rig3_name = body.rig3.name
 
-    f.updated_at = datetime.datetime.utcnow()
+    f.updated_at = utcnow()
     db.commit()
     db.refresh(f)
     return FacilityOut.from_orm_model(f)

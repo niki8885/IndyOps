@@ -1,4 +1,5 @@
 import datetime
+from app.core.timeutil import utcnow
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -82,38 +83,37 @@ class StatusUpdate(BaseModel):
 class DeliveryOut(BaseModel):
     id: int
     user_id: int
-    organisation_id: Optional[int]
-    project_id: Optional[int]
-    source_place: Optional[str]
-    source_system: Optional[str]
-    target_system: Optional[str]
-    target_place: Optional[str]
+    organisation_id: Optional[int] = None
+    project_id: Optional[int] = None
+    source_place: Optional[str] = None
+    source_system: Optional[str] = None
+    target_system: Optional[str] = None
+    target_place: Optional[str] = None
     mode: str
-    sender_character: Optional[str]
-    jumps: Optional[int]
-    isk_per_jump_m3: Optional[float]
-    jf_ship: Optional[str]
-    isotope_name: Optional[str]
-    isotope_type_id: Optional[int]
-    light_years: Optional[float]
-    isotopes_per_ly: Optional[float]
-    trips: Optional[int]
+    sender_character: Optional[str] = None
+    jumps: Optional[int] = None
+    isk_per_jump_m3: Optional[float] = None
+    jf_ship: Optional[str] = None
+    isotope_name: Optional[str] = None
+    isotope_type_id: Optional[int] = None
+    light_years: Optional[float] = None
+    isotopes_per_ly: Optional[float] = None
+    trips: Optional[int] = None
     round_trip: bool
-    isotope_price: Optional[float]
-    total_isotopes: Optional[int]
-    total_volume: Optional[float]
-    total_value: Optional[float]
-    est_cost: Optional[float]
+    isotope_price: Optional[float] = None
+    total_isotopes: Optional[int] = None
+    total_volume: Optional[float] = None
+    total_value: Optional[float] = None
+    est_cost: Optional[float] = None
     cost: float
     code: str
-    comment: Optional[str]
+    comment: Optional[str] = None
     status: str
-    items_snapshot: Optional[list]
+    items_snapshot: Optional[list] = None
     tracked: bool = False                       # a matching ESI contract exists
     contract_status: Optional[str] = None       # representative ESI contract status
     created_at: datetime.datetime
-    completed_at: Optional[datetime.datetime]
-
+    completed_at: Optional[datetime.datetime] = None
     class Config:
         from_attributes = True
 
@@ -408,7 +408,7 @@ async def create_delivery(
 
     db.add(DeliveryStatusEvent(
         delivery_id=d.id, from_status=None, status="pending",
-        at=d.created_at or datetime.datetime.utcnow(),
+        at=d.created_at or utcnow(),
         note=f"created · {d.source_place or d.source_system or '?'} → {target_place or '?'}"))
 
     db.commit()
@@ -452,7 +452,7 @@ async def sync_contracts(
     rows = db.query(Delivery).filter(
         Delivery.user_id == current_user.id).order_by(Delivery.created_at.desc()).all()
     matches = _match_contracts(db, current_user.id, [d.code for d in rows])
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     for d in rows:
         if d.status == "pending":
             found = matches.get(d.code, [])
@@ -518,7 +518,7 @@ async def update_status(
     if body.status not in ("completed", "failed"):
         raise HTTPException(status_code=400, detail="status must be 'completed' or 'failed'")
 
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     if body.status == "completed":
         _apply_complete(db, d, now)
     else:

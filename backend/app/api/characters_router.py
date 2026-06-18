@@ -6,17 +6,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from jose import jwt, JWTError
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from app.adapters import esi
+from app.adapters import esi, market
 from app.core import config
 from app.core.database import (
     get_db, SessionLocal, UserDB,
     LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob,
-    EsiStanding, InventoryItem, ProductionJob,
+    EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger, CharacterWealthSnapshot,
+    CharacterSettings, MiningTaxWriteoff, InventoryItem, ProductionJob,
 )
-from app.core.database_eve import EveSessionLocal, EveType, EveStation
+from app.core.database_eve import EveSessionLocal, EveType, EveStation, EveSolarSystem, EveTypeMaterial
 from app.core.schemas import ProductionStatus
 from app.core.security import get_current_user
+from app.core.timeutil import utcnow
+from app.repositories import eve as eve_repo
+from app.services import asset_location, skills, mining_journal
+from app.services.refining import RefineSetup, compute_yield, reprocess
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -57,6 +63,29 @@ def _station_names(eve_db: Session, location_ids) -> dict:
     if not ids:
         return {}
     rows = eve_db.query(EveStation.station_id, EveStation.station_name).filter(EveStation.station_id.in_(ids)).all()
+    return {sid: name for sid, name in rows}
+
+
+def _system_names(eve_db: Session, system_ids) -> dict:
+    ids = {i for i in system_ids if i}
+    if not ids:
+        return {}
+    rows = (
+        eve_db.query(EveSolarSystem.solar_system_id, EveSolarSystem.solar_system_name)
+        .filter(EveSolarSystem.solar_system_id.in_(ids)).all()
+    )
+    return {sid: name for sid, name in rows}
+
+
+def _structure_names(db: Session, structure_ids) -> dict:
+    """Resolved Upwell-structure names from the shared ESI cache (sync populates it)."""
+    ids = {i for i in structure_ids if i}
+    if not ids:
+        return {}
+    rows = (
+        db.query(EsiStructure.structure_id, EsiStructure.name)
+        .filter(EsiStructure.structure_id.in_(ids), EsiStructure.name.isnot(None)).all()
+    )
     return {sid: name for sid, name in rows}
 
 
@@ -146,7 +175,7 @@ async def sso_callback(code: str = Query(...), state: str = Query(...), db: Sess
     if char and char.user_id != user_id:
         return _frontend_redirect(error="owned_by_other")
 
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     if not char:
         char = LinkedCharacter(user_id=user_id, character_id=info["character_id"], added_at=now)
         db.add(char)
@@ -167,18 +196,32 @@ async def sso_callback(code: str = Query(...), state: str = Query(...), db: Sess
 # Character management
 # ---------------------------------------------------------------------------
 
+def _corp_logo(corp_id):
+    return f"https://images.evetech.net/corporations/{corp_id}/logo?size=64" if corp_id else None
+
+
+def _alliance_logo(alliance_id):
+    return f"https://images.evetech.net/alliances/{alliance_id}/logo?size=64" if alliance_id else None
+
+
 def _char_out(c: LinkedCharacter) -> dict:
     return {
         "id": c.id,
         "character_id": c.character_id,
         "character_name": c.character_name,
         "corporation_id": c.corporation_id,
+        "corporation_name": c.corporation_name,
+        "corporation_logo": _corp_logo(c.corporation_id),
         "alliance_id": c.alliance_id,
+        "alliance_name": c.alliance_name,
+        "alliance_logo": _alliance_logo(c.alliance_id),
         "portrait": f"https://images.evetech.net/characters/{c.character_id}/portrait?size=128",
         "is_active": c.is_active,
         "status": c.status,
+        "online": c.online,
         "scopes": (c.scopes or "").split() if c.scopes else [],
         "wallet_balance": c.wallet_balance,
+        "assets_value": c.assets_value,
         "total_sp": c.total_sp,
         "last_sync_at": c.last_sync_at,
         "added_at": c.added_at,
@@ -213,7 +256,7 @@ async def patch_character(
     char = _owned_char(db, char_id, current_user)
     if patch.is_active is not None:
         char.is_active = patch.is_active
-        char.updated_at = datetime.datetime.utcnow()
+        char.updated_at = utcnow()
         db.commit()
     return _char_out(char)
 
@@ -226,7 +269,9 @@ async def delete_character(
 ):
     char = _owned_char(db, char_id, current_user)
     cid = char.character_id
-    for model in (EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob, EsiStanding):
+    for model in (EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob,
+                  EsiStanding, EsiImplant, EsiMiningLedger, CharacterWealthSnapshot,
+                  CharacterSettings, MiningTaxWriteoff):
         db.query(model).filter(model.character_id == cid).delete(synchronize_session=False)
     db.delete(char)
     db.commit()
@@ -312,13 +357,30 @@ async def get_assets(
     char = _owned_char(db, char_id, current_user)
     assets = db.query(EsiAsset).filter(EsiAsset.character_id == char.character_id).all()
     names = _type_names(eve_db, [a.type_id for a in assets])
-    stations = _station_names(eve_db, [a.location_id for a in assets])
+
+    # Walk each asset's location chain to its real terminus (a nested module
+    # resolves to the station/structure that holds its ship), then name it.
+    roots, by_kind = asset_location.terminus_ids(assets)
+    station_names = _station_names(eve_db, by_kind["station"])
+    system_names = _system_names(eve_db, by_kind["system"])
+    structure_names = _structure_names(db, by_kind["structure"])
+
+    def _location_name(a):
+        kind, rid = roots.get(a.item_id, (None, None))
+        if kind == "station":
+            return station_names.get(rid) or f"Station #{rid}"
+        if kind == "system":
+            return system_names.get(rid) or f"System #{rid}"
+        if kind == "structure":
+            return structure_names.get(rid) or f"Structure #{rid}"
+        return f"#{a.location_id}" if a.location_id else None
+
     return [
         {
             "item_id": a.item_id, "type_id": a.type_id,
             "type_name": names.get(a.type_id, {}).get("name"),
             "quantity": a.quantity, "location_id": a.location_id,
-            "location_name": stations.get(a.location_id),
+            "location_name": _location_name(a),
             "location_flag": a.location_flag,
         }
         for a in assets
@@ -365,19 +427,450 @@ async def get_industry_jobs(
         .all()
     )
     names = _type_names(eve_db, [j.product_type_id for j in jobs] + [j.blueprint_type_id for j in jobs])
+
+    # resolve the facility each job runs in (NPC station from SDE, else Upwell cache)
+    loc_ids = [(j.facility_id or j.station_id) for j in jobs]
+    station_loc = _station_names(eve_db, loc_ids)
+    structure_loc = _structure_names(db, loc_ids)
+
+    def _job_location(j):
+        lid = j.facility_id or j.station_id
+        if not lid:
+            return None
+        return station_loc.get(lid) or structure_loc.get(lid) or f"#{lid}"
+
+    # used vs. available job slots, from the character's synced skills
+    skill_levels = {
+        s.skill_id: s.trained_level
+        for s in db.query(EsiSkill).filter(EsiSkill.character_id == char.character_id).all()
+    }
+    slots = skills.job_slot_usage([(j.activity_id, j.status) for j in jobs], skill_levels)
+
+    return {
+        "slots": slots,
+        "jobs": [
+            {
+                "job_id": j.job_id, "activity_id": j.activity_id,
+                "activity": _ACTIVITY_NAMES.get(j.activity_id, "Other"),
+                "blueprint_type_id": j.blueprint_type_id,
+                "blueprint_name": names.get(j.blueprint_type_id, {}).get("name"),
+                "product_type_id": j.product_type_id,
+                "product_name": names.get(j.product_type_id, {}).get("name"),
+                "runs": j.runs, "status": j.status, "cost": j.cost,
+                "location_name": _job_location(j),
+                "start_date": j.start_date, "end_date": j.end_date,
+            }
+            for j in jobs
+        ],
+    }
+
+
+@router.get("/{char_id}/overview", summary="Character page overview (location, ship, wealth, implants)")
+async def get_overview(
+    char_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    cid = char.character_id
+
+    # current location → name (system from SDE, station from SDE, structure from cache)
+    system_name = _system_names(eve_db, [char.location_system_id]).get(char.location_system_id)
+    location_name = None
+    if char.location_type == "station" and char.location_id:
+        location_name = _station_names(eve_db, [char.location_id]).get(char.location_id) or f"Station #{char.location_id}"
+    elif char.location_type == "structure" and char.location_id:
+        location_name = _structure_names(db, [char.location_id]).get(char.location_id) or f"Structure #{char.location_id}"
+
+    # ship + implant type names (one SDE lookup)
+    implant_ids = [r.type_id for r in db.query(EsiImplant.type_id).filter(EsiImplant.character_id == cid).all()]
+    type_names = _type_names(eve_db, implant_ids + ([char.ship_type_id] if char.ship_type_id else []))
+
+    liquid, assets_value = char.wallet_balance, char.assets_value
+    total = None if liquid is None and assets_value is None else (liquid or 0) + (assets_value or 0)
+
+    granted = set((char.scopes or "").split())
+    missing = [s for s in ("esi-location.read_location.v1", "esi-clones.read_implants.v1") if s not in granted]
+
+    return {
+        "id": char.id, "character_id": cid, "character_name": char.character_name,
+        "portrait": f"https://images.evetech.net/characters/{cid}/portrait?size=256",
+        "corporation_id": char.corporation_id, "corporation_name": char.corporation_name,
+        "corporation_logo": _corp_logo(char.corporation_id),
+        "alliance_id": char.alliance_id, "alliance_name": char.alliance_name,
+        "alliance_logo": _alliance_logo(char.alliance_id),
+        "online": char.online, "last_login": char.last_login, "last_sync_at": char.last_sync_at,
+        "total_sp": char.total_sp,
+        "location": {
+            "system_id": char.location_system_id, "system_name": system_name,
+            "location_id": char.location_id, "location_type": char.location_type,
+            "location_name": location_name,
+        },
+        "ship": {
+            "ship_type_id": char.ship_type_id,
+            "ship_type_name": type_names.get(char.ship_type_id, {}).get("name") if char.ship_type_id else None,
+            "ship_name": char.ship_name,
+        },
+        "wealth": {"liquid": liquid, "assets_value": assets_value, "total": total},
+        "implants": [{"type_id": t, "name": type_names.get(t, {}).get("name")} for t in implant_ids],
+        "missing_scopes": missing,
+    }
+
+
+@router.get("/{char_id}/standings", summary="NPC standings (faction / corp / agent)")
+async def get_standings(
+    char_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    rows = (
+        db.query(EsiStanding)
+        .filter(EsiStanding.character_id == char.character_id)
+        .order_by(EsiStanding.standing.desc())
+        .all()
+    )
+    # best-effort name resolution (public /universe/names/) — fall back to ids
+    try:
+        names = esi.resolve_names([s.from_id for s in rows])
+    except Exception:  # noqa: BLE001
+        names = {}
     return [
         {
-            "job_id": j.job_id, "activity_id": j.activity_id,
-            "activity": _ACTIVITY_NAMES.get(j.activity_id, "Other"),
-            "blueprint_type_id": j.blueprint_type_id,
-            "blueprint_name": names.get(j.blueprint_type_id, {}).get("name"),
-            "product_type_id": j.product_type_id,
-            "product_name": names.get(j.product_type_id, {}).get("name"),
-            "runs": j.runs, "status": j.status, "cost": j.cost,
-            "start_date": j.start_date, "end_date": j.end_date,
+            "from_id": s.from_id, "from_type": s.from_type,
+            "name": names.get(s.from_id, {}).get("name"),
+            "standing": s.standing,
         }
-        for j in jobs
+        for s in rows
     ]
+
+
+@router.get("/{char_id}/wealth-history", summary="Wealth snapshots (liquid / assets / total) over time")
+async def get_wealth_history(
+    char_id: int,
+    limit: int = Query(365, le=2000),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    rows = (
+        db.query(CharacterWealthSnapshot)
+        .filter(CharacterWealthSnapshot.character_id == char.character_id)
+        .order_by(CharacterWealthSnapshot.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {"timestamp": r.timestamp, "liquid": r.liquid, "assets_value": r.assets_value, "total": r.total}
+        for r in reversed(rows)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Mining journal — ledger → refine → Jita value, by category, over a period
+# ---------------------------------------------------------------------------
+
+JITA_REGION = 10000002          # The Forge — mineral/ore valuation hub
+_ORE_CATEGORY = 25              # invCategories: asteroid (ore / ice / moon ore)
+_MOON_MATERIAL_GROUP = 427      # invGroups: raw moon materials (moon-ore output)
+_CATEGORIES = ("ore", "moon_ore", "ice", "gas", "other")
+
+
+def _jita_two_sided(type_ids) -> dict:
+    """Per-type ``{'buy','sell'}`` from Jita (The Forge) Fuzzwork aggregates."""
+    ids = [t for t in type_ids if t]
+    if not ids:
+        return {}
+    agg = market.fuzzwork_aggregates_or_empty(JITA_REGION, ids)
+    out = {}
+    for tid in ids:
+        s = agg.get(str(tid)) or {}
+        b, se = s.get("buy") or {}, s.get("sell") or {}
+        out[tid] = {"buy": b.get("percentile") or b.get("max"),
+                    "sell": se.get("percentile") or se.get("min")}
+    return out
+
+
+def _basis_of(two: dict, basis: str):
+    """Pick buy / sell / split (mid) from a ``{'buy','sell'}`` pair."""
+    b, s = two.get("buy"), two.get("sell")
+    if basis == "split":
+        if b is not None and s is not None:
+            return (b + s) / 2
+        return b if b is not None else s
+    return two.get(basis)
+
+
+def _category_of(name, group_name, category_id, is_moon) -> str:
+    n = name or ""
+    if n.startswith("Fullerite-") or "Cytoserocin" in n or "Mykoserocin" in n:
+        return "gas"
+    if category_id == _ORE_CATEGORY:
+        if group_name == "Ice":
+            return "ice"
+        if is_moon:
+            return "moon_ore"
+        return "ore"
+    return "other"
+
+
+def _mining_value(eve_db: Session, qty_by_type: dict, basis: str,
+                  base_yield: float, levels: dict) -> dict:
+    """Refine each mined type → minerals (or value gas/raw directly) → Jita value,
+    grouped by category. Returns ``{categories, items, total}``."""
+    type_ids = [t for t, q in qty_by_type.items() if q]
+    if not type_ids:
+        return {"categories": {}, "items": [], "total": 0.0}
+
+    names = eve_repo.type_names(eve_db, type_ids)
+    groups = eve_repo.type_groups(eve_db, type_ids)
+    moon_mat_subq = eve_db.query(EveType.type_id).filter(EveType.group_id == _MOON_MATERIAL_GROUP)
+    moon_ore_ids = {
+        tid for (tid,) in eve_db.query(EveTypeMaterial.type_id)
+        .filter(EveTypeMaterial.type_id.in_(type_ids),
+                EveTypeMaterial.material_type_id.in_(moon_mat_subq)).distinct().all()
+    }
+    yields = eve_repo.reprocessing_yields(eve_db, type_ids)
+    ore_lvl = max((levels.get(sid, 0) for sid in skills.SKILL_ORE_PROCESSING.values()), default=0)
+    ry = compute_yield(RefineSetup(
+        base_yield=base_yield,
+        reprocessing_lvl=levels.get(skills.SKILL_REPROCESSING, 0),
+        efficiency_lvl=levels.get(skills.SKILL_REPROCESSING_EFFICIENCY, 0),
+        ore_specific_lvl=ore_lvl, security="hi", tax_pct=0.0,
+    ))
+
+    # refined output per mined type (gas/unreprocessable → value the raw type)
+    outputs: dict[int, dict] = {}
+    for t in type_ids:
+        info = yields.get(t)
+        if info and info["materials"]:
+            res = reprocess(qty_by_type[t], info["portion_size"], info["materials"], ry, input_type_id=t)
+            outputs[t] = {m.type_id: m.qty for m in res.minerals}
+        else:
+            outputs[t] = {t: qty_by_type[t]}
+
+    sides = _jita_two_sided(list({oid for outs in outputs.values() for oid in outs}))
+
+    categories: dict[str, dict] = {}
+    items = []
+    total = 0.0
+    for t in type_ids:
+        val = sum(q * (_basis_of(sides.get(oid) or {}, basis) or 0.0) for oid, q in outputs[t].items())
+        g = groups.get(t) or {}
+        cat = _category_of(names.get(t), g.get("group_name"), g.get("category_id"), t in moon_ore_ids)
+        c = categories.setdefault(cat, {"value": 0.0, "qty": 0})
+        c["value"] += val
+        c["qty"] += qty_by_type[t]
+        total += val
+        items.append({"type_id": t, "name": names.get(t, str(t)),
+                      "category": cat, "qty": qty_by_type[t], "value": round(val, 2)})
+    for c in categories.values():
+        c["value"] = round(c["value"], 2)
+    items.sort(key=lambda x: -x["value"])
+    return {"categories": categories, "items": items, "total": round(total, 2)}
+
+
+def _scope_character_ids(db: Session, user: UserDB, viewed: LinkedCharacter, scope: str) -> list[int]:
+    if scope == "all":
+        return [c.character_id for c in
+                db.query(LinkedCharacter).filter(LinkedCharacter.user_id == user.id).all()]
+    return [viewed.character_id]
+
+
+def _settings_for(db: Session, character_id: int):
+    return db.query(CharacterSettings).filter(CharacterSettings.character_id == character_id).first()
+
+
+def _ledger_agg(db: Session, char_ids, start, end) -> dict:
+    rows = (
+        db.query(EsiMiningLedger.type_id, func.sum(EsiMiningLedger.quantity))
+        .filter(EsiMiningLedger.character_id.in_(char_ids or [-1]),
+                EsiMiningLedger.date >= start, EsiMiningLedger.date <= end)
+        .group_by(EsiMiningLedger.type_id).all()
+    )
+    return {tid: int(q or 0) for tid, q in rows}
+
+
+def _compute_journal(db, eve_db, user, viewed, period_type, offset, scope, basis=None):
+    s = _settings_for(db, viewed.character_id)
+    tax_pct = s.mining_tax_pct if s else 0.0
+    base_yield = s.refine_base_yield if s else 0.50
+    use_basis = basis or (s.price_basis if s else "sell")
+
+    char_ids = _scope_character_ids(db, user, viewed, scope)
+    today = utcnow().date()
+    start, end = mining_journal.period_bounds(period_type, today, offset)
+    key = mining_journal.period_key(period_type, start)
+
+    qty_by_type = _ledger_agg(db, char_ids, start, end)
+    levels = {sk.skill_id: (sk.trained_level or 0)
+              for sk in db.query(EsiSkill).filter(EsiSkill.character_id == viewed.character_id).all()}
+    valued = _mining_value(eve_db, qty_by_type, use_basis, base_yield, levels)
+
+    gross = valued["total"]
+    tax_amount, net = mining_journal.apply_tax(gross, tax_pct)
+
+    wo = (
+        db.query(MiningTaxWriteoff)
+        .filter(MiningTaxWriteoff.user_id == user.id, MiningTaxWriteoff.scope == scope,
+                MiningTaxWriteoff.character_id == (None if scope == "all" else viewed.character_id),
+                MiningTaxWriteoff.period_type == period_type, MiningTaxWriteoff.period_key == key)
+        .first()
+    )
+    return {
+        "period": {"type": period_type, "offset": offset, "key": key,
+                   "start": start.isoformat(), "end": end.isoformat(), "scope": scope},
+        "basis": use_basis, "tax_pct": tax_pct,
+        "categories": {c: valued["categories"].get(c, {"value": 0.0, "qty": 0}) for c in _CATEGORIES},
+        "items": valued["items"],
+        "gross_value": gross, "tax_amount": tax_amount, "net_value": net,
+        "written_off": wo is not None,
+        "writeoff": ({"id": wo.id, "tax_pct": wo.tax_pct, "tax_amount": wo.tax_amount,
+                      "net_value": wo.net_value, "created_at": wo.created_at} if wo else None),
+    }
+
+
+class SettingsIn(BaseModel):
+    mining_tax_pct: float = 0.0
+    price_basis: str = "sell"
+    refine_base_yield: float = 0.50
+
+
+class WriteoffIn(BaseModel):
+    period: str = "month"
+    offset: int = 0
+    scope: str = "character"
+
+
+def _settings_out(s) -> dict:
+    return {
+        "mining_tax_pct": s.mining_tax_pct if s else 0.0,
+        "price_basis": s.price_basis if s else "sell",
+        "refine_base_yield": s.refine_base_yield if s else 0.50,
+    }
+
+
+@router.get("/{char_id}/settings", summary="Journal settings (tax %, price basis, refine yield)")
+async def get_settings(
+    char_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    return _settings_out(_settings_for(db, char.character_id))
+
+
+@router.put("/{char_id}/settings", summary="Update journal settings")
+async def put_settings(
+    char_id: int,
+    body: SettingsIn,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    if body.price_basis not in ("buy", "sell", "split"):
+        raise HTTPException(400, "price_basis must be buy | sell | split")
+    s = _settings_for(db, char.character_id)
+    if not s:
+        s = CharacterSettings(character_id=char.character_id)
+        db.add(s)
+    s.mining_tax_pct = max(0.0, body.mining_tax_pct)
+    s.price_basis = body.price_basis
+    s.refine_base_yield = min(1.0, max(0.0, body.refine_base_yield))
+    db.commit()
+    return _settings_out(s)
+
+
+@router.get("/{char_id}/mining-journal", summary="Mining ledger → refine → Jita profit, by category/period")
+async def get_mining_journal(
+    char_id: int,
+    period: str = Query("month", pattern="^(day|month|quarter|year)$"),
+    offset: int = Query(0, ge=-120, le=0),
+    scope: str = Query("character", pattern="^(character|all)$"),
+    basis: Optional[str] = Query(None, pattern="^(buy|sell|split)$"),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    payload = _compute_journal(db, eve_db, current_user, char, period, offset, scope, basis)
+
+    # rolling 30-day stats (always available from ESI's window)
+    s = _settings_for(db, char.character_id)
+    today = utcnow().date()
+    char_ids = _scope_character_ids(db, current_user, char, scope)
+    levels = {sk.skill_id: (sk.trained_level or 0)
+              for sk in db.query(EsiSkill).filter(EsiSkill.character_id == char.character_id).all()}
+    qty30 = _ledger_agg(db, char_ids, today - datetime.timedelta(days=30), today)
+    v30 = _mining_value(eve_db, qty30, payload["basis"], s.refine_base_yield if s else 0.50, levels)
+    payload["stats_30d"] = {
+        "total": v30["total"],
+        "categories": {c: v30["categories"].get(c, {"value": 0.0, "qty": 0}) for c in _CATEGORIES},
+    }
+    return payload
+
+
+@router.post("/{char_id}/mining-journal/writeoff", summary="Write off (record) tax for a period")
+async def writeoff_tax(
+    char_id: int,
+    body: WriteoffIn,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    if body.period not in mining_journal.PERIODS:
+        raise HTTPException(400, "bad period")
+    if body.scope not in ("character", "all"):
+        raise HTTPException(400, "bad scope")
+    char = _owned_char(db, char_id, current_user)
+    j = _compute_journal(db, eve_db, current_user, char, body.period, body.offset, body.scope)
+
+    rec = (
+        db.query(MiningTaxWriteoff)
+        .filter(MiningTaxWriteoff.user_id == current_user.id, MiningTaxWriteoff.scope == body.scope,
+                MiningTaxWriteoff.character_id == (None if body.scope == "all" else char.character_id),
+                MiningTaxWriteoff.period_type == body.period,
+                MiningTaxWriteoff.period_key == j["period"]["key"])
+        .first()
+    )
+    if not rec:
+        rec = MiningTaxWriteoff(
+            user_id=current_user.id,
+            character_id=(None if body.scope == "all" else char.character_id),
+            scope=body.scope, period_type=body.period, period_key=j["period"]["key"],
+        )
+        db.add(rec)
+    rec.gross_value = j["gross_value"]
+    rec.tax_pct = j["tax_pct"]
+    rec.tax_amount = j["tax_amount"]
+    rec.net_value = j["net_value"]
+    rec.created_at = utcnow()
+    db.commit()
+    return {"id": rec.id, "period_key": rec.period_key, "tax_pct": rec.tax_pct,
+            "tax_amount": rec.tax_amount, "net_value": rec.net_value, "created_at": rec.created_at}
+
+
+@router.delete("/{char_id}/mining-journal/writeoff", status_code=204, summary="Undo a tax write-off")
+async def undo_writeoff(
+    char_id: int,
+    period: str = Query(...),
+    offset: int = Query(0),
+    scope: str = Query("character"),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    today = utcnow().date()
+    start, _ = mining_journal.period_bounds(period, today, offset)
+    key = mining_journal.period_key(period, start)
+    (db.query(MiningTaxWriteoff)
+     .filter(MiningTaxWriteoff.user_id == current_user.id, MiningTaxWriteoff.scope == scope,
+             MiningTaxWriteoff.character_id == (None if scope == "all" else char.character_id),
+             MiningTaxWriteoff.period_type == period, MiningTaxWriteoff.period_key == key)
+     .delete(synchronize_session=False))
+    db.commit()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +897,7 @@ async def import_assets(
         agg[a.type_id] = agg.get(a.type_id, 0) + (a.quantity or 0)
 
     names = _type_names(eve_db, list(agg))
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     imported = 0
     for type_id, qty in agg.items():
         meta = names.get(type_id, {})
@@ -438,7 +931,7 @@ async def import_industry_jobs(
         raise HTTPException(400, "No synced industry jobs to import — run a sync first")
 
     names = _type_names(eve_db, [j.product_type_id for j in jobs] + [j.blueprint_type_id for j in jobs])
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     imported, skipped = 0, 0
     for j in jobs:
         if not j.product_type_id:
