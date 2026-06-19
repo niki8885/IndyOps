@@ -48,6 +48,75 @@ Stat.propTypes = {
   sub: PropTypes.node,
 }
 
+// Mean cost breakdown (revenue vs material / taxes / logistics) as horizontal bars.
+function BreakdownBars({ m }) {
+  const bd = m.breakdown || {}
+  const rows = [
+    ['Revenue', bd.revenue?.mean, '#4caf7d'],
+    ['Material', bd.material_cost?.mean, '#e0884f'],
+    ['Taxes & fees', bd.taxes_fees?.mean, '#7da7e0'],
+    ['Logistics', bd.logistics?.mean, '#b06bd6'],
+  ].map(([l, v, c]) => [l, Number(v || 0), c])
+  const max = Math.max(1, ...rows.map(r => r[1]))
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>Mean cost breakdown</div>
+      {rows.map(([l, v, c]) => (
+        <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '3px 0' }}>
+          <span style={{ width: 86, fontSize: 11, color: 'var(--text)' }}>{l}</span>
+          <span style={{ flex: 1, background: '#222a37', borderRadius: 3, height: 12, overflow: 'hidden' }}>
+            <span style={{ display: 'block', width: `${Math.max(2, (v / max) * 100)}%`, height: '100%', background: c }} />
+          </span>
+          <span style={{ width: 66, textAlign: 'right', fontSize: 11, color: 'var(--text-white)' }}>{isk(v)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+BreakdownBars.propTypes = { m: PropTypes.object }
+
+// Profit percentile strip p1…p99.
+function PercentileStrip({ m }) {
+  const p = m.percentiles || {}
+  const keys = [['p1', '1%'], ['p5', '5%'], ['p25', '25%'], ['p50', '50%'], ['p75', '75%'], ['p95', '95%'], ['p99', '99%']]
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>Profit percentiles</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+        {keys.map(([k, lbl]) => (
+          <div key={k} style={{ flex: '1 0 50px', textAlign: 'center', padding: '2px 0' }}>
+            <div style={{ fontSize: 10, color: 'var(--text)' }}>{lbl}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: (p[k] ?? 0) >= 0 ? '#4caf7d' : '#e05252' }}>{isk(p[k])}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+PercentileStrip.propTypes = { m: PropTypes.object }
+
+// Operational / completion-time metrics.
+function OperationalBlock({ m }) {
+  const items = [
+    ['Mean completion', `${num(m.time_mean_h, 2)} h`],
+    ['Median', `${num(m.time_median_h, 2)} h`],
+    ['95th percentile', `${num(m.time_p95_h, 2)} h`],
+    ['Per job / slot', `${num(m.time_per_job_h, 2)} h`],
+  ]
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>Operational (time)</div>
+      {items.map(([l, v]) => (
+        <div key={l} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, margin: '2px 0' }}>
+          <span style={{ color: 'var(--text)' }}>{l}</span>
+          <span style={{ color: 'var(--text-white)' }}>{v}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+OperationalBlock.propTypes = { m: PropTypes.object }
+
 // ± half-width of a 95% CI [lo,hi]
 const ciHalf = (ci) => (Array.isArray(ci) && ci.length === 2) ? (ci[1] - ci[0]) / 2 : null
 
@@ -149,6 +218,15 @@ export default function SimulationPanel({ run, projectId }) {
         <Stat label="Return / slot" value={isk(m?.return_per_slot ?? s.return_per_slot)} />
         <Stat label="Return / hour" value={isk(m?.return_per_time ?? s.return_per_time)} />
       </div>
+
+      {m && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 18,
+                      marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border,#2a3140)' }}>
+          <BreakdownBars m={m} />
+          <PercentileStrip m={m} />
+          <OperationalBlock m={m} />
+        </div>
+      )}
 
       {!detail && !err && <div style={{ fontSize: 12, color: 'var(--text)', marginTop: 10 }}>Loading distribution…</div>}
       {chart && <div style={{ marginTop: 12 }}>{chart}</div>}

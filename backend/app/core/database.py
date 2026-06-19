@@ -617,6 +617,67 @@ class SimulationRun(Base):
     project = relationship("Projects", backref="simulation_runs")
 
 
+class ScenarioAnalysis(Base):
+    """A stored Scenario Simulation run (IO-23): the baseline metrics, every
+    predefined/custom/composite scenario's metrics + comparison vs baseline, the
+    risk-adjusted ranking, and the rendered per-analysis PDF. The combined
+    'whole product' report is generated on demand from all analyses + simulation
+    runs sharing a target_type_id."""
+    __tablename__ = "scenario_analyses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+
+    source = Column(String(12), nullable=False, default="chain")   # chain | production
+    target_type_id = Column(Integer, nullable=False, index=True)
+    label = Column(String(200), nullable=False)
+    product_name = Column(String(200), nullable=True)
+    engine = Column(String(12), nullable=False, default="python")  # fortran | python
+
+    params = Column(JSON, nullable=True)        # SimParams snapshot
+    baseline = Column(JSON, nullable=False)     # baseline SimMetrics (asdict)
+    outcomes = Column(JSON, nullable=False)     # [ScenarioOutcome] (asdict)
+    ranking = Column(JSON, nullable=True)       # [{rank,label,score}] incl. baseline
+    pdf = Column(LargeBinary, nullable=True)    # rendered per-analysis report
+
+    created_at = Column(DateTime, default=utcnow, index=True)
+
+    owner = relationship("UserDB", backref="scenario_analyses")
+    project = relationship("Projects", backref="scenario_analyses")
+
+
+class ShareCode(Base):
+    """A short, shareable code that maps to a calculator/chain request so anyone can
+    reopen the exact build. Kept short (so the QR/barcode stay scannable) by storing the
+    params server-side instead of in the code itself. Retention ~1 week; the store is
+    capacity-bounded and evicts the oldest rows when full ("overwrite on no space")."""
+    __tablename__ = "share_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(16), nullable=False, unique=True, index=True)
+    source = Column(String(12), nullable=False, default="production")  # production | chain
+    body = Column(JSON, nullable=False)            # the re-run request body
+    created_at = Column(DateTime, default=utcnow, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+
+class QuizResult(Base):
+    """One Encyclopedia article-quiz attempt. Scores are kept per learning section
+    (finance, …) per article so the account can show progress by section."""
+    __tablename__ = "quiz_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    section = Column(String(40), nullable=False, index=True)   # e.g. "finance"
+    article_key = Column(String(60), nullable=False, index=True)
+    score = Column(Integer, nullable=False)                    # correct answers
+    total = Column(Integer, nullable=False)                    # out of N
+    created_at = Column(DateTime, default=utcnow, index=True)
+
+    owner = relationship("UserDB", backref="quiz_results")
+
+
 # ===========================================================================
 # IO-24 — EVE SSO linked characters + synced ESI data
 # ===========================================================================

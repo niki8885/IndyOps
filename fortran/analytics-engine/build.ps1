@@ -27,3 +27,12 @@ $sim = @(
 & gfortran @flags @sim "$d\build\compat.o" -o "$d\bin\profit-sim.exe"
 if ($LASTEXITCODE -ne 0) { throw "profit-sim build failed ($LASTEXITCODE)" }
 Write-Host "built $d\bin\profit-sim.exe"
+
+# scenario-sim: Scenario Simulation engine
+$scn = @(
+    "src\json.f90", "src\sort_stats.f90", "src\rng.f90",
+    "src\distrib.f90", "src\scenario.f90", "app\scenariosim.f90"
+) | ForEach-Object { Join-Path $d $_ }
+& gfortran @flags @scn "$d\build\compat.o" -o "$d\bin\scenario-sim.exe"
+if ($LASTEXITCODE -ne 0) { throw "scenario-sim build failed ($LASTEXITCODE)" }
+Write-Host "built $d\bin\scenario-sim.exe"

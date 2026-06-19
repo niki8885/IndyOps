@@ -1,7 +1,6 @@
-# Build context is the repo root (see .github/workflows/deploy.yml) so this image
-# can compile the sibling Haskell + Fortran engines. Frontend has its own context.
+# Build context is the repo root
 
-# ── stage 1: compile the Haskell chain-engine (offline, boot libs only) ──────
+# stage 1: compile the Haskell chain-engine (offline, boot libs only)
 FROM haskell:9.6.6 AS chain-builder
 WORKDIR /build
 COPY haskell/chain-engine/src/ ./src/
@@ -9,7 +8,7 @@ COPY haskell/chain-engine/app/ ./app/
 RUN mkdir -p /out \
  && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/chain-engine
 
-# ── stage 1b: compile the Haskell risk-engine (offline, boot libs only) ──────
+# stage 1b: compile the Haskell risk-engine (offline, boot libs only) ──────
 FROM haskell:9.6.6 AS risk-builder
 WORKDIR /build
 COPY haskell/risk-engine/src/ ./src/
@@ -17,16 +16,16 @@ COPY haskell/risk-engine/app/ ./app/
 RUN mkdir -p /out \
  && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/risk-engine
 
-# ── stage 2: compile the Fortran analytics-engine + profit-sim (gfortran only) ─
+# stage 2: compile the Fortran analytics-engine + profit-sim (gfortran only) ─
 FROM debian:bookworm-slim AS analytics-builder
 WORKDIR /build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gfortran \
  && rm -rf /var/lib/apt/lists/*
 COPY fortran/analytics-engine/ ./analytics-engine/
-RUN sh analytics-engine/build.sh   # builds both bin/analytics-engine and bin/profit-sim
+RUN sh analytics-engine/build.sh
 
-# ── stage 3: python backend ──────────────────────────────────────────────────
+# stage 3: python backend
 FROM python:3.12-slim
 WORKDIR /app
 
@@ -57,14 +56,15 @@ ENV ANALYTICS_ENGINE_BIN=/usr/local/bin/analytics-engine
 COPY --from=analytics-builder /build/analytics-engine/bin/profit-sim /usr/local/bin/profit-sim
 ENV PROFIT_SIM_BIN=/usr/local/bin/profit-sim
 
+# Native Scenario Simulation engine (IO-23), built from the same Fortran project.
+COPY --from=analytics-builder /build/analytics-engine/bin/scenario-sim /usr/local/bin/scenario-sim
+ENV SCENARIO_SIM_BIN=/usr/local/bin/scenario-sim
+
 # Native risk-scoring / strategy-ranking engine (Haskell). Falls back to Python.
 COPY --from=risk-builder /out/risk-engine /usr/local/bin/risk-engine
 ENV RISK_ENGINE_BIN=/usr/local/bin/risk-engine
 
 EXPOSE 8000
 
-# Apply migrations (best-effort; create_all is the fallback) then serve.
-# --proxy-headers + --forwarded-allow-ips=* so uvicorn trusts the X-Forwarded-Proto
-# set by nginx; without it FastAPI's trailing-slash redirects are emitted as http://
-# behind the HTTPS edge and the browser blocks them as mixed content.
+# Apply migrations
 CMD ["sh", "-c", "python -m app.migrate; uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]

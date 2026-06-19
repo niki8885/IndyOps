@@ -17,6 +17,8 @@ import AgendaPage from './pages/AgendaPage'
 // rest of the app and stays out of the main bundle. (The Market Browser is lazy
 // the same way, internally, inside MarketHub.)
 const AnalysisPage = lazy(() => import('./pages/AnalysisPage'))
+// The Encyclopedia carries 2 long articles + inline SVG figures — load on demand.
+const EncyclopediaPage = lazy(() => import('./pages/EncyclopediaPage'))
 
 export default function App() {
   return (
@@ -40,6 +42,11 @@ export default function App() {
               } />
               <Route path="/organisations" element={<OrganisationsHub />} />
               <Route path="/personal"      element={<PersonalFilePage />} />
+              <Route path="/encyclopedia"  element={
+                <Suspense fallback={<div className="empty-state">Loading encyclopedia…</div>}>
+                  <EncyclopediaPage />
+                </Suspense>
+              } />
               {/* legacy redirects */}
               <Route path="/trade"      element={<Navigate to="/market" replace />} />
               <Route path="/facilities" element={<Navigate to="/organisations" replace />} />

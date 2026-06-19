@@ -117,7 +117,7 @@ jobs:
           cache-dependency-path: backend/requirements-dev.txt
       - name: Install gfortran
         run: sudo apt-get update && sudo apt-get install -y gfortran
-      - name: Build analytics-engine + profit-sim
+      - name: Build analytics-engine + profit-sim + scenario-sim
         run: sh build.sh
         working-directory: fortran/analytics-engine
       - name: Install dependencies
@@ -130,6 +130,10 @@ jobs:
         run: pytest tests/test_profit_sim_fortran_parity.py
         env:
           PROFIT_SIM_BIN: ${{ github.workspace }}/fortran/analytics-engine/bin/profit-sim
+      - name: Run scenario-sim parity test
+        run: pytest tests/test_scenario_sim_fortran_parity.py
+        env:
+          SCENARIO_SIM_BIN: ${{ github.workspace }}/fortran/analytics-engine/bin/scenario-sim
 
   # -------------------------------------------------------------------------
   # Haskell chain-engine — build, unit tests, and cross-language parity

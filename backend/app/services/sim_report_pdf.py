@@ -13,11 +13,20 @@ Two documents, per the IO-22 spec:
 """
 from __future__ import annotations
 
+import hashlib
 import io
+from pathlib import Path
 from typing import Optional
 
 from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics.shapes import Drawing
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import HRFlowable, Image
+
+from app.services import barcodes
+
+_LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "logo.png"
+_BRAND = "IndyOps"
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -115,6 +124,119 @@ def _profit_histogram(metrics: dict, width=170 * mm, height=58 * mm) -> Optional
     return d
 
 
+def _exec_summary(m: dict) -> list:
+    """A plain-language headline so the report opens with the verdict, not a table."""
+    ep = float(m.get("expected_profit") or 0.0)
+    rev = float((m.get("breakdown", {}).get("revenue", {}) or {}).get("mean") or 0.0)
+    margin = (ep / rev * 100.0) if rev else 0.0
+    ploss = float(m.get("prob_loss") or 0.0)
+    verdict = "profitable" if (ep > 0 and ploss < 0.25) else ("speculative" if ep > 0 else "loss-making")
+    txt = (f"Expected profit <b>{_isk(ep)}</b> on mean revenue {_isk(rev)} "
+           f"(margin <b>{margin:.1f}%</b>). Probability of loss <b>{_pct(ploss)}</b>; "
+           f"VaR 5% {_isk(m.get('var5'))}, CVaR 5% {_isk(m.get('cvar5'))}; "
+           f"risk-adjusted (E−λσ) {_isk(m.get('risk_adjusted'))}. "
+           f"Worst observed {_isk(m.get('worst'))}, best {_isk(m.get('best'))}. "
+           f"Verdict: <b>{verdict}</b>.")
+    return [_h("Executive summary"), _p(txt), Spacer(1, 3 * mm)]
+
+
+def _breakdown_chart(m: dict, width=120 * mm, height=46 * mm) -> Optional[Drawing]:
+    """Mean revenue vs cost components as a small bar chart."""
+    bd = m.get("breakdown", {})
+    keys = [("revenue", "Revenue"), ("material_cost", "Material"),
+            ("taxes_fees", "Taxes"), ("logistics", "Logistics")]
+    vals = [float((bd.get(k, {}) or {}).get("mean", 0.0) or 0.0) for k, _ in keys]
+    if not any(vals):
+        return None
+    d = Drawing(width, height)
+    chart = VerticalBarChart()
+    chart.x, chart.y = 16 * mm, 8 * mm
+    chart.width, chart.height = width - 22 * mm, height - 16 * mm
+    chart.data = [vals]
+    chart.bars[0].fillColor = _HEAD
+    chart.bars[0].strokeColor = None
+    chart.valueAxis.valueMin = 0
+    chart.categoryAxis.categoryNames = [lbl for _, lbl in keys]
+    chart.categoryAxis.labels.fontSize = 7
+    chart.valueAxis.labels.fontSize = 6
+    d.add(chart)
+    return d
+
+
+def job_ref(code: str) -> str:
+    """Short human reference for a (long, self-contained) share code."""
+    return hashlib.sha1((code or "").encode("utf-8")).hexdigest()[:8].upper()
+
+
+def _logo_image(height=13 * mm) -> Optional[Image]:
+    try:
+        if _LOGO_PATH.is_file():
+            iw, ih = ImageReader(str(_LOGO_PATH)).getSize()
+            return Image(str(_LOGO_PATH), width=height * iw / max(1, ih), height=height)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    return None
+
+
+def _brand_para():
+    s = _styles["Heading1"].clone("brand")
+    s.textColor = _HEAD
+    s.fontSize = 18
+    s.spaceAfter = 0
+    return Paragraph(f"{_BRAND} <font size=10 color='#5a6b82'>· Industry Toolkit</font>", s)
+
+
+def _share_block(report: dict) -> list:
+    """Branded letterhead at the very top of every document: app logo + name on the left,
+    the share-code Code128 barcode (large) on the right, a separator, then the QR + the
+    'print &amp; keep' note. The QR/barcode reopen the build (server-stored, ~1 week TTL)."""
+    code = report.get("share_code")
+    code = str(code) if code else ""
+    url = report.get("share_url") or code
+
+    # ── header: logo + name (left), large barcode (right) ──
+    logo = _logo_image()
+    name = _brand_para()
+    if logo is not None:
+        left = Table([[logo, name]], colWidths=[18 * mm, None], hAlign="LEFT")
+        left.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                  ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+    else:
+        left = name
+    right = ""
+    if code:
+        try:
+            right = barcodes.code128_drawing(code, bar_height=15 * mm, bar_width=1.1)
+        except Exception:  # pragma: no cover - defensive
+            right = _p(f"Code {code}")
+    header = Table([[left, right]], colWidths=[108 * mm, 62 * mm], hAlign="LEFT")
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    out: list = [header, HRFlowable(width="100%", thickness=1.2, color=_HEAD,
+                                    spaceBefore=3 * mm, spaceAfter=3 * mm)]
+    if not code:
+        return out
+
+    # ── after the separator: QR + the reopen / keep-a-printout note ──
+    try:
+        qrd = barcodes.qr_drawing(url, 32 * mm)
+        note = _p(
+            f"<b>Shareable job code {code}</b><br/>Scan the QR or enter the code in the "
+            f"{_BRAND} calculator to reopen this build with the same parameters. Valid ~1 week."
+            f"<br/><i>Tip: for a permanent record, print this page and keep it — the code "
+            f"expires, so don't rely on it alone.</i>")
+        qrow = Table([[qrd, note]], colWidths=[36 * mm, 134 * mm], hAlign="LEFT")
+        qrow.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                  ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+        out += [qrow, Spacer(1, 4 * mm)]
+    except Exception:  # pragma: no cover - defensive
+        out += [_p(f"Code <b>{code}</b>"), Spacer(1, 3 * mm)]
+    return out
+
+
 # ── per-run report ──────────────────────────────────────────────────────────────
 
 def _metrics_block(m: dict) -> list:
@@ -161,13 +283,16 @@ def _breakdown_block(m: dict) -> list:
         ["95th percentile", f"{_num(m.get('time_p95_h'), 2)} h"],
         ["Per production slot/job", f"{_num(m.get('time_per_job_h'), 2)} h"],
     ]
-    return [
-        _h("Per-scenario cost breakdown"),
-        _table(rows),
+    block = [_h("Per-scenario cost breakdown"), _table(rows)]
+    bchart = _breakdown_chart(m)
+    if bchart is not None:
+        block += [Spacer(1, 2 * mm), bchart]
+    block += [
         Spacer(1, 5 * mm),
         _h("Operational metrics"),
         _table(time_rows, col_widths=[95 * mm, 75 * mm]),
     ]
+    return block
 
 
 def _run_story(report: dict) -> list:
@@ -184,6 +309,8 @@ def _run_story(report: dict) -> list:
         _p(f"Run at: {report.get('created_at', '—')}"),
         Spacer(1, 3 * mm),
     ]
+    story += _share_block(report)
+    story += _exec_summary(m)
     chart = _profit_histogram(m)
     if chart is not None:
         story += [_h("Profit distribution"), chart, Spacer(1, 3 * mm)]

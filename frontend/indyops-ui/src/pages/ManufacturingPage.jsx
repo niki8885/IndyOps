@@ -1,13 +1,37 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { get, post, patch, del } from '../api/client'
 import SimulationPanel from '../components/SimulationPanel'
+import ScenarioPanel from '../components/ScenarioPanel'
+import ShareBar from '../components/ShareBar'
 import TypeSearch from '../components/TypeSearch'
+import { codeFromInput } from '../utils/shareCode'
 
 // Plotly (~4MB) only loads when the chain graph actually renders — keeps it out
 // of the eagerly-imported Manufacturing bundle.
 const ChainGraph = lazy(() => import('../components/ChainGraph'))
 
 const TABS = ['Calculator', 'Chain', 'PAK Jobs', 'IndyJob', 'Inventory Analysis']
+
+// A styled on/off swapper for the simulation suite — replaces the old plain checkbox
+// and makes clear it covers both Monte-Carlo risk *and* scenario stress tests.
+function SimToggle({ on, onChange }) {
+  return (
+    <button type="button" onClick={() => onChange(!on)} title="Run a Monte-Carlo risk simulation with the calc. Scenario stress tests are always available below the result."
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderRadius: 10,
+               border: `1px solid ${on ? 'var(--accent, #4caf7d)' : 'var(--border, #2a3140)'}`,
+               background: on ? 'rgba(76,175,125,0.12)' : 'var(--panel, #161b24)', cursor: 'pointer' }}>
+      <span style={{ position: 'relative', width: 40, height: 22, borderRadius: 11, flexShrink: 0,
+                     background: on ? '#4caf7d' : '#3a4150', transition: 'background .15s' }}>
+        <span style={{ position: 'absolute', top: 2, left: on ? 20 : 2, width: 18, height: 18, borderRadius: '50%',
+                       background: '#fff', transition: 'left .15s', boxShadow: '0 1px 2px rgba(0,0,0,.4)' }} />
+      </span>
+      <span style={{ textAlign: 'left', lineHeight: 1.2 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-white)' }}>🎲 Simulations</div>
+        <div style={{ fontSize: 10.5, color: 'var(--text)' }}>Monte-Carlo risk + scenario stress tests</div>
+      </span>
+    </button>
+  )
+}
 
 // ── Buy-list draft (localStorage) ──
 // Calculator / Analyze-market can stash material lines here; the Combined buy list
@@ -141,16 +165,54 @@ async function fetchMarketPrices(typeIds, market) {
 
 export default function ManufacturingPage() {
   const [tab, setTab] = useState(0)
+  const [sharedJob, setSharedJob] = useState(null)
+  const [openInput, setOpenInput] = useState('')
+  const [openErr, setOpenErr] = useState('')
+
+  // Resolve a pasted code / link (or a ?job= deep-link) → stored build, route to its tab,
+  // and carry the code so reopening keeps the SAME code (no new one minted).
+  const openByCode = (raw) => {
+    const code = codeFromInput(raw)
+    if (!code) { setOpenErr('Enter a valid code or link.'); return }
+    setOpenErr('')
+    get(`/manufacturing/share/${code}`)
+      .then(data => {
+        setSharedJob({ source: data.source, body: data.body, code })
+        setTab(data.source === 'chain' ? 1 : 0)
+        setOpenInput('')
+      })
+      .catch(e => setOpenErr(String(e.message).includes('404') ? 'Code not found or expired.' : e.message))
+  }
+
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('job')
+    if (raw) openByCode(raw)
+    const url = new URL(window.location.href)   // drop the param so a refresh doesn't re-open
+    url.searchParams.delete('job')
+    window.history.replaceState({}, '', url)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <div>
-      <h2 style={{ marginBottom: 20 }}>Manufacturing</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+        <h2 style={{ margin: 0 }}>Manufacturing</h2>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--text)' }}>🔗 Open shared:</span>
+          <input value={openInput} onChange={e => setOpenInput(e.target.value)}
+                 onKeyDown={e => { if (e.key === 'Enter') openByCode(openInput) }}
+                 placeholder="job code or link…" style={{ fontSize: 12, width: 200 }} />
+          <button className="btn btn-ghost btn-sm" disabled={!openInput.trim()} onClick={() => openByCode(openInput)}>Open</button>
+          {openErr && <span style={{ fontSize: 11, color: '#e05252' }}>{openErr}</span>}
+        </div>
+      </div>
       <div className="tabs">
         {TABS.map((t, i) => (
           <button key={i} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
         ))}
       </div>
-      {tab === 0 && <CalculatorTab />}
-      {tab === 1 && <ChainTab />}
+      {tab === 0 && <CalculatorTab sharedJob={sharedJob?.source === 'production' ? sharedJob : null} />}
+      {tab === 1 && <ChainTab sharedJob={sharedJob?.source === 'chain' ? sharedJob : null} />}
       {tab === 2 && <PakJobsTab />}
       {tab === 3 && <IndyJobsTab />}
       {tab === 4 && <InventoryAnalysisTab />}
@@ -160,7 +222,7 @@ export default function ManufacturingPage() {
 
 /* ═══════════════════════════ CALCULATOR ═══════════════════════════ */
 
-function CalculatorTab() {
+function CalculatorTab({ sharedJob }) {
   const [product, setProduct]       = useState(null)     // {type_id, name}
   const [bpInfo, setBpInfo]         = useState(null)     // blueprint info from API
   const [facilities, setFacilities] = useState([])
@@ -183,6 +245,9 @@ function CalculatorTab() {
   })
   const [matPrices, setMatPrices] = useState({})   // {type_id: price}
   const [result, setResult]       = useState(null)
+  // IO-22/23: Monte-Carlo + scenario simulation on the single-blueprint calc
+  const [sim, setSim] = useState({ on: false, n_iterations: 25000, dist_mode: 0, corr_mode: 0, copula: 0, dynamics: 0 })
+  const [pendingShared, setPendingShared] = useState(null)   // a shared job body awaiting its blueprint
   const [calcLoading, setCalcLoading] = useState(false)
   const [bpLoading, setBpLoading]     = useState(false)
   const [saveLoading, setSaveLoading] = useState(false)
@@ -246,10 +311,48 @@ function CalculatorTab() {
         setMatPrices(prices)
         setResult(null)
         setAvailability(null)
+        // reactions (formulas) can't be researched — ME/TE are always 0
+        if (info.is_reaction) setParams(p => ({ ...p, me: 0, te: 0 }))
       })
       .catch(e => setError(e.message))
       .finally(() => setBpLoading(false))
   }, [product?.type_id])
+
+  // Open a shared job code: select its product (which loads the blueprint), then restore
+  // params + run once the blueprint is ready (avoids the blueprint effect clearing state).
+  function openShared(decoded) {
+    const b = decoded?.body
+    if (!b?.product_type_id) return
+    setError('')
+    setPendingShared({ body: b, code: decoded.code })
+    setProduct({ type_id: b.product_type_id, name: '' })
+  }
+  useEffect(() => { if (sharedJob) openShared(sharedJob) }, [sharedJob])
+  useEffect(() => {
+    if (!pendingShared || !bpInfo || bpInfo.product_type_id !== pendingShared.body.product_type_id) return
+    const { body: b, code } = pendingShared
+    setPendingShared(null)
+    setProduct(p => ({ ...p, name: bpInfo.product_name || p.name }))
+    setParams(p => ({
+      ...p,
+      runs: b.runs ?? p.runs, windows: b.windows ?? p.windows,
+      me: b.me ?? 0, te: b.te ?? 0, bpc_cost: b.bpc_cost ?? p.bpc_cost,
+      output_price: b.output_price ?? p.output_price,
+      broker_fee_pct: b.broker_fee_pct ?? p.broker_fee_pct,
+      facility_id: b.facility_id ?? p.facility_id,
+      system_cost_index: b.system_cost_index != null ? b.system_cost_index * 100 : p.system_cost_index,
+      facility_tax_pct: b.facility_tax_pct ?? p.facility_tax_pct,
+      structure_bonus_pct: b.structure_bonus_pct ?? p.structure_bonus_pct,
+    }))
+    const mp = {}
+    ;(b.material_prices || []).forEach(m => { mp[m.type_id] = String(m.unit_cost) })
+    setMatPrices(mp)
+    if (b.produce_character_id) setProduceCharId(String(b.produce_character_id))
+    if (b.sell_character_id) setSellCharId(String(b.sell_character_id))
+    // run the exact decoded body — reuse_code keeps the SAME code instead of minting a new one
+    post('/manufacturing/calculate', { ...b, share_base: window.location.origin, reuse_code: code })
+      .then(setResult).catch(e => setError(e.message))
+  }, [pendingShared, bpInfo])
 
   // auto-fill facility params when facility selected
   useEffect(() => {
@@ -279,35 +382,64 @@ function CalculatorTab() {
       .catch(() => setRigBonus(null))
   }, [params.facility_id, product?.type_id])
 
+  // The base POST body for /manufacturing/calculate — reused by calculate() and the
+  // Scenario panel (which re-POSTs the same body with a `scenarios` payload).
+  function buildCalcBody() {
+    if (!product?.type_id || !bpInfo) return null
+    return {
+      product_type_id: product.type_id,
+      runs:    Number(params.runs),
+      windows: Number(params.windows) || 1,
+      me:      Number(params.me),
+      te:     Number(params.te),
+      bpc_cost: Number(params.bpc_cost),
+      output_price: Number(params.output_price),
+      broker_fee_pct: Number(params.broker_fee_pct),
+      facility_id: params.facility_id ? Number(params.facility_id) : null,
+      system_cost_index: Number(params.system_cost_index) / 100,
+      facility_tax_pct: Number(params.facility_tax_pct),
+      structure_bonus_pct: Number(params.structure_bonus_pct),
+      material_bonus_pct: rigTotals().me,
+      time_bonus_pct: rigTotals().te,
+      material_role_pct: rigBonus?.structure_role?.material_pct || 0,
+      time_role_pct: rigBonus?.structure_role?.time_pct || 0,
+      estimated_item_value: params.estimated_item_value !== '' ? Number(params.estimated_item_value) : null,
+      material_prices: Object.entries(matPrices)
+        .filter(([, v]) => v !== '')
+        .map(([type_id, unit_cost]) => ({ type_id: Number(type_id), unit_cost: Number(unit_cost) })),
+      produce_character_id: produceCharId ? Number(produceCharId) : null,
+      sell_character_id: sellCharId ? Number(sellCharId) : null,
+    }
+  }
+
   async function calculate() {
-    if (!product?.type_id || !bpInfo) return
+    const body = buildCalcBody()
+    if (!body) return
     setCalcLoading(true); setError('')
     try {
       const res = await post('/manufacturing/calculate', {
-        product_type_id: product.type_id,
-        runs:    Number(params.runs),
-        windows: Number(params.windows) || 1,
-        me:      Number(params.me),
-        te:     Number(params.te),
-        bpc_cost: Number(params.bpc_cost),
-        output_price: Number(params.output_price),
-        broker_fee_pct: Number(params.broker_fee_pct),
-        facility_id: params.facility_id ? Number(params.facility_id) : null,
-        system_cost_index: Number(params.system_cost_index) / 100,
-        facility_tax_pct: Number(params.facility_tax_pct),
-        structure_bonus_pct: Number(params.structure_bonus_pct),
-        material_bonus_pct: rigTotals().me,
-        time_bonus_pct: rigTotals().te,
-        material_role_pct: rigBonus?.structure_role?.material_pct || 0,
-        time_role_pct: rigBonus?.structure_role?.time_pct || 0,
-        estimated_item_value: params.estimated_item_value !== '' ? Number(params.estimated_item_value) : null,
-        material_prices: Object.entries(matPrices)
-          .filter(([, v]) => v !== '')
-          .map(([type_id, unit_cost]) => ({ type_id: Number(type_id), unit_cost: Number(unit_cost) })),
-        produce_character_id: produceCharId ? Number(produceCharId) : null,
-        sell_character_id: sellCharId ? Number(sellCharId) : null,
+        ...body,
+        share_base: window.location.origin,
+        simulate: !!sim.on,
+        ...(sim.on ? {
+          sim: {
+            n_iterations: Number(sim.n_iterations) || 25000,
+            dist_mode: Number(sim.dist_mode) || 0,
+            corr_mode: Number(sim.corr_mode) || 0,
+            copula: Number(sim.copula) || 0,
+            path_steps: Number(sim.dynamics) > 0 ? 24 : 1,
+            garch: Number(sim.dynamics) === 2 ? 1 : 0,
+            broker_fee_pct: Number(params.broker_fee_pct) || 0,
+          },
+        } : {}),
       })
       setResult(res)
+      // A fresh calc invalidates the previously auto-prefilled PAK / IndyJob fields
+      // (paks, runs, blueprint prices) so they re-derive from THIS result instead of
+      // hanging from the last run. User-typed fields (project, note, code) are kept.
+      setJobForm(f => ({ ...f, paks: '', units_per_pak: '', initial_contract_price: '',
+        return_contract_price: '', jita_sell: '', jita_buy: '', cj_sell: '', cj_buy: '' }))
+      setIndyForm(f => ({ ...f, blueprints: '', runs_per_bp: '', jita_sell: '', jita_buy: '' }))
     } catch (e) { setError(e.message) }
     finally { setCalcLoading(false) }
   }
@@ -602,8 +734,16 @@ function CalculatorTab() {
             <CLabel>Windows (slots) <Hint>{`${params.windows}×${params.runs} = ${(Number(params.windows) || 1) * Number(params.runs)} runs`}</Hint></CLabel>
             <input type="number" value={params.windows} onChange={setP('windows')} min={1} />
           </div>
-          <NumField label="ME (0–10)" value={params.me} onChange={setP('me')} min={0} max={10} />
-          <NumField label="TE (0–20)" value={params.te} onChange={setP('te')} min={0} max={20} />
+          {bpInfo?.is_reaction ? (
+            <div style={{ gridColumn: 'span 2', alignSelf: 'center', fontSize: 12, color: 'var(--accent)' }}>
+              ⚗️ Reaction formula — ME/TE not applicable (always 0)
+            </div>
+          ) : (
+            <>
+              <NumField label="ME (0–10)" value={params.me} onChange={setP('me')} min={0} max={10} />
+              <NumField label="TE (0–20)" value={params.te} onChange={setP('te')} min={0} max={20} />
+            </>
+          )}
           <NumField label="BPC Cost / window" value={params.bpc_cost} onChange={setP('bpc_cost')} step={1000} />
           <div>
             <CLabel>Facility</CLabel>
@@ -840,6 +980,33 @@ function CalculatorTab() {
         {indySaved && <span style={{ fontSize: 12, color: '#4caf7d' }}>✓ IndyJob added to plan</span>}
       </div>
 
+      {/* IO-22: Monte-Carlo risk sim on the single-blueprint calc (set before calculating) */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+        <SimToggle on={sim.on} onChange={v => setSim(s => ({ ...s, on: v }))} />
+        {sim.on && (
+          <>
+            <select value={sim.n_iterations} onChange={e => setSim(s => ({ ...s, n_iterations: e.target.value }))}>
+              <option value={10000}>10k</option>
+              <option value={25000}>25k</option>
+              <option value={50000}>50k</option>
+            </select>
+            <select value={sim.dist_mode} onChange={e => setSim(s => ({ ...s, dist_mode: e.target.value }))}>
+              <option value={0}>empirical</option>
+              <option value={1}>lognormal</option>
+            </select>
+            <select value={sim.copula} onChange={e => setSim(s => ({ ...s, copula: e.target.value }))}>
+              <option value={0}>Gaussian copula</option>
+              <option value={1}>Student-t (tail dep.)</option>
+            </select>
+            <select value={sim.dynamics} onChange={e => setSim(s => ({ ...s, dynamics: e.target.value }))}>
+              <option value={0}>static (one-shot)</option>
+              <option value={1}>AR(1) path</option>
+              <option value={2}>AR(1)+GARCH path</option>
+            </select>
+          </>
+        )}
+      </div>
+
       {/* ── Market analysis ── */}
       {marketView && (
         <MarketPanel
@@ -944,6 +1111,12 @@ function CalculatorTab() {
               <ProductionMetrics result={result} />
             </Section>
           </div>
+
+          <ShareBar code={result.share_code} link={result.share_url} onOpen={openShared} />
+          {/* IO-22 Monte-Carlo + IO-23 scenario simulation */}
+          {result.simulation && <SimulationPanel run={result.simulation} projectId={result.simulation.project_id} />}
+          <ScenarioPanel source="production" buildBody={buildCalcBody} targetTypeId={product?.type_id}
+                         simRunId={result.simulation?.run_id} />
         </div>
       )}
 
@@ -1111,7 +1284,7 @@ function CalculatorTab() {
 
 /* ═══════════════════════════ CHAIN (MAKE-VS-BUY) ═══════════════════════════ */
 
-function ChainTab() {
+function ChainTab({ sharedJob }) {
   const [product, setProduct]     = useState(null)
   const [facilities, setFacilities] = useState([])
 
@@ -1278,50 +1451,93 @@ function ChainTab() {
   const updateStruct = (i, k) => e => setStructures(s => s.map((st, j) => j === i ? { ...st, [k]: e.target.value } : st))
   const removeStruct = i => setStructures(s => s.filter((_, j) => j !== i))
 
-  async function calculate(fbSet, opts = {}) {
-    if (!product?.type_id) return
-    const fb = fbSet instanceof Set ? fbSet : forceBuy
-    const fm = opts.fmSet instanceof Set ? opts.fmSet : forceMake
-    const useBP = opts.useBP ?? useBlueprints
-    const bpSel = opts.bpSel ?? bpSelection
-    const meTe = opts.meTe ?? meTeOverrides
+  // The base POST body for /manufacturing/calculate-chain — reused by calculate() and
+  // the Scenario panel (which re-POSTs the same body with a `scenarios` payload). The
+  // make/buy swapper passes fb/fm/bp overrides via `o`.
+  function buildChainBody(o = {}) {
+    if (!product?.type_id) return null
+    const fb = o.fbSet instanceof Set ? o.fbSet : forceBuy
+    const fm = o.fmSet instanceof Set ? o.fmSet : forceMake
+    const useBP = o.useBP ?? useBlueprints
+    const bpSel = o.bpSel ?? bpSelection
+    const meTe = o.meTe ?? meTeOverrides
     // Final-product blueprint ME/TE: apply as the target's override unless the user set
     // it per-node. Component default (me_pct/te_pct) covers every other node.
     const meTeSend = (product?.type_id != null && meTe[product.type_id] == null)
       ? { ...meTe, [product.type_id]: [Number(params.final_me) || 0, Number(params.final_te) || 0] }
       : meTe
+    const activeStructures = facilityMode === 'multi' ? multiStructures : structures
+    return {
+      product_type_id: product.type_id,
+      qty: Number(params.qty) || 1,
+      region_ids: [...selectedRegions],
+      region_id: [...selectedRegions][0] || 10000002,
+      price_basis: params.price_basis,
+      include_cj: includeCJ,
+      use_owned_blueprints: useBP,
+      blueprint_selection: bpSel,
+      me_te_overrides: meTeSend,
+      flag_unrealistic: params.flag_unrealistic,
+      unrealistic_ratio: Number(params.unrealistic_ratio) / 100,
+      facility_id: singleFacilityId && facilityMode === 'none' ? Number(singleFacilityId) : null,
+      me_pct: Number(params.me_pct),
+      te_pct: Number(params.te_pct),
+      system_cost_index: Number(params.system_cost_index) / 100,
+      facility_tax_pct: Number(params.facility_tax_pct),
+      structure_discount_pct: Number(params.structure_discount_pct),
+      man_lines: Number(params.man_lines),
+      react_lines: Number(params.react_lines),
+      max_depth: Number(params.max_depth),
+      force_buy: [...fb],
+      force_make: [...fm],
+      bpc_cost: Number(params.bpc_cost) || 0,
+      include_reactions: params.include_reactions !== false,
+      produce_character_id: produceCharId ? Number(produceCharId) : null,
+      sell_character_id: sellCharId ? Number(sellCharId) : null,
+      project_id: null,
+      ...(activeStructures.length ? {
+        structures: facilityMode === 'multi'
+          ? activeStructures   // already in API format (fractions)
+          : activeStructures.map(s => ({
+              place_id: Number(s.place_id) || 0,
+              name: s.name || '',
+              system_cost_index: Number(s.sci) / 100,
+              facility_tax_pct: Number(s.tax),
+              structure_discount_pct: Number(s.disc),
+              man_lines: Number(s.man) || 0,
+              react_lines: Number(s.react) || 0,
+            })),
+      } : {}),
+    }
+  }
+
+  // Open a shared chain job: restore product / qty / regions and run the exact decoded
+  // body (the result is correct regardless of which widgets we mirror).
+  function openShared(decoded) {
+    const b = decoded?.body
+    if (!b?.product_type_id) return
+    setError('')
+    setProduct({ type_id: b.product_type_id, name: '' })
+    if (b.qty != null) setParams(p => ({ ...p, qty: b.qty }))
+    if (Array.isArray(b.region_ids) && b.region_ids.length) setSelectedRegions(new Set(b.region_ids))
+    setLoading(true)
+    // reuse_code keeps the SAME code on reopen instead of minting a new one
+    post('/manufacturing/calculate-chain', { ...b, share_base: window.location.origin, reuse_code: decoded.code })
+      .then(setResult)
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { if (sharedJob) openShared(sharedJob) }, [sharedJob])
+
+  async function calculate(fbSet, opts = {}) {
+    const body = buildChainBody({ fbSet, ...opts })
+    if (!body) return
     setLoading(true); setError('')
     try {
-      const activeStructures = facilityMode === 'multi' ? multiStructures : structures
       const res = await post('/manufacturing/calculate-chain', {
-        product_type_id: product.type_id,
-        qty: Number(params.qty) || 1,
-        region_ids: [...selectedRegions],
-        region_id: [...selectedRegions][0] || 10000002,
-        price_basis: params.price_basis,
-        include_cj: includeCJ,
-        use_owned_blueprints: useBP,
-        blueprint_selection: bpSel,
-        me_te_overrides: meTeSend,
-        flag_unrealistic: params.flag_unrealistic,
-        unrealistic_ratio: Number(params.unrealistic_ratio) / 100,
-        facility_id: singleFacilityId && facilityMode === 'none' ? Number(singleFacilityId) : null,
-        me_pct: Number(params.me_pct),
-        te_pct: Number(params.te_pct),
-        system_cost_index: Number(params.system_cost_index) / 100,
-        facility_tax_pct: Number(params.facility_tax_pct),
-        structure_discount_pct: Number(params.structure_discount_pct),
-        man_lines: Number(params.man_lines),
-        react_lines: Number(params.react_lines),
-        max_depth: Number(params.max_depth),
-        force_buy: [...fb],
-        force_make: [...fm],
-        bpc_cost: Number(params.bpc_cost) || 0,
-        include_reactions: params.include_reactions !== false,
-        produce_character_id: produceCharId ? Number(produceCharId) : null,
-        sell_character_id: sellCharId ? Number(sellCharId) : null,
+        ...body,
+        share_base: window.location.origin,
         simulate: !!sim.on,
-        project_id: null,
         ...(sim.on ? {
           sim: {
             n_iterations: Number(sim.n_iterations) || 25000,
@@ -1333,19 +1549,6 @@ function ChainTab() {
             broker_fee_pct: Number(params.broker_fee_pct) || 0,   // keep sim fees in sync with the margin calc
             sales_tax_pct: Number(params.sales_tax_pct) || 0,
           },
-        } : {}),
-        ...(activeStructures.length ? {
-          structures: facilityMode === 'multi'
-            ? activeStructures   // already in API format (fractions)
-            : activeStructures.map(s => ({
-                place_id: Number(s.place_id) || 0,
-                name: s.name || '',
-                system_cost_index: Number(s.sci) / 100,
-                facility_tax_pct: Number(s.tax),
-                structure_discount_pct: Number(s.disc),
-                man_lines: Number(s.man) || 0,
-                react_lines: Number(s.react) || 0,
-              })),
         } : {}),
       })
       setResult(res)
@@ -1788,10 +1991,7 @@ function ChainTab() {
         {result && plan && (
           <button className="btn btn-ghost" onClick={downloadPDF}>📄 Download PDF</button>
         )}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text)' }}>
-          <input type="checkbox" checked={sim.on} onChange={e => setSim(s => ({ ...s, on: e.target.checked }))} />
-          🎲 Monte-Carlo risk sim
-        </label>
+        <SimToggle on={sim.on} onChange={v => setSim(s => ({ ...s, on: v }))} />
         {sim.on && (
           <>
             <select value={sim.n_iterations} onChange={e => setSim(s => ({ ...s, n_iterations: e.target.value }))}>
@@ -1828,6 +2028,9 @@ function ChainTab() {
       {result && plan && (
         <>
           {result.simulation && <SimulationPanel run={result.simulation} projectId={result.simulation.project_id} />}
+          <ShareBar code={result.share_code} link={result.share_url} onOpen={openShared} />
+          <ScenarioPanel source="chain" buildBody={buildChainBody} targetTypeId={plan.target_type_id}
+                         simRunId={result.simulation?.run_id} />
           {/* ── Summary ── */}
           <Section title="Chain summary">
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 12px 0' }}>
