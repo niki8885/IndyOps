@@ -140,7 +140,7 @@ def test_bpc_cost_folds_into_make_cost_and_total():
     base = solve_chain(from_bom(1, 3, tree, buy, {}, LocationParams(1, "P")))
     withbp = solve_chain(from_bom(1, 3, tree, buy, {}, LocationParams(1, "P"),
                                   bpc_unit={1: 1000.0}))           # 1000/unit × 3 units = 3000
-    assert float(withbp.total_cost) == float(base.total_cost) + 3000.0
+    assert float(withbp.total_cost) == pytest.approx(float(base.total_cost) + 3000.0)
     assert sum(float(j.bpc_cost) for j in withbp.jobs if j.type_id == 1) == pytest.approx(3000.0)
 
 

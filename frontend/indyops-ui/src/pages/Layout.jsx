@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import logoSrc from '../assets/logo.png'
 import { useAuth } from '../store/AuthContext'
 import { get, post } from '../api/client'
 
 const NAV = [
+  { to: '/agenda',        label: 'Agenda'         },
   { to: '/manufacturing', label: 'Manufacturing'  },
   { to: '/ore',           label: 'Ore & Refining' },
   { to: '/inventory',     label: 'Inventory'      },
@@ -61,8 +62,7 @@ export default function Layout() {
           ))}
         </nav>
         <div style={s.userArea}>
-          <span style={{ color: 'var(--text)', fontSize: 13 }}>{user?.username}</span>
-          <button className="btn btn-ghost btn-sm" onClick={logout}>Logout</button>
+          <AccountMenu user={user} logout={logout} />
         </div>
       </header>
 
@@ -95,6 +95,69 @@ export default function Layout() {
   )
 }
 
+function AccountMenu({ user, logout }) {
+  const [open, setOpen]   = useState(false)
+  const [modal, setModal] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => setOpen(o => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ color: 'var(--text-bright)', fontSize: 13 }}>{user?.username || 'Account'}</span>
+        <span style={{ fontSize: 9 }}>▾</span>
+      </button>
+      {open && (
+        <div style={s.menu}>
+          <button style={s.menuItem} onClick={() => { setOpen(false); setModal(true) }}>Account settings</button>
+          <button style={s.menuItem} onClick={logout}>Log out</button>
+        </div>
+      )}
+      {modal && <AccountModal onClose={() => setModal(false)} />}
+    </div>
+  )
+}
+
+function AccountModal({ onClose }) {
+  const [me, setMe] = useState(null)
+  useEffect(() => {
+    let alive = true
+    get('/me').then(d => { if (alive) setMe(d) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  return (
+    <div role="presentation" style={s.overlay}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+      onKeyDown={e => { if (e.key === 'Escape') onClose() }}>
+      <div className="card" style={{ width: 380, maxWidth: '90vw' }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ margin: 0 }}>Account settings</h3>
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose}>✕</button>
+        </div>
+        <Row label="Username" value={me?.username} />
+        <Row label="Email" value={me?.email} />
+      </div>
+    </div>
+  )
+}
+
+function Row({ label, value }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+      <span style={{ fontSize: 12, color: 'var(--text)' }}>{label}</span>
+      <span style={{ fontSize: 13, color: 'var(--text-white)', wordBreak: 'break-all' }}>{value || '—'}</span>
+    </div>
+  )
+}
+
 const s = {
   header: {
     display: 'flex', alignItems: 'center', gap: 32,
@@ -112,4 +175,17 @@ const s = {
   },
   userArea: { display: 'flex', alignItems: 'center', gap: 14, marginLeft: 'auto' },
   main: { flex: 1, padding: '28px 32px', maxWidth: 1400, width: '100%', margin: '0 auto' },
+  menu: {
+    position: 'absolute', right: 0, top: 'calc(100% + 6px)', minWidth: 170, zIndex: 50,
+    background: 'var(--surface2)', border: '1px solid var(--border2)', borderRadius: 6,
+    padding: 4, boxShadow: '0 8px 24px rgba(0,0,0,.4)',
+  },
+  menuItem: {
+    display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none',
+    color: 'var(--text-bright)', padding: '8px 12px', fontSize: 13, cursor: 'pointer', borderRadius: 4,
+  },
+  overlay: {
+    position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
 }

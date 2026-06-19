@@ -196,6 +196,9 @@ class ProductionJob(Base):
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
     facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
 
+    # 'pak' = outsourced pack contract, 'indy' = internal planned job (Calculator → Add to plan)
+    kind = Column(String(8), nullable=False, default="pak", server_default="pak", index=True)
+
     # Blueprint / product
     blueprint_type_id = Column(Integer, nullable=True)
     blueprint_name = Column(String(200), nullable=True)
@@ -472,6 +475,49 @@ class AnalyticsCache(Base):
     )
 
 
+class PriceAlert(Base):
+    """A user-defined financial alert on an index or a tracked item (the Agenda page).
+
+    Watches either a commodity index (``target_kind='index'`` → ``index_key``) or a
+    tracked item at one place (``target_kind='item'`` → ``item_id`` + ``place_id``).
+    ``metric`` picks price vs volume; ``condition`` is an absolute crossing
+    (above/below ``threshold``) or a % move over ``window_hours`` (pct_up/pct_down,
+    threshold = percent). Fires → an AgendaNotification; one-shot alerts disarm
+    (``active=False``) until re-armed, repeating alerts honour a cooldown."""
+    __tablename__ = "price_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    target_kind = Column(String(10), nullable=False)        # 'index' | 'item'
+    index_key = Column(String(20), nullable=True)           # when target_kind='index'
+    item_id = Column(Integer, nullable=True)                # tracked_items.id when 'item'
+    place_id = Column(Integer, nullable=True)               # tracked_places.id (item alerts)
+    metric = Column(String(10), nullable=False, default="price")     # 'price' | 'volume'
+    condition = Column(String(12), nullable=False)          # above | below | pct_up | pct_down
+    threshold = Column(Float, nullable=False)               # absolute value, or percent
+    window_hours = Column(Integer, nullable=False, default=24)       # comparison window for pct
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    repeat = Column(Boolean, nullable=False, default=False)
+    note = Column(String(200), nullable=True)
+    last_value = Column(Float, nullable=True)
+    last_triggered_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class AgendaNotification(Base):
+    """A delivered notification in the Agenda feed (usually a fired PriceAlert)."""
+    __tablename__ = "agenda_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    alert_id = Column(Integer, nullable=True)               # source PriceAlert (kept if alert deleted)
+    severity = Column(String(8), nullable=False, default="info")    # info | up | down
+    title = Column(String(200), nullable=False)
+    body = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
+    read_at = Column(DateTime, nullable=True)
+
+
 class TradeCandidate(Base):
     """A precomputed cross-hub trade route (buy at one hub, sell at another).
 
@@ -724,13 +770,22 @@ class EsiMiningLedger(Base):
 
 
 class CharacterSettings(Base):
-    """Per-character journal settings (edited in the Statistics tab)."""
+    """Per-character settings, edited in the Character Settings tab — the mining
+    journal knobs plus role/grouping flags."""
     __tablename__ = "character_settings"
 
     character_id = Column(Integer, primary_key=True)   # LinkedCharacter.character_id
     mining_tax_pct = Column(Float, nullable=False, default=0.0)      # corp mining tax %
     price_basis = Column(String(10), nullable=False, default="sell")  # buy | sell | split
     refine_base_yield = Column(Float, nullable=False, default=0.50)   # structure base yield
+
+    # role / grouping criteria
+    favorite = Column(Boolean, nullable=False, default=False)         # pin to top of the list
+    track_wealth = Column(Boolean, nullable=False, default=True)      # count in overall capital
+    track_production = Column(Boolean, nullable=False, default=True)  # include in the common chain
+    is_manufacturer = Column(Boolean, nullable=False, default=False)  # manufacturing char
+    is_trader = Column(Boolean, nullable=False, default=False)        # trading char
+    group_name = Column(String(60), nullable=True)                   # free-text custom group
 
 
 class MiningTaxWriteoff(Base):

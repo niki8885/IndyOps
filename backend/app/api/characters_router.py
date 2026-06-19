@@ -205,7 +205,8 @@ def _alliance_logo(alliance_id):
     return f"https://images.evetech.net/alliances/{alliance_id}/logo?size=64" if alliance_id else None
 
 
-def _char_out(c: LinkedCharacter) -> dict:
+def _char_out(c: LinkedCharacter, settings=None) -> dict:
+    s = settings
     return {
         "id": c.id,
         "character_id": c.character_id,
@@ -226,6 +227,10 @@ def _char_out(c: LinkedCharacter) -> dict:
         "total_sp": c.total_sp,
         "last_sync_at": c.last_sync_at,
         "added_at": c.added_at,
+        "favorite": bool(s.favorite) if s else False,
+        "group_name": (s.group_name if s else None) or None,
+        "is_manufacturer": bool(s.is_manufacturer) if s else False,
+        "is_trader": bool(s.is_trader) if s else False,
     }
 
 
@@ -240,7 +245,12 @@ async def list_characters(
         .order_by(LinkedCharacter.added_at)
         .all()
     )
-    return [_char_out(c) for c in chars]
+    settings = {s.character_id: s for s in
+                db.query(CharacterSettings)
+                .filter(CharacterSettings.character_id.in_([c.character_id for c in chars] or [-1])).all()}
+    out = [_char_out(c, settings.get(c.character_id)) for c in chars]
+    out.sort(key=lambda c: (not c["favorite"], (c["character_name"] or "").lower()))
+    return out
 
 
 class CharacterPatch(BaseModel):
@@ -616,6 +626,27 @@ def _category_of(name, group_name, category_id, is_moon) -> str:
     return "other"
 
 
+def _categorize_types(eve_db: Session, type_ids: list) -> dict[int, str]:
+    """{type_id: category} — ore / moon_ore / ice / gas / other. Same rules as the
+    profit report's valuation, factored out so the raw ledger can tag entries too."""
+    type_ids = list({t for t in type_ids if t})
+    if not type_ids:
+        return {}
+    names = eve_repo.type_names(eve_db, type_ids)
+    groups = eve_repo.type_groups(eve_db, type_ids)
+    moon_mat_subq = eve_db.query(EveType.type_id).filter(EveType.group_id == _MOON_MATERIAL_GROUP)
+    moon_ore_ids = {
+        tid for (tid,) in eve_db.query(EveTypeMaterial.type_id)
+        .filter(EveTypeMaterial.type_id.in_(type_ids),
+                EveTypeMaterial.material_type_id.in_(moon_mat_subq)).distinct().all()
+    }
+    out = {}
+    for t in type_ids:
+        g = groups.get(t) or {}
+        out[t] = _category_of(names.get(t), g.get("group_name"), g.get("category_id"), t in moon_ore_ids)
+    return out
+
+
 def _mining_value(eve_db: Session, qty_by_type: dict, basis: str,
                   base_yield: float, levels: dict) -> dict:
     """Refine each mined type → minerals (or value gas/raw directly) → Jita value,
@@ -693,6 +724,41 @@ def _ledger_agg(db: Session, char_ids, start, end) -> dict:
     return {tid: int(q or 0) for tid, q in rows}
 
 
+def _ledger_entries(db: Session, eve_db: Session, char_ids, start, end, limit: int) -> list[dict]:
+    """Raw mining-ledger rows (one per day × ore × system), newest first, with type /
+    system / character names resolved. ``start``/``end`` are optional date bounds."""
+    q = db.query(EsiMiningLedger).filter(EsiMiningLedger.character_id.in_(char_ids or [-1]))
+    if start is not None:
+        q = q.filter(EsiMiningLedger.date >= start)
+    if end is not None:
+        q = q.filter(EsiMiningLedger.date <= end)
+    rows = (q.order_by(EsiMiningLedger.date.desc(), EsiMiningLedger.quantity.desc())
+            .limit(limit).all())
+
+    names = eve_repo.type_names(eve_db, [r.type_id for r in rows])
+    cats = _categorize_types(eve_db, [r.type_id for r in rows])
+    sys_ids = list({r.solar_system_id for r in rows if r.solar_system_id})
+    sys_names = dict(
+        eve_db.query(EveSolarSystem.solar_system_id, EveSolarSystem.solar_system_name)
+        .filter(EveSolarSystem.solar_system_id.in_(sys_ids or [-1])).all()
+    )
+    char_names = {
+        c.character_id: c.character_name for c in
+        db.query(LinkedCharacter).filter(LinkedCharacter.character_id.in_(char_ids or [-1])).all()
+    }
+    return [{
+        "date": r.date.isoformat(),
+        "type_id": r.type_id,
+        "name": names.get(r.type_id, str(r.type_id)),
+        "category": cats.get(r.type_id, "other"),
+        "solar_system_id": r.solar_system_id,
+        "system_name": sys_names.get(r.solar_system_id),
+        "quantity": int(r.quantity or 0),
+        "character_id": r.character_id,
+        "character_name": char_names.get(r.character_id),
+    } for r in rows]
+
+
 def _compute_journal(db, eve_db, user, viewed, period_type, offset, scope, basis=None):
     s = _settings_for(db, viewed.character_id)
     tax_pct = s.mining_tax_pct if s else 0.0
@@ -736,6 +802,12 @@ class SettingsIn(BaseModel):
     mining_tax_pct: float = 0.0
     price_basis: str = "sell"
     refine_base_yield: float = 0.50
+    favorite: bool = False
+    track_wealth: bool = True
+    track_production: bool = True
+    is_manufacturer: bool = False
+    is_trader: bool = False
+    group_name: Optional[str] = None
 
 
 class WriteoffIn(BaseModel):
@@ -749,10 +821,30 @@ def _settings_out(s) -> dict:
         "mining_tax_pct": s.mining_tax_pct if s else 0.0,
         "price_basis": s.price_basis if s else "sell",
         "refine_base_yield": s.refine_base_yield if s else 0.50,
+        "favorite": bool(s.favorite) if s else False,
+        "track_wealth": bool(s.track_wealth) if s else True,
+        "track_production": bool(s.track_production) if s else True,
+        "is_manufacturer": bool(s.is_manufacturer) if s else False,
+        "is_trader": bool(s.is_trader) if s else False,
+        "group_name": (s.group_name if s else None) or None,
     }
 
 
-@router.get("/{char_id}/settings", summary="Journal settings (tax %, price basis, refine yield)", responses={**ERR_404})
+@router.get("/groups", summary="Distinct custom group names across the user's characters")
+async def list_groups(
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    char_ids = [c.character_id for c in
+                db.query(LinkedCharacter).filter(LinkedCharacter.user_id == current_user.id).all()]
+    rows = (db.query(CharacterSettings.group_name)
+            .filter(CharacterSettings.character_id.in_(char_ids or [-1]),
+                    CharacterSettings.group_name.isnot(None))
+            .distinct().all())
+    return sorted({g for (g,) in rows if g})
+
+
+@router.get("/{char_id}/settings", summary="Character settings (journal knobs + role flags)", responses={**ERR_404})
 async def get_settings(
     char_id: int,
     current_user: UserDB = Depends(get_current_user),
@@ -762,7 +854,7 @@ async def get_settings(
     return _settings_out(_settings_for(db, char.character_id))
 
 
-@router.put("/{char_id}/settings", summary="Update journal settings", responses={**ERR_400, **ERR_404})
+@router.put("/{char_id}/settings", summary="Update character settings", responses={**ERR_400, **ERR_404})
 async def put_settings(
     char_id: int,
     body: SettingsIn,
@@ -779,6 +871,12 @@ async def put_settings(
     s.mining_tax_pct = max(0.0, body.mining_tax_pct)
     s.price_basis = body.price_basis
     s.refine_base_yield = min(1.0, max(0.0, body.refine_base_yield))
+    s.favorite = body.favorite
+    s.track_wealth = body.track_wealth
+    s.track_production = body.track_production
+    s.is_manufacturer = body.is_manufacturer
+    s.is_trader = body.is_trader
+    s.group_name = (body.group_name or "").strip()[:60] or None
     db.commit()
     return _settings_out(s)
 
@@ -810,6 +908,36 @@ async def get_mining_journal(
         "categories": {c: v30["categories"].get(c, {"value": 0.0, "qty": 0}) for c in _CATEGORIES},
     }
     return payload
+
+
+@router.get("/{char_id}/mining-ledger", summary="Raw mining ledger entries (date × ore × system), newest first", responses={**ERR_404})
+async def get_mining_ledger(
+    char_id: int,
+    period: Optional[str] = Query(None, pattern="^(day|month|quarter|year)$"),
+    offset: int = Query(0, ge=-120, le=0),
+    scope: str = Query("character", pattern="^(character|all)$"),
+    limit: int = Query(500, ge=1, le=2000),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    char_ids = _scope_character_ids(db, current_user, char, scope)
+
+    start = end = key = None
+    if period:
+        start, end = mining_journal.period_bounds(period, utcnow().date(), offset)
+        key = mining_journal.period_key(period, start)
+
+    entries = _ledger_entries(db, eve_db, char_ids, start, end, limit)
+    return {
+        "scope": scope,
+        "period": ({"type": period, "offset": offset, "key": key,
+                    "start": start.isoformat(), "end": end.isoformat()} if period else None),
+        "count": len(entries),
+        "total_quantity": sum(e["quantity"] for e in entries),
+        "entries": entries,
+    }
 
 
 @router.post("/{char_id}/mining-journal/writeoff", summary="Write off (record) tax for a period", responses={**ERR_400, **ERR_404})

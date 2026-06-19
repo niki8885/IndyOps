@@ -9,6 +9,7 @@ import { get } from '../../api/client'
 
 import StandingsTab from './StandingsTab'
 import StatisticsTab from './StatisticsTab'
+import SettingsTab from './SettingsTab'
 import IndustryTab from './IndustryTab'
 import JournalTab from './JournalTab'
 import CharactersTab from './CharactersTab'
@@ -30,12 +31,20 @@ describe('StandingsTab', () => {
   })
 })
 
-describe('StatisticsTab', () => {
-  it('renders the settings form from saved values', async () => {
-    get.mockResolvedValue({ mining_tax_pct: 10, price_basis: 'sell', refine_base_yield: 0.5 })
-    render(<StatisticsTab charId={1} />)
-    expect(await screen.findByText(/JOURNAL SETTINGS/i)).toBeInTheDocument()
-    expect(screen.getByText(/Mining tax/i)).toBeInTheDocument()
+describe('SettingsTab (Character Settings)', () => {
+  it('renders role flags + group + journal knobs from saved values', async () => {
+    get.mockImplementation(path => Promise.resolve(
+      path === '/characters/groups'
+        ? ['Alts', 'Hauler']
+        : { mining_tax_pct: 10, price_basis: 'sell', refine_base_yield: 0.5,
+            favorite: true, track_wealth: true, track_production: true,
+            is_manufacturer: false, is_trader: true, group_name: 'Alts' }))
+    render(<SettingsTab charId={1} />)
+    expect(await screen.findByText(/CHARACTER SETTINGS/i)).toBeInTheDocument()
+    expect(screen.getByText(/Manufacturing char/i)).toBeInTheDocument()
+    expect(screen.getByText(/Trading char/i)).toBeInTheDocument()
+    expect(screen.getByText(/Count in overall capital/i)).toBeInTheDocument()
+    expect(screen.getByText(/MINING JOURNAL/i)).toBeInTheDocument()
     expect(screen.getByText(/Refine base yield/i)).toBeInTheDocument()
   })
 })
@@ -60,7 +69,7 @@ describe('IndustryTab', () => {
   })
 })
 
-describe('JournalTab', () => {
+describe('StatisticsTab', () => {
   it('renders the category breakdown, totals and 30-day stats', async () => {
     get.mockResolvedValue({
       period: { type: 'month', key: '2026-06', scope: 'character' },
@@ -73,11 +82,38 @@ describe('JournalTab', () => {
       gross_value: 100000, tax_amount: 10000, net_value: 90000, written_off: false,
       stats_30d: { total: 100000, categories: {} },
     })
-    render(<JournalTab charId={1} />)
+    render(<StatisticsTab charId={1} />)
     expect((await screen.findAllByText('Regular ore')).length).toBeGreaterThan(0)
     expect(screen.getByText('Write off tax')).toBeInTheDocument()
     expect(screen.getByText('LAST 30 DAYS')).toBeInTheDocument()
     expect(screen.getByText('Veldspar')).toBeInTheDocument()
+  })
+})
+
+describe('JournalTab', () => {
+  it('renders historical ledger entries newest first with totals', async () => {
+    get.mockResolvedValue({
+      scope: 'character', period: null, count: 2, total_quantity: 17000,
+      entries: [
+        { date: '2026-06-18', type_id: 1230, name: 'Veldspar', category: 'ore',
+          solar_system_id: 30000142, system_name: 'Jita', quantity: 12000,
+          character_id: 99, character_name: 'Miner' },
+        { date: '2026-06-16', type_id: 1230, name: 'Veldspar', category: 'ore',
+          solar_system_id: 30000142, system_name: 'Jita', quantity: 5000,
+          character_id: 99, character_name: 'Miner' },
+      ],
+    })
+    render(<JournalTab charId={1} />)
+    expect((await screen.findAllByText('Veldspar')).length).toBe(2)
+    expect(screen.getAllByText('Jita').length).toBeGreaterThan(0)
+    expect(screen.getByText('12,000')).toBeInTheDocument()
+    expect(screen.getByText(/17,000 units/)).toBeInTheDocument()
+  })
+
+  it('shows the empty state when nothing was mined', async () => {
+    get.mockResolvedValue({ scope: 'character', period: null, count: 0, total_quantity: 0, entries: [] })
+    render(<JournalTab charId={1} />)
+    expect(await screen.findByText(/No mining recorded/i)).toBeInTheDocument()
   })
 })
 

@@ -343,6 +343,33 @@ def test_list_jobs_filtered_by_status(app_db, eve_db):
     assert [j.id for j in listed] == [done.id]
 
 
+def test_jobs_separated_by_kind(app_db, eve_db):
+    pak = run(mr.create_job(body=mr.JobCreate(product_type_id=2000, product_name="Pak"),
+                            current_user=USER, db=app_db))
+    indy = run(mr.create_job(body=mr.JobCreate(product_type_id=2000, product_name="Indy", kind="indy"),
+                             current_user=USER, db=app_db))
+    assert pak.kind == "pak" and indy.kind == "indy"   # default vs explicit
+
+    paks = run(mr.list_jobs(kind="pak", current_user=USER, db=app_db))
+    indies = run(mr.list_jobs(kind="indy", current_user=USER, db=app_db))
+    assert [j.id for j in paks] == [pak.id]
+    assert [j.id for j in indies] == [indy.id]
+    # no kind filter → both
+    assert {j.id for j in run(mr.list_jobs(current_user=USER, db=app_db))} == {pak.id, indy.id}
+
+
+def test_indyjob_status_change_logs_event(app_db, eve_db):
+    indy = run(mr.create_job(body=mr.JobCreate(product_type_id=2000, product_name="Indy", kind="indy"),
+                             current_user=USER, db=app_db))
+    run(mr.update_job(job_id=indy.id, body=mr.JobUpdate(status=ProductionStatus.IN_PROGRESS),
+                      current_user=USER, db=app_db))
+    events = (app_db.query(ProductionStatusEvent)
+              .filter_by(job_id=indy.id).order_by(ProductionStatusEvent.at).all())
+    # creation event + the manual transition were both written to the DB
+    assert [e.status for e in events][-1] == "In Progress"
+    assert len(events) >= 2
+
+
 def test_get_job_404(app_db, eve_db):
     with pytest.raises(mr.HTTPException):
         run(mr.get_job(job_id=12345, current_user=USER, db=app_db))

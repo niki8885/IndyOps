@@ -107,6 +107,7 @@ class CalcRequest(BaseModel):
 class JobCreate(BaseModel):
     product_type_id: int
     product_name: str
+    kind: str = "pak"                      # 'pak' (outsourced) | 'indy' (internal plan)
     blueprint_type_id: Optional[int] = None
     blueprint_name: Optional[str] = None
     facility_id: Optional[int] = None
@@ -171,6 +172,7 @@ class JobUpdate(BaseModel):
 class JobOut(BaseModel):
     id: int
     user_id: int
+    kind: Optional[str] = "pak"
     project_id: Optional[int] = None
     facility_id: Optional[int] = None
     blueprint_type_id: Optional[int] = None
@@ -1058,12 +1060,14 @@ async def facility_bonuses(
 async def list_jobs(
         project_id: Optional[int] = None,
         job_status: Optional[ProductionStatus] = None,
+        kind: Optional[str] = None,
         current_user: UserDB = Depends(get_current_user),
         db: Session = Depends(get_db),
 ):
     q = db.query(ProductionJob).filter(ProductionJob.user_id == current_user.id)
     if project_id:  q = q.filter(ProductionJob.project_id == project_id)
     if job_status:  q = q.filter(ProductionJob.status == job_status)
+    if kind:        q = q.filter(ProductionJob.kind == kind)
     return q.order_by(ProductionJob.date_planned.desc()).all()
 
 

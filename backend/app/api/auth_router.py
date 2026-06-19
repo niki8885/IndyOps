@@ -2,7 +2,7 @@ import bcrypt as _bcrypt
 from fastapi import HTTPException, Depends, APIRouter
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
-from app.core.security import create_access_token
+from app.core.security import create_access_token, get_current_user
 from app.core.database import UserDB, get_db
 
 router = APIRouter()
@@ -61,3 +61,8 @@ async def login(user: UserLogin, db: Session = Depends(get_db)):
 
     token = create_access_token({"sub": str(db_user.id)})
     return {"access_token": token, "token_type": "bearer", **_user_profile(db_user)}
+
+
+@router.get("/me", summary="Current account profile")
+async def me(current_user: UserDB = Depends(get_current_user)):
+    return _user_profile(current_user)

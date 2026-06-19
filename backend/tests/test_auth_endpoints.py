@@ -6,9 +6,9 @@ called directly against an in-memory SQLite session. Password hashing (bcrypt)
 and JWT minting/verification run for real — no network or native binary — using
 the ``SECRET_KEY=test-secret`` set in tests/conftest.py at import time.
 
-There is no dedicated ``/me`` route on the router; the "current user" path lives
-in ``app.core.security.get_current_user``, so we exercise it end-to-end with a
-real token produced by ``login``.
+The ``/me`` route just echoes the current user's profile; the "current user"
+resolution lives in ``app.core.security.get_current_user``, which we also
+exercise end-to-end with a real token produced by ``login``.
 """
 import asyncio
 
@@ -121,6 +121,13 @@ def test_get_current_user_with_real_login_token(db):
     user = security.get_current_user(token=token, db=db)
     assert user.id == reg["user_id"]
     assert user.username == "frank"
+
+
+def test_me_returns_profile(db):
+    _register(db, username="grace", password=PW, email="grace@example.com")
+    user = db.query(UserDB).filter(UserDB.username == "grace").first()
+    out = run(ar.me(current_user=user))
+    assert out == {"user_id": user.id, "username": "grace", "email": "grace@example.com"}
 
 
 def test_get_current_user_invalid_token(db):

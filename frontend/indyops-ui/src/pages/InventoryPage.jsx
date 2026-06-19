@@ -72,7 +72,7 @@ function WarehouseTab() {
     catch (e) { setError(e.message) }
   }
 
-  async function useItem(item) {
+  async function consumeItem(item) {
     const reason = prompt(`Write off "${item.name}" ×${item.quantity.toLocaleString()} for internal use.\nReason:`, 'internal use')
     if (reason == null) return
     try { await post(`/inventory/${item.id}/use`, { reason }); load() }
@@ -100,7 +100,7 @@ function WarehouseTab() {
     <span style={{ whiteSpace: 'nowrap' }}>
       <button className="btn btn-ghost btn-sm" onClick={() => splitItem(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Split stack" disabled={item.quantity < 2}>✂️</button>
       <button className="btn btn-ghost btn-sm" onClick={() => sell(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Sell (record price)">💰</button>
-      <button className="btn btn-ghost btn-sm" onClick={() => useItem(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Write off / internal use">🔧</button>
+      <button className="btn btn-ghost btn-sm" onClick={() => consumeItem(item)} style={{ marginRight: 3, padding: '3px 7px' }} title="Write off / internal use">🔧</button>
       <button className="btn btn-danger btn-sm" onClick={() => remove(item.id)} title="Delete">✕</button>
     </span>
   )
@@ -367,8 +367,8 @@ function ParseTab() {
         if (!res.ok) throw new Error(`Fuzzwork returned ${res.status}`)
         const data = await res.json()
         for (const [tid, p] of Object.entries(data)) {
-          const buy  = parseFloat(p.buy.max)
-          const sell = parseFloat(p.sell.min)
+          const buy  = Number.parseFloat(p.buy.max)
+          const sell = Number.parseFloat(p.sell.min)
           priceMap[Number(tid)] = { Buy: buy, Split: (buy + sell) / 2, Sell: sell }
         }
       } else if (market === 'C-J') {
@@ -433,10 +433,11 @@ function ParseTab() {
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
           <div style={{ flex: 1 }}>
-            <label style={{ display: 'block', fontSize: 12, color: 'var(--text)', marginBottom: 6 }}>
+            <label htmlFor="inv-paste" style={{ display: 'block', fontSize: 12, color: 'var(--text)', marginBottom: 6 }}>
               Paste from EVE inventory (Name ⇥ Qty or Qty ⇥ Name, one per line)
             </label>
             <textarea
+              id="inv-paste"
               value={rawText}
               onChange={e => setRawText(e.target.value)}
               placeholder={'80190\tCoolant\n35640\tEnriched Uranium\nLiquid Ozone\t3118500'}

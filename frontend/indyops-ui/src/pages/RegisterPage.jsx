@@ -34,16 +34,16 @@ export default function RegisterPage() {
 
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <label style={styles.label}>Username</label>
-            <input value={form.username} onChange={set('username')} placeholder="pilot_name" required autoFocus />
+            <label htmlFor="reg-username" style={styles.label}>Username</label>
+            <input id="reg-username" value={form.username} onChange={set('username')} placeholder="pilot_name" required autoFocus />
           </div>
           <div>
-            <label style={styles.label}>Email</label>
-            <input type="email" value={form.email} onChange={set('email')} placeholder="you@example.com" required />
+            <label htmlFor="reg-email" style={styles.label}>Email</label>
+            <input id="reg-email" type="email" value={form.email} onChange={set('email')} placeholder="you@example.com" required />
           </div>
           <div>
-            <label style={styles.label}>Password</label>
-            <input type="password" value={form.password} onChange={set('password')} placeholder="••••••••" required />
+            <label htmlFor="reg-password" style={styles.label}>Password</label>
+            <input id="reg-password" type="password" value={form.password} onChange={set('password')} placeholder="••••••••" required />
           </div>
           <button className="btn btn-primary" type="submit" disabled={loading} style={{ marginTop: 6 }}>
             {loading ? 'Creating…' : 'Register'}
