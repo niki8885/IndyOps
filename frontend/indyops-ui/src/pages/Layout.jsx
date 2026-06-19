@@ -5,6 +5,7 @@ import { useAuth } from '../store/AuthContext'
 import { get, post } from '../api/client'
 
 const NAV = [
+  { to: '/agenda',        label: 'Agenda'         },
   { to: '/manufacturing', label: 'Manufacturing'  },
   { to: '/ore',           label: 'Ore & Refining' },
   { to: '/inventory',     label: 'Inventory'      },

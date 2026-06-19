@@ -24,3 +24,5 @@ junit.xml
 certs/
 *.pem
 *.key
+
+personal_note.txt

@@ -472,6 +472,49 @@ class AnalyticsCache(Base):
     )
 
 
+class PriceAlert(Base):
+    """A user-defined financial alert on an index or a tracked item (the Agenda page).
+
+    Watches either a commodity index (``target_kind='index'`` → ``index_key``) or a
+    tracked item at one place (``target_kind='item'`` → ``item_id`` + ``place_id``).
+    ``metric`` picks price vs volume; ``condition`` is an absolute crossing
+    (above/below ``threshold``) or a % move over ``window_hours`` (pct_up/pct_down,
+    threshold = percent). Fires → an AgendaNotification; one-shot alerts disarm
+    (``active=False``) until re-armed, repeating alerts honour a cooldown."""
+    __tablename__ = "price_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    target_kind = Column(String(10), nullable=False)        # 'index' | 'item'
+    index_key = Column(String(20), nullable=True)           # when target_kind='index'
+    item_id = Column(Integer, nullable=True)                # tracked_items.id when 'item'
+    place_id = Column(Integer, nullable=True)               # tracked_places.id (item alerts)
+    metric = Column(String(10), nullable=False, default="price")     # 'price' | 'volume'
+    condition = Column(String(12), nullable=False)          # above | below | pct_up | pct_down
+    threshold = Column(Float, nullable=False)               # absolute value, or percent
+    window_hours = Column(Integer, nullable=False, default=24)       # comparison window for pct
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    repeat = Column(Boolean, nullable=False, default=False)
+    note = Column(String(200), nullable=True)
+    last_value = Column(Float, nullable=True)
+    last_triggered_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class AgendaNotification(Base):
+    """A delivered notification in the Agenda feed (usually a fired PriceAlert)."""
+    __tablename__ = "agenda_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    alert_id = Column(Integer, nullable=True)               # source PriceAlert (kept if alert deleted)
+    severity = Column(String(8), nullable=False, default="info")    # info | up | down
+    title = Column(String(200), nullable=False)
+    body = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
+    read_at = Column(DateTime, nullable=True)
+
+
 class TradeCandidate(Base):
     """A precomputed cross-hub trade route (buy at one hub, sell at another).
 
