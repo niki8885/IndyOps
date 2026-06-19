@@ -10,7 +10,7 @@ Powers three things:
 Alerts are *evaluated* off-request by ``app.tasks.evaluate_alerts`` on the worker;
 this router only does CRUD + read models. See [[indyops-service-layering]].
 """
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
