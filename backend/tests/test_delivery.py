@@ -34,7 +34,7 @@ def test_jf_cost_basic():
     r = d.jf_cost(100_000, ly=5.0, isotopes_per_ly=100.0, isotope_price=10.0)
     assert r["trips"] == 1
     assert r["total_isotopes"] == pytest.approx(500.0)
-    assert r["total_cost"] == 5_000.0
+    assert r["total_cost"] == pytest.approx(5_000.0)
     assert r["cost_per_m3"] == pytest.approx(0.05)
 
 
@@ -49,7 +49,7 @@ def test_jf_cost_multiple_trips():
     # 800k m³ → 3 trips (ceil 800k/350k)
     r = d.jf_cost(800_000, ly=2.0, isotopes_per_ly=100.0, isotope_price=1.0)
     assert r["trips"] == 3
-    assert r["total_isotopes"] == 3 * 2.0 * 100.0
+    assert r["total_isotopes"] == pytest.approx(3 * 2.0 * 100.0)
 
 
 def test_jf_cost_zero_volume_is_safe():
@@ -61,7 +61,7 @@ def test_jf_cost_zero_volume_is_safe():
 
 def test_regular_cost():
     r = d.regular_cost(total_volume=10_000, jumps=8, isk_per_jump_m3=2.0)
-    assert r["total_cost"] == 8 * 2.0 * 10_000
+    assert r["total_cost"] == pytest.approx(8 * 2.0 * 10_000)
     assert r["cost_per_m3"] == pytest.approx(16.0)
 
 

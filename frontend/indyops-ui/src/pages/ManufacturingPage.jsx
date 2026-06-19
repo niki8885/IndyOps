@@ -7,7 +7,44 @@ import TypeSearch from '../components/TypeSearch'
 // of the eagerly-imported Manufacturing bundle.
 const ChainGraph = lazy(() => import('../components/ChainGraph'))
 
-const TABS = ['Calculator', 'Chain', 'PAK Jobs', 'Inventory Analysis']
+const TABS = ['Calculator', 'Chain', 'PAK Jobs', 'IndyJob', 'Inventory Analysis']
+
+// ── Buy-list draft (localStorage) ──
+// Calculator / Analyze-market can stash material lines here; the Combined buy list
+// (on both PAK Jobs and IndyJob tabs) merges them with any selected saved jobs.
+const BUY_DRAFT_KEY = 'indyops.buyDraft'
+function readBuyDraft() {
+  try { return JSON.parse(localStorage.getItem(BUY_DRAFT_KEY)) || [] } catch { return [] }
+}
+function writeBuyDraft(batches) {
+  try { localStorage.setItem(BUY_DRAFT_KEY, JSON.stringify(batches)) } catch { /* quota */ }
+}
+function addBuyDraftBatch(label, materials) {
+  const clean = (materials || []).filter(m => m.type_id && m.qty > 0)
+    .map(m => ({ type_id: m.type_id, name: m.name, qty: m.qty }))
+  if (!clean.length) return 0
+  const cur = readBuyDraft()
+  cur.push({ label: label || 'Draft', materials: clean })
+  writeBuyDraft(cur)
+  return clean.length
+}
+function clearBuyDraft() { writeBuyDraft([]) }
+
+// Unique-ish code for an internal IndyJob (replaces the PAK contract code).
+function genIndyCode(productName) {
+  const abbr = (productName || 'JOB').replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase() || 'JOB'
+  return `IDJ-${abbr}-${Date.now().toString(36).slice(-4).toUpperCase()}`
+}
+function buyDraftMaterials() {
+  const agg = {}
+  for (const b of readBuyDraft()) {
+    for (const m of (b.materials || [])) {
+      if (!agg[m.type_id]) agg[m.type_id] = { type_id: m.type_id, name: m.name, qty: 0 }
+      agg[m.type_id].qty += m.qty || 0
+    }
+  }
+  return Object.values(agg)
+}
 
 // Major trade-hub regions for chain buy/sell pricing (Fuzzwork aggregates).
 const REGIONS = [
@@ -90,7 +127,7 @@ async function fetchMarketPrices(typeIds, market) {
     if (!res.ok) throw new Error(`Fuzzwork ${res.status}`)
     const data = await res.json()
     for (const [tid, p] of Object.entries(data)) {
-      const buy = parseFloat(p.buy.max), sell = parseFloat(p.sell.min)
+      const buy = Number.parseFloat(p.buy.max), sell = Number.parseFloat(p.sell.min)
       out[Number(tid)] = { Buy: buy, Sell: sell, Split: (buy + sell) / 2 }
     }
   } else { // C-J via backend
@@ -115,7 +152,8 @@ export default function ManufacturingPage() {
       {tab === 0 && <CalculatorTab />}
       {tab === 1 && <ChainTab />}
       {tab === 2 && <PakJobsTab />}
-      {tab === 3 && <InventoryAnalysisTab />}
+      {tab === 3 && <IndyJobsTab />}
+      {tab === 4 && <InventoryAnalysisTab />}
     </div>
   )
 }
@@ -152,6 +190,13 @@ function CalculatorTab() {
   const [jobForm, setJobForm]         = useState({ project_id: '', status: 'Planning', target: '', target_other: '', paks: '', units_per_pak: '', pack_tier: '', jita_sell: '', jita_buy: '', cj_sell: '', cj_buy: '', initial_contract_price: '', return_contract_price: '', code: '', contract_code: '', place: '', note: '' })
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
+
+  // IndyJob (internal planned job) save panel
+  const [indyOpen, setIndyOpen]       = useState(false)
+  const [indySaved, setIndySaved]     = useState(false)
+  const [indyLoading, setIndyLoading] = useState(false)
+  const [indyForm, setIndyForm] = useState({ project_id: '', status: 'Planning', target: '', target_other: '', place: '', blueprints: '', runs_per_bp: '', code: '', note: '', jita_sell: '', jita_buy: '' })
+  const [buyMsg, setBuyMsg] = useState('')
 
   // market-price source controls
   const [matMarket, setMatMarket] = useState('Jita')
@@ -462,8 +507,72 @@ function CalculatorTab() {
     finally { setSaveLoading(false) }
   }
 
+  // when the Add-to-plan (IndyJob) panel opens: default blueprints/runs, code, prices
+  useEffect(() => {
+    if (!indyOpen || !result || !product?.type_id) return
+    setIndyForm(f => ({
+      ...f,
+      blueprints: f.blueprints || String(result.windows || params.windows || 1),
+      runs_per_bp: f.runs_per_bp || String(params.runs || 1),
+      code: f.code || genIndyCode(product.name),
+      project_id: f.project_id || calcProjectId || '',
+    }))
+    fetchMarketPrices([product.type_id], 'Jita').then(jita => {
+      const jp = jita[product.type_id]
+      setIndyForm(f => ({
+        ...f,
+        jita_sell: f.jita_sell || (jp?.Sell != null ? jp.Sell.toFixed(2) : ''),
+        jita_buy:  f.jita_buy  || (jp?.Buy  != null ? jp.Buy.toFixed(2)  : ''),
+      }))
+    }).catch(() => {})
+  }, [indyOpen, result, product?.type_id])
+
+  async function saveIndyJob() {
+    if (!result) return
+    setIndyLoading(true); setIndySaved(false)
+    try {
+      const f = facilities.find(f => f.id === Number(params.facility_id))
+      let note = indyForm.note || null
+      if (indyForm.target === 'Other' && indyForm.target_other) {
+        note = (note ? note + ' | ' : '') + 'Target: ' + indyForm.target_other
+      }
+      await post('/manufacturing/jobs', {
+        kind: 'indy',
+        product_type_id: product.type_id,
+        product_name: result.output.name,
+        blueprint_type_id: bpInfo.blueprint_type_id,
+        blueprint_name: bpInfo.blueprint_name,
+        facility_id: params.facility_id ? Number(params.facility_id) : null,
+        project_id: indyForm.project_id ? Number(indyForm.project_id) : null,
+        runs: Number(indyForm.runs_per_bp) || Number(params.runs) || 1,
+        windows: Number(indyForm.blueprints) || Number(params.windows) || 1,
+        me: Number(params.me), te: Number(params.te),
+        bpc_cost: Number(params.bpc_cost),
+        sell_price: Number(params.output_price),
+        jita_sell: indyForm.jita_sell ? Number(indyForm.jita_sell) : null,
+        jita_buy: indyForm.jita_buy ? Number(indyForm.jita_buy) : null,
+        status: indyForm.status,
+        target: indyForm.target || null,
+        place: indyForm.place || f?.system_name || null,
+        code: indyForm.code || genIndyCode(result.output.name),
+        note,
+        calc_snapshot: result,
+      })
+      setIndySaved(true); setIndyOpen(false)
+    } catch (e) { setError(e.message) }
+    finally { setIndyLoading(false) }
+  }
+
+  function stashBuyList() {
+    if (!result?.materials?.length) return
+    const n = addBuyDraftBatch(result.output?.name,
+      result.materials.map(m => ({ type_id: m.type_id, name: m.name, qty: m.adj_qty })))
+    setBuyMsg(n ? `✓ ${n} materials added to the buy-list draft (see Combined buy list)` : '')
+  }
+
   const setP = k => e => setParams(p => ({ ...p, [k]: e.target.value }))
   const setJ = k => e => setJobForm(f => ({ ...f, [k]: e.target.value }))
+  const setI = k => e => setIndyForm(f => ({ ...f, [k]: e.target.value }))
 
   const profit = result?.results?.profit ?? 0
   const margin = result?.results?.margin_pct ?? 0
@@ -716,6 +825,19 @@ function CalculatorTab() {
             💾 Save as PAK Job
           </button>
         )}
+        {result && (
+          <button className="btn btn-ghost" onClick={() => { setIndyOpen(v => !v); setIndySaved(false) }}>
+            ➕ Add to plan (IndyJob)
+          </button>
+        )}
+        {result && (
+          <button className="btn btn-ghost" onClick={stashBuyList} title="Add these materials to the Combined buy list draft">
+            🛒 Add to buy list
+          </button>
+        )}
+        {buyMsg && <span style={{ fontSize: 12, color: '#4caf7d' }}>{buyMsg}</span>}
+        {saved && <span style={{ fontSize: 12, color: '#4caf7d' }}>✓ PAK saved</span>}
+        {indySaved && <span style={{ fontSize: 12, color: '#4caf7d' }}>✓ IndyJob added to plan</span>}
       </div>
 
       {/* ── Market analysis ── */}
@@ -911,6 +1033,74 @@ function CalculatorTab() {
             <button className="btn btn-ghost" onClick={() => setSaveOpen(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveJob} disabled={saveLoading}>
               {saveLoading ? 'Saving…' : '💾 Save Job'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add to plan (IndyJob — internal, no contract) ── */}
+      {indyOpen && result && (
+        <div className="card">
+          <h3 style={{ marginBottom: 4, fontSize: 14 }}>Add to plan — IndyJob</h3>
+          <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 14 }}>
+            Internal planned job. Cost &amp; profit come from this calculation; no outsourcing contract.
+          </div>
+          {indySaved && <div style={{ color: '#4caf7d', marginBottom: 10 }}>✓ Added to plan!</div>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+            <div>
+              <CLabel>Project</CLabel>
+              <select value={indyForm.project_id} onChange={setI('project_id')}>
+                <option value="">No project</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <CLabel>Status</CLabel>
+              <select value={indyForm.status} onChange={setI('status')}>
+                {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <CLabel>Target</CLabel>
+              <select value={indyForm.target} onChange={setI('target')}>
+                <option value="">—</option>
+                {['Reactions','Refueling','Sell','Internal','Other'].map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            {indyForm.target === 'Other' && (
+              <CInput label="Target details" value={indyForm.target_other} onChange={setI('target_other')} placeholder="describe target" />
+            )}
+            <CInput label="Place / System" value={indyForm.place} onChange={setI('place')} placeholder="RYC-19" />
+            <CInput label="Blueprints" type="number" value={indyForm.blueprints} onChange={setI('blueprints')} />
+            <CInput label="Runs / blueprint" type="number" value={indyForm.runs_per_bp} onChange={setI('runs_per_bp')} />
+            <div>
+              <CLabel>Code <Hint>auto-generated</Hint></CLabel>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input value={indyForm.code} onChange={setI('code')} placeholder="IDJ-…" />
+                <button type="button" className="btn btn-ghost btn-sm" style={{ whiteSpace: 'nowrap' }}
+                  onClick={() => setIndyForm(f => ({ ...f, code: genIndyCode(product?.name) }))}>
+                  ⚙ New
+                </button>
+              </div>
+            </div>
+            <CInput label="Jita SELL" type="number" value={indyForm.jita_sell} onChange={setI('jita_sell')} />
+            <CInput label="Jita BUY" type="number" value={indyForm.jita_buy} onChange={setI('jita_buy')} />
+            <div style={{ gridColumn: '1 / -1' }}>
+              <CLabel>Note</CLabel>
+              <textarea value={indyForm.note} onChange={setI('note')} rows={2} />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 18, marginTop: 12, fontSize: 12, color: 'var(--text)', flexWrap: 'wrap' }}>
+            <span>Unit cost: <b style={{ color: 'var(--text-white)' }}>{result.output?.quantity ? fmtIsk(result.results.total_costs / result.output.quantity) : '—'}</b></span>
+            <span>Profit: <b style={{ color: profit >= 0 ? '#4caf7d' : '#e05252' }}>{fmtIsk(profit)}</b></span>
+            <span>Margin: <b style={{ color: margin >= 0 ? '#4caf7d' : '#e05252' }}>{margin.toFixed(2)}%</b></span>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost" onClick={() => setIndyOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveIndyJob} disabled={indyLoading}>
+              {indyLoading ? 'Saving…' : '➕ Add to plan'}
             </button>
           </div>
         </div>
@@ -1985,7 +2175,7 @@ function _chainPdfHtml(product, plan, result, totalCost, sellPrice, totalSell, p
 
   const isk = v => {
     if (v == null) return '—'
-    const n = Number(v); if (isNaN(n)) return '—'
+    const n = Number(v); if (Number.isNaN(n)) return '—'
     if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + ' B ISK'
     if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + ' M ISK'
     return n.toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' ISK'
@@ -2131,8 +2321,11 @@ function PakJobsTab() {
   const selectedJobs = jobs.filter(j => selected[j.id])
   const toggleSel = id => setSelected(s => ({ ...s, [id]: !s[id] }))
 
+  const draftCount = buyDraftMaterials().length
+
   async function load() {
     const params = new URLSearchParams()
+    params.set('kind', 'pak')
     if (filter.project_id) params.set('project_id', filter.project_id)
     if (filter.status)     params.set('job_status', filter.status)
     try { setJobs(await get(`/manufacturing/jobs?${params}`)) } catch {}
@@ -2171,14 +2364,14 @@ function PakJobsTab() {
           {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <button className="btn btn-ghost btn-sm" onClick={load}>Refresh</button>
-        {selectedJobs.length > 0 && (
+        {(selectedJobs.length > 0 || draftCount > 0) && (
           <button className="btn btn-primary btn-sm" onClick={() => setCombineOpen(v => !v)} style={{ marginLeft: 'auto' }}>
-            🛒 Combined buy list ({selectedJobs.length})
+            🛒 Combined buy list ({selectedJobs.length}{draftCount > 0 ? ` +${draftCount} draft` : ''})
           </button>
         )}
       </div>
 
-      {combineOpen && selectedJobs.length > 0 && (
+      {combineOpen && (selectedJobs.length > 0 || draftCount > 0) && (
         <CombinedBuyPanel jobs={selectedJobs} projects={projects} onClose={() => setCombineOpen(false)} />
       )}
 
@@ -2254,7 +2447,8 @@ function PakJobsTab() {
   )
 }
 
-function PakCard({ job, onChange }) {
+// Shared warehouse issue/receive/movements panel — used by both PAK and IndyJob cards.
+function WarehouseWriteoff({ job, onChange }) {
   const s = job.calc_snapshot
   const [movements, setMovements] = useState([])
   const [issuing, setIssuing]     = useState(false)
@@ -2310,6 +2504,93 @@ function PakCard({ job, onChange }) {
     } catch (e) { setReceiveMsg('⚠ ' + e.message) }
     finally { setReceiving(false) }
   }
+
+  return (
+    <CardSection title="Warehouse write-off" style={{ gridColumn: '1 / -1' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+        <button className="btn btn-primary btn-sm" onClick={() => issue(false)} disabled={issuing}>
+          {issuing ? 'Issuing…' : outMoves.length ? '📦 Issue again' : '📦 Issue materials'}
+        </button>
+        <span style={{ fontSize: 11, color: 'var(--text)' }}>
+          Deduct the batch's materials from {job.project_id ? 'project' : 'unassigned'} stock (FIFO)
+        </span>
+        {issueMsg && <span style={{ fontSize: 12, color: issueMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{issueMsg}</span>}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => receive(false)} disabled={receiving}
+          style={{ borderColor: '#4caf7d', color: '#4caf7d' }}>
+          {receiving ? 'Receiving…' : inMoves.length ? '✅ Received again' : '✅ Received'}
+        </button>
+        <label style={{ fontSize: 11, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          unit cost
+          <input type="number" value={receivePrice} onChange={e => setReceivePrice(e.target.value)}
+            placeholder={actualUnit != null ? String(actualUnit) : 'auto'} style={{ width: 110 }} />
+        </label>
+        <span style={{ fontSize: 11, color: 'var(--text)' }}>→ adds output to stock at production cost</span>
+        {receiveMsg && <span style={{ fontSize: 12, color: receiveMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{receiveMsg}</span>}
+      </div>
+
+      {movements.length > 0 && (
+        <table style={{ marginTop: 6 }}>
+          <thead>
+            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Reason</th></tr>
+          </thead>
+          <tbody>
+            {movements.map(mv => (
+              <tr key={mv.id}>
+                <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.created_at ? new Date(mv.created_at).toLocaleString() : '—'}</td>
+                <td style={{ color: 'var(--text-white)' }}>{mv.name}</td>
+                <td style={{ color: mv.direction === 'in' ? '#4caf7d' : '#e05252' }}>
+                  {mv.direction === 'in' ? '+' : '-'}{mv.quantity.toLocaleString()}
+                </td>
+                <td style={{ color: 'var(--text)' }}>{fmtIsk(mv.unit_cost)}</td>
+                <td style={{ color: 'var(--text-bright)' }}>{fmtIsk(mv.total_cost)}</td>
+                <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </CardSection>
+  )
+}
+
+// Status-change timeline (production_status_events) for a job — every status
+// transition is recorded server-side on PATCH; this just surfaces it. ``version``
+// (the job's current status) re-fetches after a change.
+function StatusHistory({ jobId, version }) {
+  const [hist, setHist] = useState(null)
+  useEffect(() => {
+    let alive = true
+    get(`/manufacturing/jobs/${jobId}/history`).then(d => { if (alive) setHist(d) }).catch(() => {})
+    return () => { alive = false }
+  }, [jobId, version])
+  const events = hist?.events || []
+  return (
+    <CardSection title="Status history" style={{ gridColumn: '1 / -1' }}>
+      {events.length === 0
+        ? <span style={{ fontSize: 12, color: 'var(--text)' }}>No status changes recorded yet.</span>
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {events.map((e, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--text)', minWidth: 140 }}>{e.at ? new Date(e.at).toLocaleString() : '—'}</span>
+                {e.from_status && <span style={{ color: STATUS_COLOR[e.from_status] || 'var(--text)' }}>{e.from_status}</span>}
+                {e.from_status && <span style={{ color: 'var(--text)' }}>→</span>}
+                <span style={{ color: STATUS_COLOR[e.status] || 'var(--text-white)', fontWeight: 600 }}>{e.status}</span>
+                {e.note && <span style={{ color: 'var(--text)' }}>· {e.note}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+    </CardSection>
+  )
+}
+
+function PakCard({ job, onChange }) {
+  const s = job.calc_snapshot
+  const actualUnit = s?.actual?.unit_cost ?? null
 
   if (!s) {
     return (
@@ -2370,54 +2651,171 @@ function PakCard({ job, onChange }) {
         </CardSection>
       )}
 
-      {/* Material write-off / issue */}
-      <CardSection title="Warehouse write-off" style={{ gridColumn: '1 / -1' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-          <button className="btn btn-primary btn-sm" onClick={() => issue(false)} disabled={issuing}>
-            {issuing ? 'Issuing…' : outMoves.length ? '📦 Issue again' : '📦 Issue materials'}
-          </button>
-          <span style={{ fontSize: 11, color: 'var(--text)' }}>
-            Deduct the batch's materials from {job.project_id ? 'project' : 'unassigned'} stock (FIFO)
-          </span>
-          {issueMsg && <span style={{ fontSize: 12, color: issueMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{issueMsg}</span>}
-        </div>
+      <WarehouseWriteoff job={job} onChange={onChange} />
+    </div>
+  )
+}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => receive(false)} disabled={receiving}
-            style={{ borderColor: '#4caf7d', color: '#4caf7d' }}>
-            {receiving ? 'Receiving…' : inMoves.length ? '✅ Received again' : '✅ Received'}
-          </button>
-          <label style={{ fontSize: 11, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
-            unit cost
-            <input type="number" value={receivePrice} onChange={e => setReceivePrice(e.target.value)}
-              placeholder={actualUnit != null ? String(actualUnit) : 'auto'} style={{ width: 110 }} />
-          </label>
-          <span style={{ fontSize: 11, color: 'var(--text)' }}>→ adds output to stock at production cost</span>
-          {receiveMsg && <span style={{ fontSize: 12, color: receiveMsg.startsWith('⚠') ? '#e05252' : '#4caf7d' }}>{receiveMsg}</span>}
-        </div>
+/* ═══════════════════════════ INDYJOB (internal planned jobs) ═══════════════════════════ */
 
-        {movements.length > 0 && (
-          <table style={{ marginTop: 6 }}>
-            <thead>
-              <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Reason</th></tr>
-            </thead>
-            <tbody>
-              {movements.map(mv => (
-                <tr key={mv.id}>
-                  <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.created_at ? new Date(mv.created_at).toLocaleString() : '—'}</td>
-                  <td style={{ color: 'var(--text-white)' }}>{mv.name}</td>
-                  <td style={{ color: mv.direction === 'in' ? '#4caf7d' : '#e05252' }}>
-                    {mv.direction === 'in' ? '+' : '-'}{mv.quantity.toLocaleString()}
-                  </td>
-                  <td style={{ color: 'var(--text)' }}>{fmtIsk(mv.unit_cost)}</td>
-                  <td style={{ color: 'var(--text-bright)' }}>{fmtIsk(mv.total_cost)}</td>
-                  <td style={{ color: 'var(--text)', fontSize: 11 }}>{mv.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+function IndyJobsTab() {
+  const [jobs, setJobs]         = useState([])
+  const [projects, setProjects] = useState([])
+  const [filter, setFilter]     = useState({ project_id: '', status: '' })
+  const [expand, setExpand]     = useState(null)
+  const [selected, setSelected] = useState({})
+  const [combineOpen, setCombineOpen] = useState(false)
+
+  const selectedJobs = jobs.filter(j => selected[j.id])
+  const toggleSel = id => setSelected(s => ({ ...s, [id]: !s[id] }))
+  const draftCount = buyDraftMaterials().length
+
+  async function load() {
+    const params = new URLSearchParams()
+    params.set('kind', 'indy')
+    if (filter.project_id) params.set('project_id', filter.project_id)
+    if (filter.status)     params.set('job_status', filter.status)
+    try { setJobs(await get(`/manufacturing/jobs?${params}`)) } catch {}
+  }
+
+  useEffect(() => {
+    get('/organisations').then(async orgs => {
+      const all = []
+      for (const o of orgs) {
+        try { const ps = await get(`/projects?org_id=${o.id}`); all.push(...ps) } catch {}
+      }
+      setProjects(all)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => { load() }, [filter])
+
+  async function updateStatus(id, status) {
+    try { await patch(`/manufacturing/jobs/${id}`, { status }); load() } catch {}
+  }
+  async function remove(id) {
+    if (!confirm('Delete IndyJob?')) return
+    try { await del(`/manufacturing/jobs/${id}`); load() } catch {}
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 200 }}>
+          <option value="">All projects</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))} style={{ width: 160 }}>
+          <option value="">All statuses</option>
+          {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <button className="btn btn-ghost btn-sm" onClick={load}>Refresh</button>
+        {(selectedJobs.length > 0 || draftCount > 0) && (
+          <button className="btn btn-primary btn-sm" onClick={() => setCombineOpen(v => !v)} style={{ marginLeft: 'auto' }}>
+            🛒 Combined buy list ({selectedJobs.length}{draftCount > 0 ? ` +${draftCount} draft` : ''})
+          </button>
         )}
+      </div>
+
+      {combineOpen && (selectedJobs.length > 0 || draftCount > 0) && (
+        <CombinedBuyPanel jobs={selectedJobs} projects={projects} onClose={() => setCombineOpen(false)} />
+      )}
+
+      {jobs.length === 0
+        ? <div className="empty-state">No internal jobs yet — use the Calculator's “➕ Add to plan”.</div>
+        : (
+          <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th></th><th>#</th><th>Date</th><th>Place</th><th>Product</th>
+                  <th>Blueprints</th><th>Amount</th><th>Code</th><th>Target</th>
+                  <th>Status</th><th>Released</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map(j => {
+                  const units = j.calc_snapshot?.output?.quantity ?? '—'
+                  return [
+                    <tr key={j.id} style={{ cursor: 'pointer' }} onClick={() => setExpand(expand === j.id ? null : j.id)}>
+                      <td onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={!!selected[j.id]} onChange={() => toggleSel(j.id)} />
+                      </td>
+                      <td style={{ color: 'var(--text)' }}>{j.id}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.date_planned ? new Date(j.date_planned).toLocaleDateString() : '—'}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.place || '—'}</td>
+                      <td style={{ color: 'var(--accent)', whiteSpace: 'nowrap' }}>{j.product_name}</td>
+                      <td style={{ color: 'var(--text-white)' }}>{j.windows || 1} × {j.runs}</td>
+                      <td>{typeof units === 'number' ? units.toLocaleString() : units}</td>
+                      <td style={{ color: 'var(--text)', fontSize: 12, fontFamily: 'monospace' }}>{j.code || '—'}</td>
+                      <td style={{ fontSize: 12 }}>{j.target || '—'}</td>
+                      <td>
+                        <select value={j.status} onClick={e => e.stopPropagation()} onChange={e => updateStatus(j.id, e.target.value)}
+                          style={{ width: 110, color: STATUS_COLOR[j.status] || 'var(--text)', background: 'var(--surface)', border: '1px solid var(--border)', padding: '3px 6px', fontSize: 12 }}>
+                          {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{j.date_released ? new Date(j.date_released).toLocaleDateString() : '—'}</td>
+                      <td><button className="btn btn-danger btn-sm" onClick={e => { e.stopPropagation(); remove(j.id) }}>✕</button></td>
+                    </tr>,
+                    expand === j.id && j.calc_snapshot && (
+                      <tr key={`exp-${j.id}`}>
+                        <td colSpan={12} style={{ background: 'var(--surface2)', padding: 0 }}>
+                          <IndyCard job={j} onChange={load} />
+                        </td>
+                      </tr>
+                    )
+                  ]
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      }
+    </div>
+  )
+}
+
+function IndyCard({ job, onChange }) {
+  const s = job.calc_snapshot
+  if (!s) {
+    return <div style={{ padding: 20 }}><span style={{ color: 'var(--text)', fontSize: 12 }}>No calculation snapshot for this job.</span></div>
+  }
+  const r = s.results
+  const actualUnit = s?.actual?.unit_cost ?? null
+  const unitPlan = s.output?.quantity ? r.total_costs / s.output.quantity : null
+  const profit = r.profit ?? 0
+  const margin = r.margin_pct ?? 0
+
+  return (
+    <div style={{ padding: 20, display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 20 }}>
+      <CardSection title="Info">
+        <Row label="Product"  value={job.product_name} />
+        <Row label="Station"  value={job.place} />
+        <Row label="Production" value={`${job.windows || 1} blueprint(s) × ${job.runs} runs`} />
+        <Row label="Code" value={job.code} mono />
       </CardSection>
+      <CardSection title="Inputs">
+        <Row label="Job time" value={s.job_time ? s.job_time.hours.toFixed(2) + ' h' : '—'} />
+        <Row label="Material cost" value={fmtIsk(r.total_material_cost)} />
+        <Row label="BPC cost" value={fmtIsk(s.bpc_cost)} />
+        <Row label="Install cost" value={fmtIsk(r.total_install_cost)} />
+        <Row label="TOTAL INPUT" value={fmtIsk(r.total_costs)} accent />
+      </CardSection>
+      <CardSection title="Internal result">
+        <Row label="Total sell" value={fmtIsk(r.total_sell)} />
+        <Row label="Profit" value={fmtIsk(profit)} accent />
+        <Row label="Margin" value={`${margin.toFixed(2)}%`} />
+        <Row label="Unit cost (plan)" value={unitPlan != null ? fmtIsk(unitPlan) : '—'} />
+        {actualUnit != null && <Row label="Unit cost (actual)" value={fmtIsk(actualUnit)} accent />}
+      </CardSection>
+      <CardSection title="Prices">
+        <Row label="Jita SELL" value={job.jita_sell ? fmtIsk(job.jita_sell) : '—'} />
+        <Row label="Jita BUY"  value={job.jita_buy  ? fmtIsk(job.jita_buy)  : '—'} />
+      </CardSection>
+
+      <StatusHistory jobId={job.id} version={job.status} />
+      <WarehouseWriteoff job={job} onChange={onChange} />
     </div>
   )
 }
@@ -2786,6 +3184,8 @@ function CombinedBuyPanel({ jobs, projects, onClose }) {
   const projLabel = scopeProject
     ? (projects.find(p => p.id === scopeProject)?.name || `#${scopeProject}`)
     : 'unassigned / mixed'
+  const draftN = buyDraftMaterials().length
+  function clearDraft() { clearBuyDraft(); build() }
 
   async function build() {
     setLoading(true); setErr('')
@@ -2797,8 +3197,13 @@ function CombinedBuyPanel({ jobs, projects, onClose }) {
           agg[m.type_id].needed += m.adj_qty || 0
         }
       }
+      // merge the Calculator / Analyze-market buy-list draft (stashed in localStorage)
+      for (const m of buyDraftMaterials()) {
+        if (!agg[m.type_id]) agg[m.type_id] = { type_id: m.type_id, name: m.name, needed: 0 }
+        agg[m.type_id].needed += m.qty || 0
+      }
       const list = Object.values(agg)
-      if (!list.length) { setErr('Selected jobs have no material snapshots'); setRows([]); setNeeds([]); return }
+      if (!list.length) { setErr('Nothing to buy — no job snapshots or draft items'); setRows([]); setNeeds([]); return }
 
       const av = await post('/manufacturing/material-availability', {
         project_id: scopeProject,
@@ -2837,10 +3242,13 @@ function CombinedBuyPanel({ jobs, projects, onClose }) {
     <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>
-          COMBINED BUY LIST · {jobs.length} jobs
+          COMBINED BUY LIST · {jobs.length} jobs{draftN > 0 ? ` + ${draftN} draft` : ''}
         </span>
         <span style={{ fontSize: 11, color: 'var(--text)' }}>project: <b style={{ color: 'var(--text-white)' }}>{projLabel}</b> · stock netted off</span>
-        <button className="btn btn-ghost btn-sm" onClick={build} disabled={loading} style={{ marginLeft: 'auto' }}>
+        {draftN > 0 && (
+          <button className="btn btn-ghost btn-sm" onClick={clearDraft} title="Remove the Calculator/Analyze draft items">Clear draft</button>
+        )}
+        <button className="btn btn-ghost btn-sm" onClick={build} disabled={loading} style={{ marginLeft: draftN > 0 ? 0 : 'auto' }}>
           {loading ? '…' : '⟳ Rebuild'}
         </button>
         <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
@@ -3081,7 +3489,7 @@ function ChainCostPie({ plan }) {
 function fmtIsk(v) {
   if (v == null || v === '') return '—'
   const n = Number(v)
-  if (isNaN(n)) return '—'
+  if (Number.isNaN(n)) return '—'
   if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + ' B ISK'
   if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + ' M ISK'
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' ISK'

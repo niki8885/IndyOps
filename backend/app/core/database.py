@@ -196,6 +196,9 @@ class ProductionJob(Base):
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
     facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
 
+    # 'pak' = outsourced pack contract, 'indy' = internal planned job (Calculator → Add to plan)
+    kind = Column(String(8), nullable=False, default="pak", server_default="pak", index=True)
+
     # Blueprint / product
     blueprint_type_id = Column(Integer, nullable=True)
     blueprint_name = Column(String(200), nullable=True)

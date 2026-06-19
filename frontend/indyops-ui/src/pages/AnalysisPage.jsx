@@ -467,8 +467,9 @@ function TrackingCharts({ detail, win, setWin, selPlace, setSelPlace, placeName 
       {/* latest + spread cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 8, marginBottom: 14 }}>
         {detail.places.map(p => (
-          <div key={p.place_id} style={{ background: 'var(--surface)', border: `1px solid ${selPlace === p.place_id ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '8px 12px', cursor: 'pointer' }}
-            onClick={() => setSelPlace(p.place_id)}>
+          <div key={p.place_id} role="button" tabIndex={0} style={{ background: 'var(--surface)', border: `1px solid ${selPlace === p.place_id ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '8px 12px', cursor: 'pointer' }}
+            onClick={() => setSelPlace(p.place_id)}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelPlace(p.place_id) } }}>
             <div style={{ fontSize: 12, color: 'var(--text-white)', fontWeight: 600 }}>{p.name}{p.special ? ' ·CJ' : ''}</div>
             <div style={{ fontSize: 11, color: '#4caf7d' }}>S {fmtIsk(p.latest_sell)}</div>
             <div style={{ fontSize: 11, color: '#3a9bd6' }}>B {fmtIsk(p.latest_buy)}</div>
@@ -693,9 +694,9 @@ function AllocationTab() {
             ))}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginTop: 12 }}>
-            <div><label style={lbl}>Sell fees %</label><input type="number" value={fees} onChange={e => setFees(e.target.value)} /></div>
-            <div><label style={lbl}>Delivery ISK/m³</label><input type="number" value={deliveryCoef} onChange={e => setDeliveryCoef(e.target.value)} /></div>
-            <div><label style={lbl}>Balance days</label><input type="number" value={balanceDays} onChange={e => setBalanceDays(e.target.value)} /></div>
+            <div><label htmlFor="alloc-fees" style={lbl}>Sell fees %</label><input id="alloc-fees" type="number" value={fees} onChange={e => setFees(e.target.value)} /></div>
+            <div><label htmlFor="alloc-delivery" style={lbl}>Delivery ISK/m³</label><input id="alloc-delivery" type="number" value={deliveryCoef} onChange={e => setDeliveryCoef(e.target.value)} /></div>
+            <div><label htmlFor="alloc-balance" style={lbl}>Balance days</label><input id="alloc-balance" type="number" value={balanceDays} onChange={e => setBalanceDays(e.target.value)} /></div>
           </div>
           <button className="btn btn-primary" onClick={compute} disabled={loading} style={{ marginTop: 14, width: '100%' }}>
             {loading ? 'Computing…' : '⚖ Compute allocation'}

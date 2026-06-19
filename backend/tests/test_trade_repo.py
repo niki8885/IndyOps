@@ -52,7 +52,7 @@ def test_type_stats_roundtrip_and_load(app_session):
 
     forge = trade_repo.load_type_stats(app_session, 10000002, [34, 35])
     assert set(forge) == {34}
-    assert forge[34]["daily_volume"] == 5e8
+    assert forge[34]["daily_volume"] == pytest.approx(5e8)
     assert trade_repo.load_type_stats(app_session, 10000002, []) == {}
 
 

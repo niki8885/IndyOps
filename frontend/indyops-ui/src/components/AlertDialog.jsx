@@ -55,7 +55,7 @@ export default function AlertDialog({ target, onClose }) {
   async function create(e) {
     e.preventDefault()
     setErr('')
-    if (threshold === '' || isNaN(Number(threshold))) { setErr('Enter a threshold value'); return }
+    if (threshold === '' || Number.isNaN(Number(threshold))) { setErr('Enter a threshold value'); return }
     setBusy(true)
     try {
       await post('/agenda/alerts', {

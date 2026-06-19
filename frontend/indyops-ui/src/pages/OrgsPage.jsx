@@ -337,7 +337,8 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px', cursor: 'pointer', userSelect: 'none' }} onClick={onToggle}>
+      <div role="button" tabIndex={0} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px', cursor: 'pointer', userSelect: 'none' }} onClick={onToggle}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() } }}>
         <span style={{ color: 'var(--text)', fontSize: 13 }}>#{org.id}</span>
         {org.corporation_logo && (
           <img src={org.corporation_logo} alt="" width={26} height={26}
