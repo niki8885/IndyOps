@@ -73,6 +73,7 @@ function CharacterCard({ c, onToggle, onSync, onUnlink, onOpen }) {
         />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {c.favorite && <span title="Favorite" style={{ color: 'var(--accent)', fontSize: 14 }}>⭐</span>}
             <span style={{ color: 'var(--text-white)', fontWeight: 600, fontSize: 15 }}>{c.character_name}</span>
             <span style={{ color: 'var(--accent)', fontSize: 13 }}>›</span>
           </div>
@@ -80,10 +81,13 @@ function CharacterCard({ c, onToggle, onSync, onUnlink, onOpen }) {
             {c.corporation_logo && <img src={c.corporation_logo} alt="" width={16} height={16} style={{ borderRadius: 3 }} />}
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.corporation_name || `ID ${c.character_id}`}</span>
           </div>
-          <div style={{ marginTop: 6 }}>
+          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
             <span className={`badge ${c.is_active ? 'badge-ok' : 'badge-warn'}`}>{c.is_active ? 'Active' : 'Paused'}</span>
-            {c.online != null && <span className={`badge ${c.online ? 'badge-ok' : 'badge-warn'}`} style={{ marginLeft: 6 }}>{c.online ? 'Online' : 'Offline'}</span>}
-            {expired && <span className="badge badge-bad" style={{ marginLeft: 6 }}>Token expired</span>}
+            {c.online != null && <span className={`badge ${c.online ? 'badge-ok' : 'badge-warn'}`}>{c.online ? 'Online' : 'Offline'}</span>}
+            {expired && <span className="badge badge-bad">Token expired</span>}
+            {c.group_name && <span className="badge badge-warn">{c.group_name}</span>}
+            {c.is_manufacturer && <span title="Manufacturing char" style={{ fontSize: 13 }}>🏭</span>}
+            {c.is_trader && <span title="Trading char" style={{ fontSize: 13 }}>💱</span>}
           </div>
         </div>
       </div>

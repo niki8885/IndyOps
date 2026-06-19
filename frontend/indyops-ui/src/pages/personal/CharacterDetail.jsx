@@ -10,7 +10,7 @@ import StandingsTab from './StandingsTab'
 import StatisticsTab from './StatisticsTab'
 import SettingsTab from './SettingsTab'
 
-const SUBTABS = ['Wallet', 'Skills', 'Assets', 'Contracts', 'Industry', 'Journal', 'Standing', 'Statistics', 'Settings']
+const SUBTABS = ['Wallet', 'Skills', 'Assets', 'Contracts', 'Industry', 'Journal', 'Standing', 'Statistics', 'Character Settings']
 
 const typeIcon = (id, size = 32) => `https://images.evetech.net/types/${id}/icon?size=${size}`
 
@@ -40,7 +40,7 @@ export default function CharacterDetail({ char, onBack }) {
       {tab === 'Journal'    && <JournalTab    charId={charId} />}
       {tab === 'Standing'   && <StandingsTab  charId={charId} />}
       {tab === 'Statistics' && <StatisticsTab charId={charId} />}
-      {tab === 'Settings'   && <SettingsTab    charId={charId} />}
+      {tab === 'Character Settings' && <SettingsTab charId={charId} />}
     </div>
   )
 }

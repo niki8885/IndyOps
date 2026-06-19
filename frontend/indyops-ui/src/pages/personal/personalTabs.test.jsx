@@ -31,12 +31,20 @@ describe('StandingsTab', () => {
   })
 })
 
-describe('SettingsTab', () => {
-  it('renders the settings form from saved values', async () => {
-    get.mockResolvedValue({ mining_tax_pct: 10, price_basis: 'sell', refine_base_yield: 0.5 })
+describe('SettingsTab (Character Settings)', () => {
+  it('renders role flags + group + journal knobs from saved values', async () => {
+    get.mockImplementation(path => Promise.resolve(
+      path === '/characters/groups'
+        ? ['Alts', 'Hauler']
+        : { mining_tax_pct: 10, price_basis: 'sell', refine_base_yield: 0.5,
+            favorite: true, track_wealth: true, track_production: true,
+            is_manufacturer: false, is_trader: true, group_name: 'Alts' }))
     render(<SettingsTab charId={1} />)
-    expect(await screen.findByText(/JOURNAL SETTINGS/i)).toBeInTheDocument()
-    expect(screen.getByText(/Mining tax/i)).toBeInTheDocument()
+    expect(await screen.findByText(/CHARACTER SETTINGS/i)).toBeInTheDocument()
+    expect(screen.getByText(/Manufacturing char/i)).toBeInTheDocument()
+    expect(screen.getByText(/Trading char/i)).toBeInTheDocument()
+    expect(screen.getByText(/Count in overall capital/i)).toBeInTheDocument()
+    expect(screen.getByText(/MINING JOURNAL/i)).toBeInTheDocument()
     expect(screen.getByText(/Refine base yield/i)).toBeInTheDocument()
   })
 })

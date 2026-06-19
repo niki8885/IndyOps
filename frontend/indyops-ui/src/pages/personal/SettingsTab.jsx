@@ -3,17 +3,19 @@ import { get, put } from '../../api/client'
 
 const BASES = [['buy', 'Buy'], ['sell', 'Sell'], ['split', 'Split (mid)']]
 
-// Journal settings live here (per the spec). These drive the Statistics report: the
-// mining tax % the "Write off tax" button deducts, the default Jita price side,
-// and the reprocessing base yield used to value mined ore.
+// The per-character settings tab ("Character Settings"): role / grouping criteria
+// plus the mining-journal knobs (tax %, default Jita price side, reprocessing base
+// yield) that drive the Statistics report.
 export default function SettingsTab({ charId }) {
-  const [form, setForm] = useState(null)
-  const [msg, setMsg]   = useState('')
-  const [busy, setBusy] = useState(false)
+  const [form, setForm]     = useState(null)
+  const [groups, setGroups] = useState([])
+  const [msg, setMsg]       = useState('')
+  const [busy, setBusy]     = useState(false)
 
   useEffect(() => {
     let alive = true
     get(`/characters/${charId}/settings`).then(d => { if (alive) setForm(d) }).catch(() => {})
+    get('/characters/groups').then(d => { if (alive) setGroups(d || []) }).catch(() => {})
     return () => { alive = false }
   }, [charId])
 
@@ -28,16 +30,49 @@ export default function SettingsTab({ charId }) {
         mining_tax_pct: Number(form.mining_tax_pct) || 0,
         price_basis: form.price_basis,
         refine_base_yield: Number(form.refine_base_yield) || 0.5,
+        favorite: !!form.favorite,
+        track_wealth: !!form.track_wealth,
+        track_production: !!form.track_production,
+        is_manufacturer: !!form.is_manufacturer,
+        is_trader: !!form.is_trader,
+        group_name: form.group_name?.trim() || null,
       })
       setForm(r); setMsg('Saved.')
+      get('/characters/groups').then(setGroups).catch(() => {})
     } catch (e) { setMsg(e.message) }
     finally { setBusy(false) }
   }
 
   return (
-    <div className="card" style={{ maxWidth: 460 }}>
+    <div className="card" style={{ maxWidth: 520 }}>
       <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)', marginBottom: 14 }}>
-        JOURNAL SETTINGS
+        CHARACTER SETTINGS
+      </div>
+
+      <Check label="⭐ Favorite" hint="Pin this character to the top of the list"
+        checked={form.favorite} onChange={v => set('favorite', v)} />
+
+      <Field label="Group" hint="Free-text custom group — type a new one or pick an existing">
+        <input list="char-groups" value={form.group_name || ''} placeholder="e.g. Alts, Hauler, Main…"
+          onChange={e => set('group_name', e.target.value)} />
+        <datalist id="char-groups">
+          {groups.map(g => <option key={g} value={g} />)}
+        </datalist>
+      </Field>
+
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+        <Check label="🏭 Manufacturing char" checked={form.is_manufacturer} onChange={v => set('is_manufacturer', v)} />
+        <Check label="💱 Trading char" checked={form.is_trader} onChange={v => set('is_trader', v)} />
+      </div>
+
+      <Check label="Count in overall capital" hint="Include this character's wealth in the aggregate total"
+        checked={form.track_wealth} onChange={v => set('track_wealth', v)} />
+      <Check label="Include in the common production chain" hint="Use this character's industry in shared chain planning"
+        checked={form.track_production} onChange={v => set('track_production', v)} />
+
+      <div style={{ borderTop: '1px solid var(--border)', margin: '16px 0 14px' }} />
+      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)', marginBottom: 14 }}>
+        MINING JOURNAL
       </div>
 
       <Field label="Mining tax %" hint="Deducted by the Statistics “Write off tax” button">
@@ -73,6 +108,18 @@ function Field({ label, hint, children }) {
       <span style={{ display: 'block', fontSize: 12, color: 'var(--text-bright)', marginBottom: 5 }}>{label}</span>
       {children}
       {hint && <span style={{ display: 'block', fontSize: 11, color: 'var(--border2)', marginTop: 3 }}>{hint}</span>}
+    </label>
+  )
+}
+
+function Check({ label, hint, checked, onChange }) {
+  return (
+    <label style={{ display: 'block', marginBottom: 14, cursor: 'pointer' }}>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-white)' }}>
+        <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} style={{ width: 'auto' }} />
+        {label}
+      </span>
+      {hint && <span style={{ display: 'block', fontSize: 11, color: 'var(--border2)', marginTop: 3, marginLeft: 24 }}>{hint}</span>}
     </label>
   )
 }

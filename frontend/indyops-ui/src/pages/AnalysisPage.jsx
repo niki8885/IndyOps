@@ -4,6 +4,7 @@ import * as plotlyModule from 'plotly.js-dist-min'
 import { get, post, patch, del } from '../api/client'
 import SystemSearch from '../components/SystemSearch'
 import TypeSearch from '../components/TypeSearch'
+import AlertDialog from '../components/AlertDialog'
 
 // Robust interop: the factory (CJS) and plotly-dist (UMD) can land as the
 // module itself, under `.default`, or double-wrapped depending on the bundler.
@@ -74,6 +75,7 @@ function IndicesTab() {
   const [window, setWindow]     = useState(10)
   const [loading, setLoading]   = useState(false)
   const [showIchimoku, setShowIchimoku] = useState(false)
+  const [alertTarget, setAlertTarget]   = useState(null)
 
   async function loadIndices() {
     try { const r = await get('/analysis/indices'); setIndices(r.indices) } catch {}
@@ -109,18 +111,25 @@ function IndicesTab() {
       {/* index cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10, marginBottom: 18 }}>
         {indices.map(ix => (
-          <button key={ix.key} onClick={() => setSel(ix.key)}
-            style={{
-              textAlign: 'left', cursor: 'pointer', padding: '10px 12px', borderRadius: 6,
-              background: sel === ix.key ? 'var(--surface3)' : 'var(--surface)',
-              border: `1px solid ${sel === ix.key ? 'var(--accent)' : 'var(--border)'}`,
-            }}>
-            <div style={{ fontSize: 12, color: sel === ix.key ? 'var(--accent)' : 'var(--text-white)', fontWeight: 600 }}>{ix.label}</div>
-            <div style={{ fontSize: 14, color: 'var(--text-white)', marginTop: 4 }}>{fmtIsk(ix.last_price)}</div>
-            <div style={{ fontSize: 11, color: ix.change_pct == null ? 'var(--text)' : ix.change_pct >= 0 ? C.green : C.red }}>
-              {ix.change_pct == null ? `${ix.points} pts` : `${ix.change_pct >= 0 ? '▲' : '▼'} ${Math.abs(ix.change_pct).toFixed(2)}%`}
-            </div>
-          </button>
+          <div key={ix.key} style={{ position: 'relative' }}>
+            <button onClick={() => setSel(ix.key)}
+              style={{
+                textAlign: 'left', cursor: 'pointer', padding: '10px 12px', borderRadius: 6, width: '100%',
+                background: sel === ix.key ? 'var(--surface3)' : 'var(--surface)',
+                border: `1px solid ${sel === ix.key ? 'var(--accent)' : 'var(--border)'}`,
+              }}>
+              <div style={{ fontSize: 12, color: sel === ix.key ? 'var(--accent)' : 'var(--text-white)', fontWeight: 600, paddingRight: 20 }}>{ix.label}</div>
+              <div style={{ fontSize: 14, color: 'var(--text-white)', marginTop: 4 }}>{fmtIsk(ix.last_price)}</div>
+              <div style={{ fontSize: 11, color: ix.change_pct == null ? 'var(--text)' : ix.change_pct >= 0 ? C.green : C.red }}>
+                {ix.change_pct == null ? `${ix.points} pts` : `${ix.change_pct >= 0 ? '▲' : '▼'} ${Math.abs(ix.change_pct).toFixed(2)}%`}
+              </div>
+            </button>
+            <button title="Create alert" onClick={() => setAlertTarget({ kind: 'index', key: ix.key, label: ix.label })}
+              style={{
+                position: 'absolute', top: 6, right: 6, background: 'none', border: 'none',
+                cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: 2, opacity: 0.7,
+              }}>🔔</button>
+          </div>
         ))}
       </div>
 
@@ -264,6 +273,8 @@ function IndicesTab() {
           </div>
         </>
       )}
+
+      {alertTarget && <AlertDialog target={alertTarget} onClose={() => setAlertTarget(null)} />}
     </div>
   )
 }
@@ -282,6 +293,7 @@ function TrackingTab() {
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError]     = useState('')
+  const [alertItem, setAlertItem] = useState(null)
 
   const [placeKind, setPlaceKind] = useState('system')
   const [pendingSystem, setPendingSystem] = useState(null)
@@ -407,7 +419,10 @@ function TrackingTab() {
                     style={{ color: selItem === it.id ? 'var(--accent)' : 'var(--text-white)', padding: '2px 6px' }}>
                     {it.name}
                   </button>
-                  <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => delItem(it.id)}>✕</button>
+                  <button className="btn btn-ghost btn-sm" title="Create alert" style={{ marginLeft: 'auto', padding: '2px 6px' }}
+                    onClick={() => setAlertItem({ kind: 'item', itemId: it.id, label: it.name,
+                      places: places.filter(p => (it.place_ids || []).includes(p.id)) })}>🔔</button>
+                  <button className="btn btn-danger btn-sm" onClick={() => delItem(it.id)}>✕</button>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 3 }}>
                   {places.map(p => {
@@ -436,6 +451,8 @@ function TrackingTab() {
       {!selItem && <div className="empty-state">Pick a tracked item above to see its charts.</div>}
       {loading && <div className="empty-state">Loading…</div>}
       {selItem && detail && !loading && <TrackingCharts detail={detail} win={win} setWin={setWin} selPlace={selPlace} setSelPlace={pid => { setSelPlace(pid); loadDetail(selItem, pid) }} placeName={placeName} />}
+
+      {alertItem && <AlertDialog target={alertItem} onClose={() => setAlertItem(null)} />}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { get, post, patch, del } from '../api/client'
+import { get, post, del } from '../api/client'
 
 // ── formatting ───────────────────────────────────────────────────────────────
 const GREEN = '#4caf7d', RED = '#e05252'
@@ -41,14 +41,15 @@ function usePoll(path, ms) {
 }
 
 // ── page ───────────────────────────────────────────────────────────────────
+// Alerts are created from the 🔔 icon on the Analysis page's Indices / Tracking
+// tabs (components/AlertDialog). This dashboard just shows the ticker + the feed.
 export default function AgendaPage() {
   return (
     <div>
       <h2 style={{ marginBottom: 14 }}>Agenda</h2>
       <Ticker />
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 20, marginTop: 20 }}>
+      <div style={{ marginTop: 20 }}>
         <NotificationsFeed />
-        <AlertsPanel />
       </div>
     </div>
   )
@@ -110,9 +111,11 @@ function NotificationsFeed() {
       </div>
 
       {notifs.length === 0 ? (
-        <div className="empty-state" style={{ padding: '40px 20px' }}>No notifications yet. Create an alert →</div>
+        <div className="empty-state" style={{ padding: '40px 20px' }}>
+          No notifications yet. Create alerts from the 🔔 icon in Analysis → Indices / Tracking.
+        </div>
       ) : (
-        <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+        <div style={{ maxHeight: 620, overflowY: 'auto' }}>
           {notifs.map(n => (
             <div key={n.id} style={{
               display: 'flex', gap: 12, padding: '12px 18px', borderBottom: '1px solid var(--border)',
@@ -135,183 +138,5 @@ function NotificationsFeed() {
         </div>
       )}
     </div>
-  )
-}
-
-// ── alerts panel ─────────────────────────────────────────────────────────────
-const CONDITIONS = [
-  ['above', 'Rises above'],
-  ['below', 'Falls below'],
-  ['pct_up', 'Up by %'],
-  ['pct_down', 'Down by %'],
-]
-const METRICS = [['price', 'Price'], ['volume', 'Volume']]
-
-function condText(a) {
-  if (a.condition === 'above') return `${a.metric} ≥ ${fmtPrice(a.threshold)}`
-  if (a.condition === 'below') return `${a.metric} ≤ ${fmtPrice(a.threshold)}`
-  if (a.condition === 'pct_up') return `${a.metric} +${a.threshold}% / ${a.window_hours}h`
-  if (a.condition === 'pct_down') return `${a.metric} −${a.threshold}% / ${a.window_hours}h`
-  return a.condition
-}
-
-function AlertsPanel() {
-  const [alerts, setAlerts] = useState([])
-  const [indices, setIndices] = useState([])
-  const [items, setItems] = useState([])
-  const [places, setPlaces] = useState([])
-
-  const reloadAlerts = useCallback(() => get('/agenda/alerts').then(setAlerts).catch(() => {}), [])
-
-  useEffect(() => {
-    let alive = true
-    reloadAlerts()
-    get('/analysis/indices').then(d => { if (alive) setIndices(d.indices || []) }).catch(() => {})
-    get('/tracking/items').then(d => { if (alive) setItems(d || []) }).catch(() => {})
-    get('/tracking/places').then(d => { if (alive) setPlaces(d || []) }).catch(() => {})
-    return () => { alive = false }
-  }, [reloadAlerts])
-
-  async function toggle(a) { await patch(`/agenda/alerts/${a.id}`, { active: !a.active }); reloadAlerts() }
-  async function remove(id) { await del(`/agenda/alerts/${id}`); reloadAlerts() }
-
-  return (
-    <div className="card" style={{ padding: 0, minWidth: 0 }}>
-      <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>ALERTS</span>
-      </div>
-
-      <div style={{ padding: '16px 18px', borderBottom: '1px solid var(--border)' }}>
-        <CreateAlertForm indices={indices} items={items} places={places} onCreated={reloadAlerts} />
-      </div>
-
-      {alerts.length === 0 ? (
-        <div className="empty-state" style={{ padding: '32px 20px' }}>No alerts yet.</div>
-      ) : (
-        <div style={{ maxHeight: 420, overflowY: 'auto' }}>
-          {alerts.map(a => (
-            <div key={a.id} style={{
-              display: 'flex', alignItems: 'center', gap: 10, padding: '11px 18px', borderBottom: '1px solid var(--border)',
-              opacity: a.active ? 1 : 0.5,
-            }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ color: 'var(--text-white)', fontSize: 13 }}>
-                  {a.label} <span style={{ color: 'var(--text)', fontSize: 11 }}>· {a.target_kind}</span>
-                </div>
-                <div style={{ color: 'var(--text-bright)', fontSize: 12, marginTop: 2 }}>
-                  {condText(a)}{a.repeat ? ' · repeats' : ''}
-                  {a.last_triggered_at && <span style={{ color: 'var(--text)' }}> · fired {timeAgo(a.last_triggered_at)}</span>}
-                </div>
-                {a.note && <div style={{ color: 'var(--text)', fontSize: 11, marginTop: 2 }}>{a.note}</div>}
-              </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => toggle(a)}>{a.active ? 'Pause' : 'Arm'}</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => remove(a.id)}>✕</button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function CreateAlertForm({ indices, items, places, onCreated }) {
-  const [kind, setKind] = useState('index')
-  const [indexKey, setIndexKey] = useState('')
-  const [itemId, setItemId] = useState('')
-  const [placeId, setPlaceId] = useState('')
-  const [metric, setMetric] = useState('price')
-  const [condition, setCondition] = useState('above')
-  const [threshold, setThreshold] = useState('')
-  const [windowHours, setWindowHours] = useState(24)
-  const [repeat, setRepeat] = useState(false)
-  const [note, setNote] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
-
-  const isPct = condition === 'pct_up' || condition === 'pct_down'
-  const selectedItem = items.find(i => String(i.id) === String(itemId))
-  const itemPlaces = places.filter(p => !selectedItem?.place_ids?.length || selectedItem.place_ids.includes(p.id))
-
-  async function submit(e) {
-    e.preventDefault()
-    setErr('')
-    if (threshold === '' || isNaN(Number(threshold))) { setErr('Enter a threshold value'); return }
-    if (kind === 'index' && !indexKey) { setErr('Pick an index'); return }
-    if (kind === 'item' && !itemId) { setErr('Pick a tracked item'); return }
-    setBusy(true)
-    try {
-      await post('/agenda/alerts', {
-        target_kind: kind,
-        index_key: kind === 'index' ? indexKey : null,
-        item_id: kind === 'item' ? Number(itemId) : null,
-        place_id: kind === 'item' && placeId ? Number(placeId) : null,
-        metric, condition,
-        threshold: Number(threshold),
-        window_hours: Number(windowHours) || 24,
-        repeat, note: note || null,
-      })
-      setThreshold(''); setNote('')
-      onCreated()
-    } catch (e2) { setErr(e2.message) }
-    finally { setBusy(false) }
-  }
-
-  return (
-    <form onSubmit={submit}>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
-        {[['index', 'Index'], ['item', 'Tracked item']].map(([v, l]) => (
-          <button key={v} type="button" onClick={() => setKind(v)}
-            className={`btn btn-sm ${kind === v ? 'btn-primary' : 'btn-ghost'}`}>{l}</button>
-        ))}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
-        {kind === 'index' ? (
-          <select value={indexKey} onChange={e => setIndexKey(e.target.value)} style={{ gridColumn: '1 / -1' }}>
-            <option value="">Select index…</option>
-            {indices.map(i => <option key={i.key} value={i.key}>{i.label}</option>)}
-          </select>
-        ) : (
-          <>
-            <select value={itemId} onChange={e => { setItemId(e.target.value); setPlaceId('') }}>
-              <option value="">Select item…</option>
-              {items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-            </select>
-            <select value={placeId} onChange={e => setPlaceId(e.target.value)}>
-              <option value="">Auto (first place)</option>
-              {itemPlaces.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </>
-        )}
-
-        <select value={metric} onChange={e => setMetric(e.target.value)}>
-          {METRICS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
-        <select value={condition} onChange={e => setCondition(e.target.value)}>
-          {CONDITIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
-
-        <input type="number" step="any" placeholder={isPct ? 'Percent, e.g. 10' : 'Value'}
-          value={threshold} onChange={e => setThreshold(e.target.value)} />
-        {isPct ? (
-          <input type="number" min="1" placeholder="Window (hours)"
-            value={windowHours} onChange={e => setWindowHours(e.target.value)} />
-        ) : <div />}
-      </div>
-
-      <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)}
-        style={{ marginBottom: 8 }} />
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-bright)', width: 'auto' }}>
-          <input type="checkbox" checked={repeat} onChange={e => setRepeat(e.target.checked)} style={{ width: 'auto' }} />
-          Repeat
-        </label>
-        <button className="btn btn-primary btn-sm" disabled={busy} style={{ marginLeft: 'auto' }}>
-          {busy ? '…' : 'Create alert'}
-        </button>
-      </div>
-      {err && <div style={{ color: '#e88', fontSize: 12, marginTop: 8 }}>{err}</div>}
-    </form>
   )
 }

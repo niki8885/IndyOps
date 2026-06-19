@@ -767,13 +767,22 @@ class EsiMiningLedger(Base):
 
 
 class CharacterSettings(Base):
-    """Per-character journal settings (edited in the Statistics tab)."""
+    """Per-character settings, edited in the Character Settings tab — the mining
+    journal knobs plus role/grouping flags."""
     __tablename__ = "character_settings"
 
     character_id = Column(Integer, primary_key=True)   # LinkedCharacter.character_id
     mining_tax_pct = Column(Float, nullable=False, default=0.0)      # corp mining tax %
     price_basis = Column(String(10), nullable=False, default="sell")  # buy | sell | split
     refine_base_yield = Column(Float, nullable=False, default=0.50)   # structure base yield
+
+    # role / grouping criteria
+    favorite = Column(Boolean, nullable=False, default=False)         # pin to top of the list
+    track_wealth = Column(Boolean, nullable=False, default=True)      # count in overall capital
+    track_production = Column(Boolean, nullable=False, default=True)  # include in the common chain
+    is_manufacturer = Column(Boolean, nullable=False, default=False)  # manufacturing char
+    is_trader = Column(Boolean, nullable=False, default=False)        # trading char
+    group_name = Column(String(60), nullable=True)                   # free-text custom group
 
 
 class MiningTaxWriteoff(Base):

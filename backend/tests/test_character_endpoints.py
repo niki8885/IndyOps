@@ -84,13 +84,44 @@ def _mine(app_db, qty=10000):
 
 def test_settings_default_and_update(app_db):
     _seed_char(app_db)
-    assert run(cr.get_settings(char_id=1, current_user=USER, db=app_db)) == {
-        "mining_tax_pct": 0.0, "price_basis": "sell", "refine_base_yield": 0.5}
+    d = run(cr.get_settings(char_id=1, current_user=USER, db=app_db))
+    assert d["mining_tax_pct"] == 0.0 and d["price_basis"] == "sell" and d["refine_base_yield"] == 0.5
+    # role flags default off; tracking defaults on
+    assert d["favorite"] is False and d["is_manufacturer"] is False and d["group_name"] is None
+    assert d["track_wealth"] is True and d["track_production"] is True
 
     upd = run(cr.put_settings(char_id=1, current_user=USER, db=app_db,
-                              body=cr.SettingsIn(mining_tax_pct=10, price_basis="buy", refine_base_yield=0.5)))
+                              body=cr.SettingsIn(mining_tax_pct=10, price_basis="buy", refine_base_yield=0.5,
+                                                 favorite=True, is_trader=True, track_production=False,
+                                                 group_name="  Alts  ")))
     assert upd["mining_tax_pct"] == 10 and upd["price_basis"] == "buy"
-    assert run(cr.get_settings(char_id=1, current_user=USER, db=app_db))["mining_tax_pct"] == 10
+    assert upd["favorite"] is True and upd["is_trader"] is True and upd["track_production"] is False
+    assert upd["group_name"] == "Alts"   # trimmed
+    again = run(cr.get_settings(char_id=1, current_user=USER, db=app_db))
+    assert again["favorite"] is True and again["group_name"] == "Alts"
+
+
+def test_groups_listed_and_list_sorts_favorites_first(app_db):
+    app_db.add_all([
+        LinkedCharacter(id=1, user_id=1, character_id=101, character_name="Zeta",
+                        scopes="", is_active=True, status="active"),
+        LinkedCharacter(id=2, user_id=1, character_id=102, character_name="Alpha",
+                        scopes="", is_active=True, status="active"),
+    ])
+    app_db.add_all([
+        CharacterSettings(character_id=101, favorite=True, group_name="Hauler", is_manufacturer=True),
+        CharacterSettings(character_id=102, favorite=False, group_name="Alts"),
+    ])
+    app_db.commit()
+
+    groups = run(cr.list_groups(current_user=USER, db=app_db))
+    assert groups == ["Alts", "Hauler"]
+
+    rows = run(cr.list_characters(current_user=USER, db=app_db))
+    # favorite (Zeta) sorts ahead of non-favorite (Alpha) despite the name order
+    assert rows[0]["character_name"] == "Zeta" and rows[0]["favorite"] is True
+    assert rows[0]["group_name"] == "Hauler" and rows[0]["is_manufacturer"] is True
+    assert rows[1]["character_name"] == "Alpha" and rows[1]["favorite"] is False
 
 
 def test_settings_rejects_bad_basis(app_db):
