@@ -1,7 +1,24 @@
 import pytest
 from app.services.facility_bonus import (
-    RigBonus, effective_bonuses, rig_applies, _CAT_SHIP,
+    RigBonus, effective_bonuses, rig_applies, _CAT_SHIP, _CAT_DRONE, _CAT_MODULE, _CAT_CHARGE,
 )
+
+
+# Combined "Equipment and Consumable" (XL/Sotiyo) rig covers the broad gear bucke
+
+def test_equipment_and_consumable_rig_covers_drones():
+    combined = "Standup XL-Set Equipment and Consumable Manufacturing Efficiency I"
+    assert rig_applies(combined, _CAT_DRONE, "Combat Drone") is True
+    assert rig_applies(combined, _CAT_CHARGE, "Advanced Antimatter Charge M") is True
+    assert rig_applies(combined, _CAT_MODULE, "Shield Hardener") is True
+    # ship/structure rigs must NOT pick up a drone
+    assert rig_applies("Standup XL-Set Ship Manufacturing Efficiency I", _CAT_DRONE, "Combat Drone") is False
+
+
+def test_granular_equipment_rig_is_modules_only_not_drones():
+    eq = "Standup M-Set Equipment Manufacturing Efficiency"
+    assert rig_applies(eq, _CAT_MODULE, "Shield Hardener") is True
+    assert rig_applies(eq, _CAT_DRONE, "Combat Drone") is False
 
 BASIC = "Standup M-Set Basic Medium Ship Manufacturing Material Efficiency"
 ADV = "Standup M-Set Advanced Medium Ship Manufacturing Material Efficiency"

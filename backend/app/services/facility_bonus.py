@@ -133,6 +133,9 @@ def _base_rig_applies(n: str, cat_id: Optional[int], group_name: Optional[str],
         return True
     if is_reactor_rig:
         return False
+    if "consumable" in n:
+        return (cat_id in (_CAT_MODULE, _CAT_CHARGE, _CAT_DRONE, _CAT_FIGHTER, _CAT_IMPLANT)
+                or "cargo container" in gn or "deployable" in gn)
     if "equipment" in n:
         return cat_id in (_CAT_MODULE, _CAT_IMPLANT) or "cargo container" in gn or "deployable" in gn
     if "ammunition" in n:
@@ -150,8 +153,6 @@ def _base_rig_applies(n: str, cat_id: Optional[int], group_name: Optional[str],
         if cat_id != _CAT_SHIP:
             return False
         size = _ship_size(group_name)
-        # "capital" first: a Capital Ship Manufacturing rig must not match a battleship
-        # (large) just because it lacks the word "large".
         if "capital" in n: return size == "capital"
         if "small" in n:  return size == "small"
         if "medium" in n: return size == "medium"
@@ -165,14 +166,6 @@ def effective_bonuses(
         cat_id: Optional[int], group_name: Optional[str],
         is_reaction: bool = False, meta_group_id: Optional[int] = None,
 ) -> EffectiveBonus:
-    """Roll a structure's rigs up to effective ME/TE/cost % for one product.
-
-    Only rigs whose affected-category list covers the product contribute to the
-    totals; every rig still appears in ``rigs`` so callers can show why one was
-    skipped. ``is_reaction`` switches to reactor-rig matching (see ``rig_applies``);
-    ``meta_group_id`` gates Basic vs Advanced rigs by the product's tech level.
-    EC role bonuses are intentionally excluded (added by the caller).
-    """
     tot_me = tot_te = tot_cost = 0.0
     detail: list[dict] = []
     for rb in rigs:

@@ -41,44 +41,48 @@ CLASSIC_MINERAL_IDS = frozenset({
 class BlueprintRef:
     blueprint_type_id: int
     qty_per_run: int
+    activity_id: int = 1   # 1 = manufacturing, 11 = reaction
 
 
 def blueprint_for_product(eve_db, product_type_id: int) -> Optional[BlueprintRef]:
-    """Manufacturing blueprint (activity 1) that produces this product, or None."""
-    row = (
+    rows = (
         eve_db.query(EveActivityProduct)
         .filter(
             EveActivityProduct.product_type_id == product_type_id,
-            EveActivityProduct.activity_id == 1,
+            EveActivityProduct.activity_id.in_(INDUSTRY_ACTIVITIES),
         )
-        .first()
+        .order_by(EveActivityProduct.activity_id)   # 1 (manufacturing) before 11 (reaction)
+        .all()
     )
-    return BlueprintRef(row.type_id, row.quantity) if row else None
+    if not rows:
+        return None
+    r = rows[0]
+    return BlueprintRef(r.type_id, r.quantity, r.activity_id)
 
 
-def base_time(eve_db, blueprint_type_id: int) -> int:
-    """Base manufacturing time (seconds per run), 0 if unknown."""
+def base_time(eve_db, blueprint_type_id: int, activity_id: int = 1) -> int:
+    """Base time (seconds per run) for the blueprint's activity, 0 if unknown."""
     row = (
         eve_db.query(EveActivityTime)
         .filter(
             EveActivityTime.type_id == blueprint_type_id,
-            EveActivityTime.activity_id == 1,
+            EveActivityTime.activity_id == activity_id,
         )
         .first()
     )
     return row.time if row else 0
 
 
-def materials(eve_db, blueprint_type_id: int) -> list[dict]:
+def materials(eve_db, blueprint_type_id: int, activity_id: int = 1) -> list[dict]:
     """
-    Base materials for a blueprint, enriched with name + per-unit volume.
-    One batched EveType lookup (was a query per material — N+1).
+    Base materials for a blueprint's activity (manufacturing or reaction), enriched
+    with name + per-unit volume. One batched EveType lookup (was a query per material).
     """
     rows = (
         eve_db.query(EveActivityMaterial)
         .filter(
             EveActivityMaterial.type_id == blueprint_type_id,
-            EveActivityMaterial.activity_id == 1,
+            EveActivityMaterial.activity_id == activity_id,
         )
         .all()
     )

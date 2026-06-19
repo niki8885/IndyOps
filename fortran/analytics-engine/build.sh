@@ -23,3 +23,11 @@ gfortran $FLAGS \
     "$d/build/compat.o" \
     -o "$d/bin/profit-sim"
 echo "built $d/bin/profit-sim"
+
+# scenario-sim: Scenario Simulation engine
+gfortran $FLAGS \
+    "$d/src/json.f90" "$d/src/sort_stats.f90" "$d/src/rng.f90" \
+    "$d/src/distrib.f90" "$d/src/scenario.f90" "$d/app/scenariosim.f90" \
+    "$d/build/compat.o" \
+    -o "$d/bin/scenario-sim"
+echo "built $d/bin/scenario-sim"

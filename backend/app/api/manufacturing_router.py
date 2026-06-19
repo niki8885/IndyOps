@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import asdict, replace
 from fractions import Fraction
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -23,8 +23,9 @@ from app.adapters import chain_engine
 from app.adapters import sim_data
 from app.api import simulation_router as sim_router
 from app.api.responses import ERR_400, ERR_404
-from app.api.simulation_router import SimParamsIn
+from app.api.simulation_router import ScenarioRequestIn, SimParamsIn
 from app.repositories import eve as eve_repo
+from app.repositories import share_repo
 from app.services.chain import REACTION, LocationParams, PlannedJob, from_bom
 from app.services.costing import plan_fifo
 from app.services.facility_bonus import (
@@ -65,6 +66,8 @@ class BlueprintInfoOut(BaseModel):
     base_time_per_run: int
     max_production_limit: Optional[int] = None
     materials: list
+    activity_id: int = 1            # 1 = manufacturing, 11 = reaction
+    is_reaction: bool = False
 
 
 class MaterialPrice(BaseModel):
@@ -98,10 +101,18 @@ class CalcRequest(BaseModel):
     project_id: Optional[int] = None
     region_id: int = 10000002        # market region for sim history (default The Forge)
     sim: Optional[SimParamsIn] = None
+    # IO-23: optionally run a Scenario Simulation analysis (baseline + stress tests).
+    scenarios: Optional[ScenarioRequestIn] = None
     # Character selection (LinkedCharacter.id): producer recalcs job time from skills;
     # seller sets the sell-side fees (broker fee + sales tax).
     produce_character_id: Optional[int] = None
     sell_character_id: Optional[int] = None
+    # Client origin (e.g. https://host) so the server can build the reopen link for the
+    # short share code it generates and stores for this build.
+    share_base: Optional[str] = None
+    # When reopening a shared build, the original code — so it is kept (refreshed) instead
+    # of minting a new one.
+    reuse_code: Optional[str] = None
 
 
 class JobCreate(BaseModel):
@@ -226,11 +237,11 @@ async def get_blueprint_info(
     try:
         bp = eve_repo.blueprint_for_product(eve_db, product_type_id)
         if not bp:
-            raise HTTPException(404, f"No manufacturing blueprint found for type_id {product_type_id}")
+            raise HTTPException(404, f"No blueprint or reaction formula found for type_id {product_type_id}")
 
         bp_type_id = bp.blueprint_type_id
-        base_time = eve_repo.base_time(eve_db, bp_type_id)
-        materials = eve_repo.materials(eve_db, bp_type_id)
+        base_time = eve_repo.base_time(eve_db, bp_type_id, bp.activity_id)
+        materials = eve_repo.materials(eve_db, bp_type_id, bp.activity_id)
         names = eve_repo.type_names(eve_db, [bp_type_id, product_type_id])
 
         return BlueprintInfoOut(
@@ -242,9 +253,56 @@ async def get_blueprint_info(
             base_time_per_run=base_time,
             max_production_limit=eve_repo.max_production_limit(eve_db, bp_type_id),
             materials=materials,
+            activity_id=bp.activity_id,
+            is_reaction=(bp.activity_id == REACTION),
         )
     finally:
         eve_db.close()
+
+
+def _make_share(db: Session, source: str, body_dump: dict, share_base: Optional[str],
+                reuse_code: Optional[str] = None):
+    """Store a short share code for this build; return ``(code, reopen_url)``. When
+    ``reuse_code`` is a valid existing code (reopening a shared build), keep the SAME code
+    instead of minting a new one. Never lets a share failure break the calc."""
+    try:
+        if reuse_code and reuse_code.isalnum() and len(reuse_code) <= 16:
+            code = share_repo.upsert_share(db, reuse_code, source, body_dump)
+        else:
+            code = share_repo.store_share(db, source, body_dump)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("share code store failed: %s", exc)
+        return None, None
+    base = (share_base or "").rstrip("/")
+    url = f"{base}/manufacturing?job={code}" if base else None
+    return code, url
+
+
+@router.get("/share/{code}")
+async def get_share_code(code: str, current_user: UserDB = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    """Resolve a short share code → ``{source, body}`` to re-run (any logged-in user;
+    sharing is cross-user). 404 if unknown or expired."""
+    data = share_repo.get_share(db, code)
+    if not data:
+        raise HTTPException(404, "Share code not found or expired")
+    return data
+
+
+@router.get("/share-image")
+async def share_image(data: str, kind: str = "qr"):
+    """Render a share code as a QR (default) or Code128 barcode SVG — used by the
+    on-screen Share bar. Public (the data is supplied by the client and contains no
+    server secret); the response is an image, so it can be used directly in <img src>."""
+    from app.services import barcodes
+    if not data or len(data) > 4096:
+        raise HTTPException(400, "Missing or oversized data")
+    try:
+        svg = barcodes.code128_svg(data) if kind == "barcode" else barcodes.qr_svg(data)
+    except Exception:
+        raise HTTPException(400, "Cannot render image")
+    return Response(content=svg, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.post("/calculate", responses={**ERR_404})
@@ -258,18 +316,24 @@ async def calculate(
     try:
         bp = eve_repo.blueprint_for_product(eve_db, body.product_type_id)
         if not bp:
-            raise HTTPException(404, "Blueprint not found")
+            raise HTTPException(404, "Blueprint or reaction formula not found")
 
         bp_type_id = bp.blueprint_type_id
         qty_per_run = bp.qty_per_run
-        base_time = eve_repo.base_time(eve_db, bp_type_id)
-        base_mats = eve_repo.materials(eve_db, bp_type_id)
+        is_reaction = bp.activity_id == REACTION
+        base_time = eve_repo.base_time(eve_db, bp_type_id, bp.activity_id)
+        base_mats = eve_repo.materials(eve_db, bp_type_id, bp.activity_id)
 
         product_name = eve_repo.type_names(eve_db, [body.product_type_id]).get(
             body.product_type_id, str(body.product_type_id))
 
     finally:
         eve_db.close()
+
+    # Reactions cannot be researched: ME/TE are always 0 (the formula has no efficiency
+    # roll), so ignore any ME/TE the user typed. Rig/structure time bonuses still apply.
+    me = 0 if is_reaction else body.me
+    te = 0 if is_reaction else body.te
 
     price_map = {p.type_id: p.unit_cost for p in body.material_prices}
 
@@ -325,8 +389,8 @@ async def calculate(
         product_name=product_name,
         product_qty_per_run=qty_per_run,
         runs=body.runs,
-        me=body.me,
-        te=body.te,
+        me=me,
+        te=te,
         base_time_per_run=base_time,
         materials=[
             Material(type_id=m["type_id"], name=m["name"],
@@ -354,6 +418,14 @@ async def calculate(
     result["produce_character"] = _profile_out(produce_profile)
     result["sell_character"] = _profile_out(sell_profile)
 
+    # Short shareable code for this build (stored server-side, ~1 week TTL).
+    share_code, share_url = _make_share(
+        db, "production",
+        body.model_dump(exclude={"share_base", "reuse_code", "simulate", "sim", "scenarios"}),
+        body.share_base, body.reuse_code)
+    result["share_code"] = share_code
+    result["share_url"] = share_url
+
     # IO-22: optional Monte-Carlo profit simulation on this production calc.
     if body.simulate:
         try:
@@ -366,11 +438,31 @@ async def calculate(
             run = sim_router.run_calc_simulation(
                 db, user_id=current_user.id, project_id=body.project_id, calc=calc,
                 product_type_id=body.product_type_id, history=history, params=params,
-                product_name=product_name)
+                product_name=product_name, share_code=share_code, share_url=share_url)
             result["simulation"] = sim_router.run_payload(run)
         except Exception as exc:  # never let the sim break the calc
             logger.warning("production simulation failed: %s", exc)
             result["simulation"] = {"error": str(exc)}
+
+    # IO-23: optional Scenario Simulation analysis on this production calc.
+    if body.scenarios is not None:
+        try:
+            sim_types = [m.type_id for m in calc.materials] + [body.product_type_id]
+            point_buy = {m.type_id: float(m.unit_cost) for m in calc.materials}
+            point_sell = {body.product_type_id: body.output_price or None}
+            history = sim_data.gather_history(db, current_user.id, sim_types, body.region_id,
+                                              point_buy=point_buy, point_sell=point_sell)
+            params = (body.scenarios.params or body.sim or SimParamsIn()).to_params()
+            specs = sim_router.resolve_specs(body.scenarios)
+            run = sim_router.run_calc_scenario_analysis(
+                db, user_id=current_user.id, project_id=body.project_id, calc=calc,
+                product_type_id=body.product_type_id, history=history, params=params,
+                product_name=product_name, specs=specs,
+                share_code=share_code, share_url=share_url)
+            result["scenario_analysis"] = sim_router.scenario_payload(run)
+        except Exception as exc:  # never let the analysis break the calc
+            logger.warning("production scenario analysis failed: %s", exc)
+            result["scenario_analysis"] = {"error": str(exc)}
     return result
 
 
@@ -448,6 +540,12 @@ class ChainCalcRequest(BaseModel):
     simulate: bool = False
     project_id: Optional[int] = None
     sim: Optional[SimParamsIn] = None
+    # IO-23: optionally run a Scenario Simulation analysis on the resulting plan.
+    scenarios: Optional[ScenarioRequestIn] = None
+    # Client origin so the server can build the reopen link for the short share code.
+    share_base: Optional[str] = None
+    # When reopening a shared build, the original code — kept instead of minting a new one.
+    reuse_code: Optional[str] = None
     # Character selection (LinkedCharacter.id). The producing character recalcs job
     # time from its Industry / Advanced Industry skills; the selling character sets the
     # simulation's sales tax (Accounting) and broker fee (Broker Relations + standings).
@@ -939,6 +1037,14 @@ async def calculate_chain(
         "sell_character": _profile_out(sell_profile),
     }
 
+    # Short shareable code for this chain build (stored server-side, ~1 week TTL).
+    share_code, share_url = _make_share(
+        db, "chain",
+        body.model_dump(exclude={"share_base", "reuse_code", "simulate", "sim", "scenarios"}),
+        body.share_base, body.reuse_code)
+    response["share_code"] = share_code
+    response["share_url"] = share_url
+
     # IO-22: optional Monte-Carlo profit simulation on the resulting plan.
     if body.simulate:
         try:
@@ -961,11 +1067,41 @@ async def calculate_chain(
                 db, user_id=current_user.id, project_id=body.project_id, plan=plan,
                 production_time_s=int(schedule.get("total_time_s") or 0), history=history,
                 params=params, product_name=tree[body.product_type_id]["name"],
-                broker_fee_pct=broker, sales_tax_pct=sales)
+                broker_fee_pct=broker, sales_tax_pct=sales,
+                share_code=share_code, share_url=share_url)
             response["simulation"] = sim_router.run_payload(run)
         except Exception as exc:  # never let the sim break the chain calc
             logger.warning("chain simulation failed: %s", exc)
             response["simulation"] = {"error": str(exc)}
+
+    # IO-23: optional Scenario Simulation analysis on the resulting plan.
+    if body.scenarios is not None:
+        try:
+            primary = eff_region_ids[0]
+            sim_types = [s.type_id for s in plan.shopping_list] + [body.product_type_id]
+            group_of = {tid: nd.get("category_id") for tid, nd in tree.items()}
+            point_sell = {tid: (region_data.get(primary, {}).get(tid, {}) or {}).get("sell")
+                          for tid in sim_types}
+            history = sim_data.gather_history(
+                db, current_user.id, sim_types, primary,
+                group_of=group_of, point_buy=buy_prices, point_sell=point_sell)
+            simin = body.scenarios.params or body.sim or SimParamsIn()
+            params = simin.to_params()
+            if simin.slots <= 1 and (body.man_lines + body.react_lines) > 0:
+                params.slots = max(1, body.man_lines + body.react_lines)
+            broker = sell_profile.broker_fee_pct if sell_profile else simin.broker_fee_pct
+            sales = sell_profile.sales_tax_pct if sell_profile else simin.sales_tax_pct
+            specs = sim_router.resolve_specs(body.scenarios)
+            run = sim_router.run_chain_scenario_analysis(
+                db, user_id=current_user.id, project_id=body.project_id, plan=plan,
+                production_time_s=int(schedule.get("total_time_s") or 0), history=history,
+                params=params, product_name=tree[body.product_type_id]["name"],
+                broker_fee_pct=broker, sales_tax_pct=sales, specs=specs,
+                share_code=share_code, share_url=share_url)
+            response["scenario_analysis"] = sim_router.scenario_payload(run)
+        except Exception as exc:  # never let the analysis break the chain calc
+            logger.warning("chain scenario analysis failed: %s", exc)
+            response["scenario_analysis"] = {"error": str(exc)}
 
     return _to_jsonable(response)
 

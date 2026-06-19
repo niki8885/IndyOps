@@ -11,16 +11,11 @@ the schema safety net, so a hiccup here never blocks the API from starting.
 """
 import logging
 import os
-
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect, text
-
-from app.core.database import engine
-
+from app.core.database import engine, Base
 logger = logging.getLogger("app.migrate")
-
-_BASELINE = "0001_baseline"
 
 # the unbounded time-series tables to convert to Timescale hypertables
 _HYPERTABLES = ("track_prices", "market_index_snapshots")
@@ -73,23 +68,88 @@ def ensure_timescale() -> None:
             logger.exception("timescale: failed converting %s", table)
 
 
+def _column_default_sql(col) -> str | None:
+    """A SQL DEFAULT literal for a model column (so adding a NOT NULL column to a
+    populated table doesn't fail), or None. Prefer the scalar Python ``default=``
+    (unambiguous — strings get quoted), falling back to a ``server_default`` SQL
+    expression (rendered raw)."""
+    d = col.default
+    if d is not None and getattr(d, "is_scalar", False):
+        v = d.arg
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, (int, float)):
+            return str(v)
+        return "'" + str(v).replace("'", "''") + "'"
+    sd = col.server_default
+    if sd is not None and getattr(sd, "arg", None) is not None:
+        return str(getattr(sd.arg, "text", sd.arg))
+    return None
+
+
+def reconcile_columns() -> None:
+    """``create_all`` builds *missing tables* but never ALTERs existing ones — so a
+    model column (or index) added to a pre-existing table is silently absent (and
+    every query on that table 500s). Add any such columns + indexes, best-effort, so
+    the schema matches the models even when Alembic didn't run. Postgres/SQLite only.
+    """
+    if engine.dialect.name not in ("postgresql", "sqlite"):
+        return
+    insp = inspect(engine)
+    existing = set(insp.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing:
+            continue  # create_all handles brand-new tables
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            try:
+                ddl = f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {col.type.compile(dialect=engine.dialect)}'
+                default = _column_default_sql(col)
+                if default is not None:
+                    ddl += f" DEFAULT {default}"
+                if not col.nullable:
+                    ddl += " NOT NULL"
+                with engine.begin() as conn:
+                    conn.execute(text(ddl))
+                logger.info("reconcile: added column %s.%s", table.name, col.name)
+            except Exception:
+                logger.exception("reconcile: failed adding %s.%s", table.name, col.name)
+
+        have_idx = {i["name"] for i in insp.get_indexes(table.name)}
+        for idx in table.indexes:
+            if not idx.name or idx.name in have_idx:
+                continue
+            try:
+                cols = ", ".join(f'"{c.name}"' for c in idx.columns)
+                with engine.begin() as conn:
+                    conn.execute(text(f'CREATE INDEX IF NOT EXISTS {idx.name} ON {table.name} ({cols})'))
+                logger.info("reconcile: added index %s", idx.name)
+            except Exception:
+                logger.exception("reconcile: failed adding index %s", idx.name)
+
+
 def run() -> None:
     cfg = _config()
+    # create_all (import-time, RUN_DB_BOOTSTRAP) creates missing TABLES; this fills in
+    # columns added to already-existing tables so the schema always matches the models
+    # regardless of Alembic's outcome.
+    reconcile_columns()
+
     with engine.connect() as conn:
-        insp = inspect(conn)
-        has_version = insp.has_table("alembic_version")
-        has_schema = insp.has_table("users")
+        has_version = inspect(conn).has_table("alembic_version")
 
     if has_version:
         logger.info("alembic: upgrading to head")
-        command.upgrade(cfg, "head")
-    elif has_schema:
-        logger.info("alembic: adopting existing schema — stamp %s then upgrade", _BASELINE)
-        command.stamp(cfg, _BASELINE)
-        command.upgrade(cfg, "head")
+        try:
+            command.upgrade(cfg, "head")
+        except Exception:
+            logger.exception("alembic upgrade failed; schema reconciled — stamping head")
+            command.stamp(cfg, "head")
     else:
-        logger.info("alembic: fresh database — upgrading to head")
-        command.upgrade(cfg, "head")
+        logger.info("alembic: no version table — stamping head (schema built by create_all)")
+        command.stamp(cfg, "head")
 
     ensure_timescale()
 
