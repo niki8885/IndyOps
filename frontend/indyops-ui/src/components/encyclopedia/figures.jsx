@@ -174,13 +174,84 @@ function ScenarioShiftFig() {
   )
 }
 
+// ── Monte-Carlo: simulated Geometric-Brownian-Motion price paths fanning out ──
+function GbmPathsFig() {
+  const W = 360, H = 190, padL = 30, padB = 24, padT = 14, padR = 14
+  const steps = 40, start = 0.42, drift = 0.20
+  const x = i => padL + (i / (steps - 1)) * (W - padL - padR)
+  const y = v => padT + (1 - v) * (H - padT - padB)
+  // deterministic pseudo-noise per path (no RNG → stable render), variance grows like √t
+  const phases = [[0.7, 1.3, 0.5], [1.9, 0.6, 1.1], [2.7, 1.7, 0.9], [0.3, 2.2, 1.4], [1.2, 0.9, 2.0]]
+  const cols = [C.blue2, C.green, C.amber, C.purple, C.red]
+  const path = ([a, b, c], k) => {
+    const pts = []
+    for (let i = 0; i < steps; i++) {
+      const t = i / (steps - 1)
+      const noise = (Math.sin(i * 0.5 + a) * 0.6 + Math.sin(i * 0.17 + b) * 0.4 + Math.cos(i * 0.31 + c) * 0.3)
+        * 0.07 * Math.sqrt(t + 0.04)
+      const v = Math.max(0.04, Math.min(0.97, start + drift * t + noise + (k - 2) * 0.014 * t))
+      pts.push(`${x(i)},${y(v)}`)
+    }
+    return pts.join(' ')
+  }
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={svg} role="img" aria-label="Simulated GBM price paths">
+      <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} stroke={C.grid} />
+      <line x1={padL} y1={padT} x2={padL} y2={H - padB} stroke={C.grid} />
+      <line x1={x(0)} y1={y(start)} x2={x(steps - 1)} y2={y(start + drift)} stroke={C.text}
+            strokeWidth={1.2} strokeDasharray="5 3" opacity={0.7} />
+      {phases.map((p, k) => <polyline key={k} points={path(p, k)} fill="none" stroke={cols[k]} strokeWidth={1.4} opacity={0.9} />)}
+      <text x={x(steps - 1)} y={y(start + drift) - 4} fill={C.text} fontSize={8} textAnchor="end">drift (μ − ½σ²)</text>
+      <text x={padL + 2} y={padT + 2} fill={C.text} fontSize={8}>price Sₜ</text>
+      <text x={W / 2} y={H - 6} fill={C.text} fontSize={9} textAnchor="middle">time →</text>
+    </svg>
+  )
+}
+
+// ── Scenarios: a multi-stage scenario tree (branches with probabilities) ──
+function ScenarioTreeFig() {
+  const W = 360, H = 200, x0 = 26, x1 = 150, x2 = 290
+  const root = { x: x0, y: H / 2 }
+  const mids = [{ x: x1, y: 46, p: '0.3' }, { x: x1, y: 100, p: '0.5' }, { x: x1, y: 154, p: '0.2' }]
+  const leaves = [
+    [{ x: x2, y: 26 }, { x: x2, y: 66 }],
+    [{ x: x2, y: 84 }, { x: x2, y: 116 }],
+    [{ x: x2, y: 138 }, { x: x2, y: 178 }],
+  ]
+  const dot = (n, k, col) => <circle key={k} cx={n.x} cy={n.y} r={4} fill={col} />
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={svg} role="img" aria-label="Scenario tree">
+      {mids.map((m, i) => (
+        <g key={i}>
+          <line x1={root.x} y1={root.y} x2={m.x} y2={m.y} stroke={C.grid} />
+          <text x={(root.x + m.x) / 2} y={(root.y + m.y) / 2 - 3} fill={C.text} fontSize={8} textAnchor="middle">p={m.p}</text>
+          {leaves[i].map((lf, j) => (
+            <g key={j}>
+              <line x1={m.x} y1={m.y} x2={lf.x} y2={lf.y} stroke={C.grid} />
+              <text x={lf.x + 7} y={lf.y + 3} fill={C.text} fontSize={8}>Y</text>
+            </g>
+          ))}
+        </g>
+      ))}
+      {dot(root, 'r', C.white)}
+      {mids.map((m, i) => dot(m, `m${i}`, C.blue2))}
+      {leaves.flat().map((lf, i) => dot(lf, `l${i}`, C.green))}
+      <text x={x0} y={H - 4} fill={C.text} fontSize={8} textAnchor="middle">t=0</text>
+      <text x={x1} y={H - 4} fill={C.text} fontSize={8} textAnchor="middle">t=1</text>
+      <text x={x2} y={H - 4} fill={C.text} fontSize={8} textAnchor="middle">t=2</text>
+    </svg>
+  )
+}
+
 // registry used by the Markdown [[fig:KEY]] marker
 // eslint-disable-next-line react-refresh/only-export-components
 export const FIGURES = {
   histogram: HistogramFig,
   convergence: ConvergenceFig,
   copula: CopulaFig,
+  gbmPaths: GbmPathsFig,
   scenarioBars: ScenarioBarsFig,
   tornado: TornadoFig,
   scenarioShift: ScenarioShiftFig,
+  scenarioTree: ScenarioTreeFig,
 }

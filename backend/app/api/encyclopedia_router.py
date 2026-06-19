@@ -53,10 +53,16 @@ async def scores(current_user: UserDB = Depends(get_current_user),
     for r in rows:
         a = by_article.setdefault(r.article_key, {
             "section": r.section, "article_key": r.article_key, "best_score": 0,
-            "total": r.total, "attempts": 0, "last_score": None, "last_at": None})
+            "total": r.total, "attempts": 0, "last_score": None, "last_at": None,
+            "_best_pct": -1.0})
         a["attempts"] += 1
-        a["best_score"] = max(a["best_score"], r.score)
-        a["total"] = r.total
+        # track the best attempt by percentage (carry its own total) so the ratio stays
+        # ≤ 100% even if the article's question count changed between attempts.
+        pct = (r.score / r.total) if r.total else 0.0
+        if pct > a["_best_pct"]:
+            a["_best_pct"] = pct
+            a["best_score"] = r.score
+            a["total"] = r.total
         if a["last_at"] is None:   # rows are newest-first
             a["last_score"] = r.score
             a["last_at"] = r.created_at.isoformat() if r.created_at else None
@@ -67,7 +73,8 @@ async def scores(current_user: UserDB = Depends(get_current_user),
                                                  "articles": 0, "_pct": 0.0})
         s["attempts"] += a["attempts"]
         s["articles"] += 1
-        s["_pct"] += (a["best_score"] / a["total"]) if a["total"] else 0.0
+        s["_pct"] += max(a["_best_pct"], 0.0)
+        a.pop("_best_pct", None)
     sections = [{"section": s["section"], "attempts": s["attempts"], "articles": s["articles"],
                  "avg_best_pct": round(s["_pct"] / s["articles"], 4) if s["articles"] else 0.0}
                 for s in by_section.values()]
