@@ -134,8 +134,10 @@ function AccountModal({ onClose }) {
   }, [])
 
   return (
-    <div onClick={onClose} style={s.overlay}>
-      <div onClick={e => e.stopPropagation()} className="card" style={{ width: 380, maxWidth: '90vw' }}>
+    <div role="presentation" style={s.overlay}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+      onKeyDown={e => { if (e.key === 'Escape') onClose() }}>
+      <div className="card" style={{ width: 380, maxWidth: '90vw' }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
           <h3 style={{ margin: 0 }}>Account settings</h3>
           <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose}>✕</button>

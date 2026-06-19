@@ -78,8 +78,10 @@ export default function AlertDialog({ target, onClose }) {
   async function remove(id) { await del(`/agenda/alerts/${id}`); reload() }
 
   return (
-    <div onClick={onClose} style={overlay}>
-      <div onClick={e => e.stopPropagation()} className="card"
+    <div role="presentation" style={overlay}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+      onKeyDown={e => { if (e.key === 'Escape') onClose() }}>
+      <div className="card"
         style={{ width: 460, maxWidth: '92vw', maxHeight: '88vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
           <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>

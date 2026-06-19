@@ -85,7 +85,7 @@ def _mine(app_db, qty=10000):
 def test_settings_default_and_update(app_db):
     _seed_char(app_db)
     d = run(cr.get_settings(char_id=1, current_user=USER, db=app_db))
-    assert d["mining_tax_pct"] == 0.0 and d["price_basis"] == "sell" and d["refine_base_yield"] == 0.5
+    assert d["mining_tax_pct"] == pytest.approx(0.0) and d["price_basis"] == "sell" and d["refine_base_yield"] == pytest.approx(0.5)
     # role flags default off; tracking defaults on
     assert d["favorite"] is False and d["is_manufacturer"] is False and d["group_name"] is None
     assert d["track_wealth"] is True and d["track_production"] is True

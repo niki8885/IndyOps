@@ -2310,22 +2310,22 @@ function DecisionBadge({ decision }) {
 
 /* ═══════════════════════════ PAK JOBS TABLE ═══════════════════════════ */
 
-function PakJobsTab() {
+// Shared list plumbing for the PAK Jobs and IndyJob tabs (load / filter / select /
+// status / delete) — only the table columns + expanded card differ per tab.
+function useJobsList(kind) {
   const [jobs, setJobs]         = useState([])
   const [projects, setProjects] = useState([])
   const [filter, setFilter]     = useState({ project_id: '', status: '' })
-  const [expand, setExpand]     = useState(null)
-  const [selected, setSelected] = useState({})   // { jobId: true }
+  const [selected, setSelected] = useState({})
   const [combineOpen, setCombineOpen] = useState(false)
 
   const selectedJobs = jobs.filter(j => selected[j.id])
   const toggleSel = id => setSelected(s => ({ ...s, [id]: !s[id] }))
-
   const draftCount = buyDraftMaterials().length
 
   async function load() {
     const params = new URLSearchParams()
-    params.set('kind', 'pak')
+    params.set('kind', kind)
     if (filter.project_id) params.set('project_id', filter.project_id)
     if (filter.status)     params.set('job_status', filter.status)
     try { setJobs(await get(`/manufacturing/jobs?${params}`)) } catch {}
@@ -2341,19 +2341,24 @@ function PakJobsTab() {
     }).catch(() => {})
   }, [])
 
-  useEffect(() => { load() }, [filter])
+  useEffect(() => { load() }, [filter])  // eslint-disable-line react-hooks/exhaustive-deps
 
   async function updateStatus(id, status) {
     try { await patch(`/manufacturing/jobs/${id}`, { status }); load() } catch {}
   }
-
   async function remove(id) {
-    if (!confirm('Delete PAK job?')) return
+    if (!confirm(`Delete ${kind === 'indy' ? 'IndyJob' : 'PAK job'}?`)) return
     try { await del(`/manufacturing/jobs/${id}`); load() } catch {}
   }
 
+  return { jobs, projects, filter, setFilter, load, selected, toggleSel, selectedJobs,
+           combineOpen, setCombineOpen, draftCount, updateStatus, remove }
+}
+
+// Shared filter bar + combined-buy-list trigger for both job tabs.
+function JobsToolbar({ projects, filter, setFilter, onRefresh, selectedJobs, draftCount, combineOpen, setCombineOpen }) {
   return (
-    <div>
+    <>
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 200 }}>
           <option value="">All projects</option>
@@ -2363,17 +2368,29 @@ function PakJobsTab() {
           <option value="">All statuses</option>
           {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <button className="btn btn-ghost btn-sm" onClick={load}>Refresh</button>
+        <button className="btn btn-ghost btn-sm" onClick={onRefresh}>Refresh</button>
         {(selectedJobs.length > 0 || draftCount > 0) && (
           <button className="btn btn-primary btn-sm" onClick={() => setCombineOpen(v => !v)} style={{ marginLeft: 'auto' }}>
             🛒 Combined buy list ({selectedJobs.length}{draftCount > 0 ? ` +${draftCount} draft` : ''})
           </button>
         )}
       </div>
-
       {combineOpen && (selectedJobs.length > 0 || draftCount > 0) && (
         <CombinedBuyPanel jobs={selectedJobs} projects={projects} onClose={() => setCombineOpen(false)} />
       )}
+    </>
+  )
+}
+
+function PakJobsTab() {
+  const { jobs, projects, filter, setFilter, load, selected, toggleSel, selectedJobs,
+          combineOpen, setCombineOpen, draftCount, updateStatus, remove } = useJobsList('pak')
+  const [expand, setExpand] = useState(null)
+
+  return (
+    <div>
+      <JobsToolbar projects={projects} filter={filter} setFilter={setFilter} onRefresh={load}
+        selectedJobs={selectedJobs} draftCount={draftCount} combineOpen={combineOpen} setCombineOpen={setCombineOpen} />
 
       {jobs.length === 0
         ? <div className="empty-state">No production jobs yet — use Calculator tab to create one</div>
@@ -2659,67 +2676,14 @@ function PakCard({ job, onChange }) {
 /* ═══════════════════════════ INDYJOB (internal planned jobs) ═══════════════════════════ */
 
 function IndyJobsTab() {
-  const [jobs, setJobs]         = useState([])
-  const [projects, setProjects] = useState([])
-  const [filter, setFilter]     = useState({ project_id: '', status: '' })
-  const [expand, setExpand]     = useState(null)
-  const [selected, setSelected] = useState({})
-  const [combineOpen, setCombineOpen] = useState(false)
-
-  const selectedJobs = jobs.filter(j => selected[j.id])
-  const toggleSel = id => setSelected(s => ({ ...s, [id]: !s[id] }))
-  const draftCount = buyDraftMaterials().length
-
-  async function load() {
-    const params = new URLSearchParams()
-    params.set('kind', 'indy')
-    if (filter.project_id) params.set('project_id', filter.project_id)
-    if (filter.status)     params.set('job_status', filter.status)
-    try { setJobs(await get(`/manufacturing/jobs?${params}`)) } catch {}
-  }
-
-  useEffect(() => {
-    get('/organisations').then(async orgs => {
-      const all = []
-      for (const o of orgs) {
-        try { const ps = await get(`/projects?org_id=${o.id}`); all.push(...ps) } catch {}
-      }
-      setProjects(all)
-    }).catch(() => {})
-  }, [])
-
-  useEffect(() => { load() }, [filter])
-
-  async function updateStatus(id, status) {
-    try { await patch(`/manufacturing/jobs/${id}`, { status }); load() } catch {}
-  }
-  async function remove(id) {
-    if (!confirm('Delete IndyJob?')) return
-    try { await del(`/manufacturing/jobs/${id}`); load() } catch {}
-  }
+  const { jobs, projects, filter, setFilter, load, selected, toggleSel, selectedJobs,
+          combineOpen, setCombineOpen, draftCount, updateStatus, remove } = useJobsList('indy')
+  const [expand, setExpand] = useState(null)
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <select value={filter.project_id} onChange={e => setFilter(f => ({ ...f, project_id: e.target.value }))} style={{ width: 200 }}>
-          <option value="">All projects</option>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))} style={{ width: 160 }}>
-          <option value="">All statuses</option>
-          {['Planning','Preparing','In Progress','Completed','Cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <button className="btn btn-ghost btn-sm" onClick={load}>Refresh</button>
-        {(selectedJobs.length > 0 || draftCount > 0) && (
-          <button className="btn btn-primary btn-sm" onClick={() => setCombineOpen(v => !v)} style={{ marginLeft: 'auto' }}>
-            🛒 Combined buy list ({selectedJobs.length}{draftCount > 0 ? ` +${draftCount} draft` : ''})
-          </button>
-        )}
-      </div>
-
-      {combineOpen && (selectedJobs.length > 0 || draftCount > 0) && (
-        <CombinedBuyPanel jobs={selectedJobs} projects={projects} onClose={() => setCombineOpen(false)} />
-      )}
+      <JobsToolbar projects={projects} filter={filter} setFilter={setFilter} onRefresh={load}
+        selectedJobs={selectedJobs} draftCount={draftCount} combineOpen={combineOpen} setCombineOpen={setCombineOpen} />
 
       {jobs.length === 0
         ? <div className="empty-state">No internal jobs yet — use the Calculator's “➕ Add to plan”.</div>
