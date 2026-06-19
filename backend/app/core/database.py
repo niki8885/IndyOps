@@ -771,6 +771,28 @@ class EsiAsset(Base):
     is_blueprint_copy = Column(Boolean, nullable=True)
 
 
+class EsiBlueprintCopy(Base):
+    """A character's owned blueprints (BPOs and BPCs), replaced each sync.
+
+    ``runs == -1`` (ESI also sends ``quantity == -1``) marks a BPO/original with
+    unlimited runs; a BPC (copy) has ``quantity == -2`` and a positive ``runs``.
+    ``is_bpo`` is derived in the read layer (``runs < 0``), not stored.
+    """
+    __tablename__ = "esi_blueprints"
+    __table_args__ = (UniqueConstraint("character_id", "item_id", name="uq_esi_blueprint"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    item_id = Column(BigInteger, nullable=False)        # the blueprint instance
+    type_id = Column(Integer, nullable=True)            # blueprint type (e.g. Rifter Blueprint)
+    material_efficiency = Column(Integer, nullable=True)
+    time_efficiency = Column(Integer, nullable=True)
+    runs = Column(Integer, nullable=True)               # -1 = BPO (unlimited)
+    quantity = Column(Integer, nullable=True)           # -1 = original, -2 = copy
+    location_id = Column(BigInteger, nullable=True)
+    location_flag = Column(String(60), nullable=True)
+
+
 class EsiStructure(Base):
     """
     Cache of resolved Upwell structure names (IO asset-location recursion).

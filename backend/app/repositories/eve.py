@@ -189,6 +189,31 @@ def product_for_blueprint(eve_db, blueprint_type_id: int) -> Optional[dict]:
     }
 
 
+def products_for_blueprints(eve_db, blueprint_type_ids: list[int]) -> dict[int, dict]:
+    """Batched ``product_for_blueprint``: ``{blueprint_type_id: {product_type_id,
+    activity_id, qty_per_run}}`` (one query, manufacturing preferred over reaction)."""
+    ids = {t for t in blueprint_type_ids if t}
+    if not ids:
+        return {}
+    rows = (
+        eve_db.query(EveActivityProduct)
+        .filter(
+            EveActivityProduct.type_id.in_(ids),
+            EveActivityProduct.activity_id.in_(INDUSTRY_ACTIVITIES),
+        )
+        .order_by(EveActivityProduct.activity_id)   # 1 (manufacturing) before 11 (reaction)
+        .all()
+    )
+    out: dict[int, dict] = {}
+    for r in rows:
+        out.setdefault(r.type_id, {
+            "product_type_id": r.product_type_id,
+            "activity_id": r.activity_id,
+            "qty_per_run": r.quantity,
+        })
+    return out
+
+
 def types_by_name(eve_db, names: list[str]) -> dict[str, dict]:
     """{lower(name): {"type_id","name"}} for exact case-insensitive resolution
     (paste import). Skips blanks; one query."""

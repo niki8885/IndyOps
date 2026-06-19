@@ -6,7 +6,10 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db, Blueprint, Organisation, OrganisationMember, UserDB
+from app.core.database import (
+    get_db, Blueprint, Organisation, OrganisationMember, UserDB,
+    LinkedCharacter, EsiBlueprintCopy,
+)
 from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
 from app.repositories import eve as eve_repo
@@ -126,6 +129,53 @@ async def list_blueprints(
     if product_type_id is not None:
         q = q.filter(Blueprint.product_type_id == product_type_id)
     return q.order_by(Blueprint.name).all()
+
+
+@router.get("/owned")
+async def list_owned_blueprints(
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Merged owned-blueprint pool for the chain/calculator: the user's manual
+    ``blueprints`` rows ∪ ESI-synced prints across all of their linked characters
+    (per-user pooling). Each entry has a stable ``key`` (``man:<id>`` / ``esi:<item_id>``)
+    used by the chain's per-node blueprint selector."""
+    out: List[dict] = []
+    for bp in db.query(Blueprint).filter(Blueprint.user_id == current_user.id).all():
+        out.append({
+            "key": f"man:{bp.id}", "product_type_id": bp.product_type_id,
+            "blueprint_type_id": bp.blueprint_type_id, "name": bp.name,
+            "is_bpo": bp.is_bpo, "me": bp.me, "te": bp.te,
+            "runs": None if bp.is_bpo else bp.runs, "quantity": bp.quantity,
+            "source": "manual", "owner": "Manual",
+        })
+
+    chars = db.query(LinkedCharacter).filter(LinkedCharacter.user_id == current_user.id).all()
+    cid_name = {c.character_id: c.character_name for c in chars}
+    esi_rows = (db.query(EsiBlueprintCopy)
+                .filter(EsiBlueprintCopy.character_id.in_(list(cid_name) or [-1])).all()
+                if cid_name else [])
+    if esi_rows:
+        eve_db = EveSessionLocal()
+        try:
+            type_ids = [r.type_id for r in esi_rows]
+            products = eve_repo.products_for_blueprints(eve_db, type_ids)
+            names = eve_repo.type_names(eve_db, type_ids)
+        finally:
+            eve_db.close()
+        for r in esi_rows:
+            prod = products.get(r.type_id)
+            if not prod:
+                continue
+            is_bpo = (r.runs is not None and r.runs < 0) or r.quantity == -1
+            out.append({
+                "key": f"esi:{r.item_id}", "product_type_id": prod["product_type_id"],
+                "blueprint_type_id": r.type_id, "name": names.get(r.type_id, str(r.type_id)),
+                "is_bpo": is_bpo, "me": r.material_efficiency or 0, "te": r.time_efficiency or 0,
+                "runs": None if is_bpo else r.runs, "quantity": 1,
+                "source": "esi", "owner": cid_name.get(r.character_id, "?"),
+            })
+    return out
 
 
 @router.post("", response_model=BlueprintOut, status_code=status.HTTP_201_CREATED, responses={**ERR_400})

@@ -316,3 +316,10 @@ def fetch_industry_jobs(character_id: int, token: str) -> list:
 def fetch_standings(character_id: int, token: str) -> list:
     """NPC standings (faction / npc_corp / agent) for the character."""
     return _esi_get(f"/characters/{character_id}/standings/", token)
+
+
+def fetch_blueprints(character_id: int, token: str) -> list:
+    """Owned blueprints (BPOs and BPCs): ``[{item_id, type_id, location_id, location_flag,
+    quantity, runs, material_efficiency, time_efficiency}]``. ``runs == -1`` and
+    ``quantity == -1`` mark a BPO (original); ``quantity == -2`` marks a BPC (copy)."""
+    return _esi_get(f"/characters/{character_id}/blueprints/", token, paginate=True)

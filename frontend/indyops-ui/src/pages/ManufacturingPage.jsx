@@ -759,6 +759,11 @@ function CalculatorTab({ sharedJob }) {
                 <option value="">— none —</option>
                 {characters.map(c => <option key={c.id} value={c.id}>{c.character_name}</option>)}
               </select>
+              {result?.bp_warning && (
+                <div style={{ fontSize: 11, color: '#e05252', marginTop: 4, maxWidth: 220 }}>
+                  ⚠ {result.bp_warning.character_name} has no blueprint for {result.bp_warning.product_name}
+                </div>
+              )}
             </div>
           )}
           {characters.length > 0 && (
@@ -1358,7 +1363,7 @@ function ChainTab({ sharedJob }) {
       fs.forEach(f => { checks[f.id] = { checked: false, ...defaultSlots(f.facility_type) } })
       setFacilityChecks(checks)
     }).catch(() => {})
-    get('/blueprints').then(setOwnedBPs).catch(() => {})
+    get('/blueprints/owned').then(setOwnedBPs).catch(() => {})
     get('/characters').then(setCharacters).catch(() => {})
   }, [])
 
@@ -1849,6 +1854,17 @@ function ChainTab({ sharedJob }) {
           </div>
         )}
 
+        {/* missing-blueprint warning for the selected producing character */}
+        {result?.bp_warnings?.length > 0 && (
+          <div className="warning-box" style={{ margin: '0 16px 12px', fontSize: 12 }}>
+            ⚠ <b>{result.produce_character?.character_name || 'This character'}</b> is missing{' '}
+            {result.bp_warnings.length} blueprint(s) this build needs:{' '}
+            {result.bp_warnings.slice(0, 8).map(w => w.name).join(', ')}
+            {result.bp_warnings.length > 8 ? ` +${result.bp_warnings.length - 8} more` : ''}.
+            {result.bp_warnings.some(w => w.owned_elsewhere) && ' (some are owned by another of your characters)'}
+          </div>
+        )}
+
         {/* ── job slots: a single per-character total, shared across all structures ── */}
         <div style={{ padding: '12px 16px', display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
           <NumField label="Manufacturing slots" value={params.man_lines} onChange={setP('man_lines')} min={0} />
@@ -2195,44 +2211,71 @@ function ChainTab({ sharedJob }) {
             </table>
           </Section>
 
-          {/* ── Blueprints (per-node ME/TE + needed report) ── */}
-          {ownedBPs.length > 0 && (() => {
-            const bpRep = {}
-            ;(result.bp_report || []).forEach(r => { bpRep[r.type_id] = r })
-            const nodes = decisions.filter(d => d.decision === 'make' && bpByProduct[d.type_id]?.length)
-            if (!nodes.length) return null
+          {/* ── Blueprints requirements (required / owned / missing + acquisition) ── */}
+          {(result.bp_report || []).length > 0 && (() => {
+            const rep = result.bp_report
+            const sum = result.bp_summary || {}
+            const AVAIL = {
+              bpo:       { label: 'BPO ✓',  cls: 'badge-ok' },
+              bpc_ok:    { label: 'BPC ✓',  cls: 'badge-ok' },
+              bpc_short: { label: 'BPC short', cls: 'badge-warn' },
+              missing:   { label: 'Missing', cls: '', color: '#e05252' },
+            }
+            const Chip = ({ label, value, color }) => (
+              <span style={{ fontSize: 12, color: 'var(--text)' }}>
+                {label}: <b style={{ color: color || 'var(--text-white)' }}>{value}</b>
+              </span>
+            )
             return (
-              <Section title="Blueprints needed">
-                {!useBlueprints && (
-                  <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text)' }}>
+              <Section title="Blueprints">
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', padding: '6px 12px 12px' }}>
+                  <Chip label="Required runs" value={(sum.required_runs ?? 0).toLocaleString()} />
+                  <Chip label="Owned BPO" value={sum.owned_bpo ?? 0} color="#3fb950" />
+                  <Chip label="Owned BPC" value={sum.owned_bpc ?? 0} color="#3fb950" />
+                  <Chip label="Short" value={sum.short ?? 0} color={sum.short ? '#d29922' : undefined} />
+                  <Chip label="Missing" value={sum.missing ?? 0} color={sum.missing ? '#e05252' : undefined} />
+                </div>
+                {!useBlueprints && ownedBPs.length > 0 && (
+                  <div style={{ padding: '0 12px 8px', fontSize: 12, color: 'var(--text)' }}>
                     Enable <b>Use my blueprints</b> above to apply owned ME/TE, or pick one per item below.
                   </div>
                 )}
                 <table>
-                  <thead><tr><th>Item</th><th>Blueprint</th><th>ME/TE</th><th>Runs needed</th><th>Owned</th><th>Shortfall</th></tr></thead>
+                  <thead><tr>
+                    <th>Item</th><th>Blueprint</th><th>Act.</th><th>ME/TE</th>
+                    <th>Runs needed</th><th>Owned</th><th>Availability</th><th>Recommended acquisition</th>
+                  </tr></thead>
                   <tbody>
-                    {nodes.map(d => {
-                      const cands = bpByProduct[d.type_id] || []
-                      const rep = bpRep[d.type_id]
+                    {rep.map(r => {
+                      const cands = bpByProduct[r.type_id] || []
+                      const av = AVAIL[r.available] || AVAIL.missing
                       return (
-                        <tr key={d.type_id}>
-                          <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{d.name}</td>
+                        <tr key={r.type_id}>
+                          <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{r.product_name}</td>
                           <td>
-                            <select value={bpSelection[d.type_id] || ''} onChange={e => selectBP(d.type_id, Number(e.target.value) || null)}>
-                              <option value="">Auto</option>
-                              {cands.map(b => (
-                                <option key={b.id} value={b.id}>
-                                  {b.is_bpo ? 'BPO' : 'BPC'} ME{b.me} TE{b.te}{b.is_bpo ? '' : ` ×${b.runs ?? '?'}r`}
-                                </option>
-                              ))}
-                            </select>
+                            {cands.length ? (
+                              <select value={bpSelection[r.type_id] || ''} onChange={e => selectBP(r.type_id, e.target.value || null)}>
+                                <option value="">Auto</option>
+                                {cands.map(b => (
+                                  <option key={b.key} value={b.key}>
+                                    {b.is_bpo ? 'BPO' : 'BPC'} ME{b.me} TE{b.te}{b.is_bpo ? '' : ` ×${b.runs ?? '?'}r`} · {b.owner}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <span style={{ fontSize: 12, color: 'var(--text)' }}>{r.blueprint_name}</span>
+                            )}
                           </td>
-                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{rep ? `${rep.me} / ${rep.te}` : '—'}</td>
-                          <td>{rep ? rep.runs_needed.toLocaleString() : '—'}</td>
-                          <td>{rep ? (rep.runs_owned == null ? '∞' : rep.runs_owned.toLocaleString()) : '—'}</td>
-                          <td style={{ color: rep && rep.shortfall > 0 ? '#e05252' : 'var(--text)' }}>
-                            {rep ? (rep.shortfall > 0 ? `⚠ ${rep.shortfall}` : 'ok') : '—'}
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{r.activity === 11 ? 'React' : 'Mfg'}</td>
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{r.me} / {r.te}</td>
+                          <td>{(r.runs_needed ?? 0).toLocaleString()}</td>
+                          <td>{r.runs_owned == null ? (r.owned_is_bpo ? '∞' : '—') : r.runs_owned.toLocaleString()}</td>
+                          <td>
+                            {av.cls
+                              ? <span className={`badge ${av.cls}`}>{av.label}</span>
+                              : <span style={{ color: av.color, fontWeight: 600 }}>{av.label}</span>}
                           </td>
+                          <td style={{ fontSize: 12, color: 'var(--text)' }}>{r.acquisition}</td>
                         </tr>
                       )
                     })}

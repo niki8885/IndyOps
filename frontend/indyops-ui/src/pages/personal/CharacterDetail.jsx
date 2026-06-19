@@ -5,12 +5,13 @@ import SkillsTab from './SkillsTab'
 import AssetsTab from './AssetsTab'
 import ContractsTab from './ContractsTab'
 import IndustryTab from './IndustryTab'
+import BlueprintsTab from './BlueprintsTab'
 import JournalTab from './JournalTab'
 import StandingsTab from './StandingsTab'
 import StatisticsTab from './StatisticsTab'
 import SettingsTab from './SettingsTab'
 
-const SUBTABS = ['Wallet', 'Skills', 'Assets', 'Contracts', 'Industry', 'Journal', 'Standing', 'Statistics', 'Character Settings']
+const SUBTABS = ['Wallet', 'Skills', 'Assets', 'Contracts', 'Industry', 'Blueprints', 'Journal', 'Standing', 'Statistics', 'Character Settings']
 
 const typeIcon = (id, size = 32) => `https://images.evetech.net/types/${id}/icon?size=${size}`
 
@@ -37,6 +38,7 @@ export default function CharacterDetail({ char, onBack }) {
       {tab === 'Assets'     && <AssetsTab     charId={charId} />}
       {tab === 'Contracts'  && <ContractsTab  charId={charId} />}
       {tab === 'Industry'   && <IndustryTab   charId={charId} />}
+      {tab === 'Blueprints' && <BlueprintsTab charId={charId} />}
       {tab === 'Journal'    && <JournalTab    charId={charId} />}
       {tab === 'Standing'   && <StandingsTab  charId={charId} />}
       {tab === 'Statistics' && <StatisticsTab charId={charId} />}
