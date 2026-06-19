@@ -19,7 +19,7 @@ from app.core.database import (
     Base, LinkedCharacter, EsiSkill, EsiAsset, EsiMiningLedger, EsiIndustryJob,
     EsiStanding, CharacterSettings,
 )
-from app.core.database_eve import EveBase, EveType, EveGroup, EveTypeMaterial, EveStation
+from app.core.database_eve import EveBase, EveType, EveGroup, EveTypeMaterial, EveStation, EveSolarSystem
 
 CID = 99
 USER = SimpleNamespace(id=1)
@@ -129,6 +129,45 @@ def test_mining_journal_empty_period(app_db, eve_db):
                                   basis="sell", current_user=USER, db=app_db, eve_db=eve_db))
     assert j["gross_value"] == pytest.approx(0.0)
     assert j["items"] == []
+
+
+# ── mining ledger (raw chronological entries) ─────────────────────────────────
+
+def test_mining_ledger_lists_entries_newest_first(app_db, eve_db):
+    _seed_char(app_db); _seed_veldspar(eve_db)
+    eve_db.add(EveSolarSystem(solar_system_id=30000142, solar_system_name="Jita"))
+    eve_db.commit()
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    app_db.add_all([
+        EsiMiningLedger(character_id=CID, date=today - datetime.timedelta(days=2),
+                        type_id=1230, solar_system_id=30000142, quantity=5000),
+        EsiMiningLedger(character_id=CID, date=today,
+                        type_id=1230, solar_system_id=30000142, quantity=12000),
+    ])
+    app_db.commit()
+
+    out = run(cr.get_mining_ledger(char_id=1, period=None, offset=0, scope="character",
+                                   limit=500, current_user=USER, db=app_db, eve_db=eve_db))
+    assert out["count"] == 2
+    assert out["total_quantity"] == 17000
+    assert out["period"] is None
+    # newest first
+    assert out["entries"][0]["date"] == today.isoformat()
+    assert out["entries"][0]["quantity"] == 12000
+    assert out["entries"][0]["name"] == "Veldspar"
+    assert out["entries"][0]["category"] == "ore"
+    assert out["entries"][0]["system_name"] == "Jita"
+
+
+def test_mining_ledger_period_filter(app_db, eve_db):
+    _seed_char(app_db); _seed_veldspar(eve_db); _mine(app_db, 8000)
+    # this year has the row, the previous year does not
+    cur = run(cr.get_mining_ledger(char_id=1, period="year", offset=0, scope="character",
+                                   limit=500, current_user=USER, db=app_db, eve_db=eve_db))
+    assert cur["count"] == 1 and cur["period"]["key"]
+    prev = run(cr.get_mining_ledger(char_id=1, period="year", offset=-1, scope="character",
+                                    limit=500, current_user=USER, db=app_db, eve_db=eve_db))
+    assert prev["count"] == 0 and prev["entries"] == []
 
 
 # ── tax write-off (persisted) ────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import IndustryTab from './IndustryTab'
 import JournalTab from './JournalTab'
 import StandingsTab from './StandingsTab'
 import StatisticsTab from './StatisticsTab'
+import SettingsTab from './SettingsTab'
 
 const SUBTABS = ['Wallet', 'Skills', 'Assets', 'Contracts', 'Industry', 'Journal', 'Standing', 'Statistics', 'Settings']
 
@@ -39,7 +40,7 @@ export default function CharacterDetail({ char, onBack }) {
       {tab === 'Journal'    && <JournalTab    charId={charId} />}
       {tab === 'Standing'   && <StandingsTab  charId={charId} />}
       {tab === 'Statistics' && <StatisticsTab charId={charId} />}
-      {tab === 'Settings'   && <Placeholder title="Settings" />}
+      {tab === 'Settings'   && <SettingsTab    charId={charId} />}
     </div>
   )
 }
@@ -150,8 +151,4 @@ function Sparkline({ points, width = 220, height = 44, color = '#c8a951' }) {
       <path d={d} fill="none" stroke={color} strokeWidth="1.5" />
     </svg>
   )
-}
-
-function Placeholder({ title }) {
-  return <div className="empty-state">{title} — coming soon.</div>
 }

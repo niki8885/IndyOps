@@ -616,6 +616,27 @@ def _category_of(name, group_name, category_id, is_moon) -> str:
     return "other"
 
 
+def _categorize_types(eve_db: Session, type_ids: list) -> dict[int, str]:
+    """{type_id: category} — ore / moon_ore / ice / gas / other. Same rules as the
+    profit report's valuation, factored out so the raw ledger can tag entries too."""
+    type_ids = list({t for t in type_ids if t})
+    if not type_ids:
+        return {}
+    names = eve_repo.type_names(eve_db, type_ids)
+    groups = eve_repo.type_groups(eve_db, type_ids)
+    moon_mat_subq = eve_db.query(EveType.type_id).filter(EveType.group_id == _MOON_MATERIAL_GROUP)
+    moon_ore_ids = {
+        tid for (tid,) in eve_db.query(EveTypeMaterial.type_id)
+        .filter(EveTypeMaterial.type_id.in_(type_ids),
+                EveTypeMaterial.material_type_id.in_(moon_mat_subq)).distinct().all()
+    }
+    out = {}
+    for t in type_ids:
+        g = groups.get(t) or {}
+        out[t] = _category_of(names.get(t), g.get("group_name"), g.get("category_id"), t in moon_ore_ids)
+    return out
+
+
 def _mining_value(eve_db: Session, qty_by_type: dict, basis: str,
                   base_yield: float, levels: dict) -> dict:
     """Refine each mined type → minerals (or value gas/raw directly) → Jita value,
@@ -691,6 +712,41 @@ def _ledger_agg(db: Session, char_ids, start, end) -> dict:
         .group_by(EsiMiningLedger.type_id).all()
     )
     return {tid: int(q or 0) for tid, q in rows}
+
+
+def _ledger_entries(db: Session, eve_db: Session, char_ids, start, end, limit: int) -> list[dict]:
+    """Raw mining-ledger rows (one per day × ore × system), newest first, with type /
+    system / character names resolved. ``start``/``end`` are optional date bounds."""
+    q = db.query(EsiMiningLedger).filter(EsiMiningLedger.character_id.in_(char_ids or [-1]))
+    if start is not None:
+        q = q.filter(EsiMiningLedger.date >= start)
+    if end is not None:
+        q = q.filter(EsiMiningLedger.date <= end)
+    rows = (q.order_by(EsiMiningLedger.date.desc(), EsiMiningLedger.quantity.desc())
+            .limit(limit).all())
+
+    names = eve_repo.type_names(eve_db, [r.type_id for r in rows])
+    cats = _categorize_types(eve_db, [r.type_id for r in rows])
+    sys_ids = list({r.solar_system_id for r in rows if r.solar_system_id})
+    sys_names = dict(
+        eve_db.query(EveSolarSystem.solar_system_id, EveSolarSystem.solar_system_name)
+        .filter(EveSolarSystem.solar_system_id.in_(sys_ids or [-1])).all()
+    )
+    char_names = {
+        c.character_id: c.character_name for c in
+        db.query(LinkedCharacter).filter(LinkedCharacter.character_id.in_(char_ids or [-1])).all()
+    }
+    return [{
+        "date": r.date.isoformat(),
+        "type_id": r.type_id,
+        "name": names.get(r.type_id, str(r.type_id)),
+        "category": cats.get(r.type_id, "other"),
+        "solar_system_id": r.solar_system_id,
+        "system_name": sys_names.get(r.solar_system_id),
+        "quantity": int(r.quantity or 0),
+        "character_id": r.character_id,
+        "character_name": char_names.get(r.character_id),
+    } for r in rows]
 
 
 def _compute_journal(db, eve_db, user, viewed, period_type, offset, scope, basis=None):
@@ -810,6 +866,36 @@ async def get_mining_journal(
         "categories": {c: v30["categories"].get(c, {"value": 0.0, "qty": 0}) for c in _CATEGORIES},
     }
     return payload
+
+
+@router.get("/{char_id}/mining-ledger", summary="Raw mining ledger entries (date × ore × system), newest first", responses={**ERR_404})
+async def get_mining_ledger(
+    char_id: int,
+    period: Optional[str] = Query(None, pattern="^(day|month|quarter|year)$"),
+    offset: int = Query(0, ge=-120, le=0),
+    scope: str = Query("character", pattern="^(character|all)$"),
+    limit: int = Query(500, ge=1, le=2000),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    char_ids = _scope_character_ids(db, current_user, char, scope)
+
+    start = end = key = None
+    if period:
+        start, end = mining_journal.period_bounds(period, utcnow().date(), offset)
+        key = mining_journal.period_key(period, start)
+
+    entries = _ledger_entries(db, eve_db, char_ids, start, end, limit)
+    return {
+        "scope": scope,
+        "period": ({"type": period, "offset": offset, "key": key,
+                    "start": start.isoformat(), "end": end.isoformat()} if period else None),
+        "count": len(entries),
+        "total_quantity": sum(e["quantity"] for e in entries),
+        "entries": entries,
+    }
 
 
 @router.post("/{char_id}/mining-journal/writeoff", summary="Write off (record) tax for a period", responses={**ERR_400, **ERR_404})
