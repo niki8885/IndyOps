@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.adapters import market
 from app.core.database import (
     get_db, ProductionJob, ProductionStatusEvent, Facility, UserDB, InventoryItem,
-    StockMovement, Blueprint, LinkedCharacter, EsiSkill, EsiStanding,
+    StockMovement, Blueprint, LinkedCharacter, EsiSkill, EsiStanding, EsiBlueprintCopy,
 )
 from app.core.database_eve import (
     EveSessionLocal, EveType, EveRigBonus, EveGroup, EveSolarSystem,
@@ -32,6 +32,7 @@ from app.services.facility_bonus import (
     EC_COST_ROLE, EC_MATERIAL_ROLE, RigBonus, band_of, effective_bonuses,
 )
 from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_calculation
+from app.services import blueprints as bp_svc
 from app.services.scheduling import stage_schedule
 from app.services.pricing import flag_unrealistic, resolve_price
 from app.services import skills as skills_svc
@@ -417,6 +418,8 @@ async def calculate(
     result["price_flags"] = {str(t): fl for t, fl in price_flags.items()}
     result["produce_character"] = _profile_out(produce_profile)
     result["sell_character"] = _profile_out(sell_profile)
+    result["bp_warning"] = _single_bp_warning(
+        db, current_user.id, body.produce_character_id, bp_type_id, product_name)
 
     # Short shareable code for this build (stored server-side, ~1 week TTL).
     share_code, share_url = _make_share(
@@ -524,9 +527,10 @@ class ChainCalcRequest(BaseModel):
     include_reactions: bool = True
     # Owned blueprints: apply their ME/TE (and a BPC's cost) per node. With
     # use_owned_blueprints the backend auto-picks (BPO else best BPC); blueprint_selection
-    # (product_type_id -> blueprint_id) overrides the pick for a node.
+    # (product_type_id -> OwnedBP key "esi:<id>"/"man:<id>", or a legacy bare manual id)
+    # overrides the pick for a node.
     use_owned_blueprints: bool = False
-    blueprint_selection: dict[int, int] = {}
+    blueprint_selection: dict[int, str] = {}
     # Manual per-node ME/TE: product_type_id -> [me, te]. Highest priority — wins over
     # an owned blueprint's ME/TE and over the global me_pct/te_pct default. Lets the
     # user tune a single node in the tree without owning a blueprint record for it.
@@ -773,67 +777,190 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
     )]
 
 
-def _blueprint_plan(body: ChainCalcRequest, db: Session, user_id: int, tree: dict):
-    """Pick an owned blueprint per makeable node and turn it into chain inputs.
+def _recipe_blueprints(tree: dict) -> dict[int, int]:
+    """``{blueprint_type_id: product_type_id}`` over every recipe in the tree —
+    lets us key an ESI-owned print (which only carries a blueprint type) to a node."""
+    out: dict[int, int] = {}
+    for tid, nd in tree.items():
+        for rc in nd.get("recipes", []):
+            bpt = rc.get("blueprint_type_id")
+            if bpt:
+                out[bpt] = tid
+    return out
 
-    Explicit ``blueprint_selection`` (product_type_id -> blueprint_id) wins; otherwise
-    ``use_owned_blueprints`` auto-picks (BPO, else best ME, else most runs). Returns
-    ``(node_overrides{tid:(me,te)}, bpc_unit{tid:per-unit cost}, chosen{tid:Blueprint})``.
-    """
+
+def _owned_blueprint_pool(db: Session, user_id: int, tree: dict,
+                          bp_names: dict[int, str]) -> dict[int, list]:
+    """Merged owned-blueprint pool keyed by product type id: the user's manual
+    ``blueprints`` rows ∪ ESI-synced prints across *all* of their linked characters.
+    ``bp_names`` (blueprint type_id -> name) is resolved once by the caller.
+    Returns ``{product_type_id: [bp_svc.OwnedBP, ...]}``."""
+    prod_by_bptype = _recipe_blueprints(tree)
+    products = list(tree)
+    pool: dict[int, list] = defaultdict(list)
+
+    # manual blueprints (already carry product_type_id, name, cost)
+    manual = (db.query(Blueprint)
+              .filter(Blueprint.user_id == user_id,
+                      Blueprint.product_type_id.in_(products or [-1])).all())
+    for bp in manual:
+        pool[bp.product_type_id].append(bp_svc.OwnedBP(
+            key=f"man:{bp.id}", product_type_id=bp.product_type_id,
+            blueprint_type_id=bp.blueprint_type_id, name=bp.name, is_bpo=bp.is_bpo,
+            me=bp.me or 0, te=bp.te or 0, runs=None if bp.is_bpo else bp.runs,
+            quantity=bp.quantity or 1, cost=bp.cost, source="manual", owner="Manual"))
+
+    # ESI prints across the user's linked characters (per-user pooling)
+    chars = db.query(LinkedCharacter).filter(LinkedCharacter.user_id == user_id).all()
+    cid_name = {c.character_id: c.character_name for c in chars}
+    bptype_ids = list(prod_by_bptype)
+    esi_rows = []
+    if cid_name and bptype_ids:
+        esi_rows = (db.query(EsiBlueprintCopy)
+                    .filter(EsiBlueprintCopy.character_id.in_(list(cid_name)),
+                            EsiBlueprintCopy.type_id.in_(bptype_ids)).all())
+    for r in esi_rows:
+        ptid = prod_by_bptype.get(r.type_id)
+        if not ptid:
+            continue
+        bpo = bp_svc.is_bpo(r.runs, r.quantity)
+        pool[ptid].append(bp_svc.OwnedBP(
+            key=f"esi:{r.item_id}", product_type_id=ptid, blueprint_type_id=r.type_id,
+            name=bp_names.get(r.type_id, str(r.type_id)), is_bpo=bpo,
+            me=r.material_efficiency or 0, te=r.time_efficiency or 0,
+            runs=None if bpo else r.runs, quantity=1, cost=None,
+            source="esi", owner=cid_name.get(r.character_id, "?")))
+    return pool
+
+
+def _blueprint_plan(body: ChainCalcRequest, tree: dict, pool: dict[int, list]):
+    """Pick an owned print per makeable node from the merged ``pool`` and turn it into
+    chain inputs. Explicit ``blueprint_selection`` (product_type_id -> OwnedBP.key, or a
+    legacy bare manual id) wins; otherwise ``use_owned_blueprints`` auto-picks the best.
+    Returns ``(node_overrides{tid:(me,te)}, bpc_unit{tid:per-unit cost}, chosen{tid:OwnedBP})``."""
     if not body.use_owned_blueprints and not body.blueprint_selection:
         return {}, {}, {}
-    type_ids = list(tree)
-    owned = (db.query(Blueprint)
-             .filter(Blueprint.user_id == user_id,
-                     Blueprint.product_type_id.in_(type_ids or [-1])).all())
-    by_product: dict[int, list] = defaultdict(list)
-    for bp in owned:
-        by_product[bp.product_type_id].append(bp)
-    by_id = {bp.id: bp for bp in owned}
-    selection = {int(k): int(v) for k, v in body.blueprint_selection.items()}
+    by_key = {bp.key: bp for cands in pool.values() for bp in cands}
+    selection: dict[int, str] = {}
+    for k, v in body.blueprint_selection.items():
+        sel = str(v)
+        if sel.isdigit():                        # legacy: bare manual Blueprint id
+            sel = f"man:{sel}"
+        selection[int(k)] = sel
 
     node_overrides: dict[int, tuple] = {}
     bpc_unit: dict[int, float] = {}
-    chosen: dict[int, Blueprint] = {}
+    chosen: dict[int, bp_svc.OwnedBP] = {}
     for tid, nd in tree.items():
-        if not nd["recipes"]:
+        cands = pool.get(tid)
+        if not cands:
             continue
         bp = None
         if tid in selection:
-            cand = by_id.get(selection[tid])
+            cand = by_key.get(selection[tid])
             if cand and cand.product_type_id == tid:
                 bp = cand
-        if bp is None and body.use_owned_blueprints and by_product.get(tid):
-            bp = max(by_product[tid], key=lambda b: (b.is_bpo, b.me, b.runs or 0))
+        if bp is None and body.use_owned_blueprints:
+            bp = bp_svc.pick_best(cands)
         if bp is None:
             continue
         chosen[tid] = bp
         node_overrides[tid] = (bp.me, bp.te)
-        if not bp.is_bpo and bp.cost and bp.runs:
+        if not bp.is_bpo and bp.cost and bp.runs:    # manual BPC cost only (ESI has none)
             qpr = nd["recipes"][0]["qty_per_run"] or 1
             bpc_unit[tid] = bp.cost / (bp.runs * qpr)
     return node_overrides, bpc_unit, chosen
 
 
-def _bp_report(plan, chosen: dict) -> list[dict]:
-    """Per chosen blueprint: how many runs the plan needs, and whether a BPC's owned
-    runs cover it."""
+def _bp_report(plan, tree: dict, pool: dict[int, list], node_overrides: dict,
+               bp_names: dict[int, str]) -> list[dict]:
+    """Full per-made-node blueprint requirements report: required runs + ME/TE, what's
+    owned (BPO/BPC across the user's characters), what's missing, and how to acquire it.
+    ``bp_names`` (blueprint type_id -> name) is resolved once by the caller."""
     runs_by_type: dict[int, int] = defaultdict(int)
     for j in plan.jobs:
         runs_by_type[j.type_id] += j.runs
-    report = []
-    for tid, bp in chosen.items():
-        needed = runs_by_type.get(tid, 0)
-        if needed == 0:
-            continue                       # node ended up bought, not made
-        owned_runs = None if bp.is_bpo else (bp.runs or 0) * (bp.quantity or 1)
-        report.append({
-            "type_id": tid, "blueprint_id": bp.id, "name": bp.name, "is_bpo": bp.is_bpo,
-            "me": bp.me, "te": bp.te, "runs_needed": needed, "runs_owned": owned_runs,
-            "shortfall": 0 if bp.is_bpo else max(0, needed - (owned_runs or 0)),
-        })
-    report.sort(key=lambda r: r["shortfall"], reverse=True)
-    return report
+
+    nodes = []
+    for tid, dec in plan.decisions.items():
+        if dec.decision != "make":
+            continue
+        recipes = tree.get(tid, {}).get("recipes", [])
+        if not recipes:
+            continue
+        ridx = dec.recipe_index if dec.recipe_index is not None else 0
+        rc = recipes[ridx] if 0 <= ridx < len(recipes) else recipes[0]
+        bpt = rc.get("blueprint_type_id")
+        activity = dec.activity or rc.get("activity") or 1
+
+        best = bp_svc.pick_best(pool.get(tid, []))
+        ov = node_overrides.get(tid)
+        if ov:
+            me, te = ov
+        elif best:
+            me, te = best.me, best.te
+        else:
+            me, te = 0, 0
+        if activity == REACTION:
+            me, te = 0, 0
+        nodes.append(bp_svc.MakeNode(
+            product_type_id=tid, product_name=tree.get(tid, {}).get("name", str(tid)),
+            blueprint_type_id=bpt or 0, blueprint_name=bp_names.get(bpt, str(bpt)),
+            activity=activity, runs_needed=runs_by_type.get(tid, 0), me=me, te=te))
+    return bp_svc.build_report(nodes, pool)
+
+
+def _bp_warnings(db: Session, user_id: int, produce_char_id: Optional[int],
+                 plan, tree: dict, pool: dict[int, list]) -> list[dict]:
+    """Made nodes whose blueprint the *selected producing character* doesn't personally
+    own (flags ``owned_elsewhere`` if another of the user's chars / a manual row has it)."""
+    if not produce_char_id:
+        return []
+    char = db.query(LinkedCharacter).filter(
+        LinkedCharacter.id == produce_char_id, LinkedCharacter.user_id == user_id).first()
+    if not char:
+        return []
+    made: dict[int, int] = {}        # tid -> blueprint_type_id
+    for tid, dec in plan.decisions.items():
+        if dec.decision != "make":
+            continue
+        recipes = tree.get(tid, {}).get("recipes", [])
+        if not recipes:
+            continue
+        ridx = dec.recipe_index if dec.recipe_index is not None else 0
+        rc = recipes[ridx] if 0 <= ridx < len(recipes) else recipes[0]
+        if rc.get("blueprint_type_id"):
+            made[tid] = rc["blueprint_type_id"]
+    if not made:
+        return []
+    owned_types = {
+        t for (t,) in db.query(EsiBlueprintCopy.type_id).filter(
+            EsiBlueprintCopy.character_id == char.character_id,
+            EsiBlueprintCopy.type_id.in_(list(made.values()))).all()
+    }
+    return [
+        {"type_id": tid, "name": tree.get(tid, {}).get("name", str(tid)),
+         "owned_elsewhere": bool(pool.get(tid))}
+        for tid, bpt in made.items() if bpt not in owned_types
+    ]
+
+
+def _single_bp_warning(db: Session, user_id: int, produce_char_id: Optional[int],
+                       bp_type_id: Optional[int], product_name: str) -> Optional[dict]:
+    """For the single calculator: the producing char doesn't own the product's blueprint."""
+    if not produce_char_id or not bp_type_id:
+        return None
+    char = db.query(LinkedCharacter).filter(
+        LinkedCharacter.id == produce_char_id, LinkedCharacter.user_id == user_id).first()
+    if not char:
+        return None
+    owns = db.query(EsiBlueprintCopy.id).filter(
+        EsiBlueprintCopy.character_id == char.character_id,
+        EsiBlueprintCopy.type_id == bp_type_id).first()
+    if owns:
+        return None
+    return {"character_name": char.character_name, "product_name": product_name,
+            "blueprint_type_id": bp_type_id}
 
 
 def _industry_profile(db: Session, user_id: int, character_id: Optional[int]):
@@ -885,6 +1012,9 @@ async def calculate_chain(
     eve_db = EveSessionLocal()
     try:
         tree = eve_repo.bom_tree(eve_db, body.product_type_id, body.max_depth)
+        bp_type_ids = {rc["blueprint_type_id"] for nd in tree.values()
+                       for rc in nd.get("recipes", []) if rc.get("blueprint_type_id")}
+        bp_names = eve_repo.type_names(eve_db, list(bp_type_ids))
     finally:
         eve_db.close()
     if not tree or body.product_type_id not in tree:
@@ -948,8 +1078,9 @@ async def calculate_chain(
     sell_profile = _industry_profile(db, current_user.id, body.sell_character_id)
     tm_man = produce_profile.man_time_mult if produce_profile else 1.0
     tm_react = produce_profile.react_time_mult if produce_profile else 1.0
-    # Owned blueprints: per-node ME/TE + a BPC's cost folded into the build.
-    node_overrides, bpc_unit, chosen_bps = _blueprint_plan(body, db, current_user.id, tree)
+    # Owned blueprints: merged pool (manual ∪ my ESI prints) → per-node ME/TE + BPC cost.
+    owned_pool = _owned_blueprint_pool(db, current_user.id, tree, bp_names)
+    node_overrides, bpc_unit, chosen_bps = _blueprint_plan(body, tree, owned_pool)
     # Manual per-node ME/TE wins over the owned-blueprint pick (and the global default).
     for tid, me_te in body.me_te_overrides.items():
         if isinstance(me_te, (list, tuple)) and len(me_te) == 2:
@@ -1015,6 +1146,12 @@ async def calculate_chain(
     # cap comes from the pilot's skills, shared across every structure they use.
     schedule = stage_schedule(plan.jobs, body.man_lines, body.react_lines)
 
+    # Blueprint requirements report (all made nodes) + missing-print warnings for the
+    # selected producing character.
+    bp_report = _bp_report(plan, tree, owned_pool, node_overrides, bp_names)
+    bp_warnings = _bp_warnings(db, current_user.id, body.produce_character_id,
+                               plan, tree, owned_pool)
+
     response = {
         "plan": _plan_dict(plan),
         "assignment": _chain_assignment(plan, facilities),
@@ -1031,8 +1168,10 @@ async def calculate_chain(
         # reaction nodes actually bought (force-buy succeeded), vs. left makeable (no buy price)
         "reactions_bought": sorted(reaction_node_ids - set(forced_skipped)),
         "bpc_cost_applied": {str(t): float(c) for t, c in bpc_unit.items() if c},
-        "bp_report": _bp_report(plan, chosen_bps),
-        "blueprint_selection": {str(t): bp.id for t, bp in chosen_bps.items()},
+        "bp_report": bp_report,
+        "bp_summary": bp_svc.summarize(bp_report),
+        "bp_warnings": bp_warnings,
+        "blueprint_selection": {str(t): bp.key for t, bp in chosen_bps.items()},
         "produce_character": _profile_out(produce_profile),
         "sell_character": _profile_out(sell_profile),
     }

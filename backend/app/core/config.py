@@ -47,6 +47,9 @@ ESI_SCOPES = [
     "esi-clones.read_clones.v1",
     # mining ledger → the per-character mining journal / profit report
     "esi-industry.read_character_mining.v1",
+    # owned blueprints (BPOs/BPCs with ME/TE/runs) → Personal File Blueprints tab +
+    # chain "what do I own / what's missing" report. New scope → characters re-link once.
+    "esi-characters.read_blueprints.v1",
 ]
 
 ESI_USER_AGENT = os.getenv(

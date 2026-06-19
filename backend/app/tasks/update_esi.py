@@ -18,6 +18,7 @@ from app.core.database import (
     EsiStructure,
     EsiImplant,
     EsiMiningLedger,
+    EsiBlueprintCopy,
     CharacterWealthSnapshot,
 )
 from app.core.timeutil import utcnow
@@ -31,6 +32,7 @@ _SHIP_SCOPE = "esi-location.read_ship_type.v1"
 _ONLINE_SCOPE = "esi-location.read_online.v1"
 _IMPLANTS_SCOPE = "esi-clones.read_implants.v1"
 _MINING_SCOPE = "esi-industry.read_character_mining.v1"
+_BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
 _STRUCTURE_NAME_TTL = datetime.timedelta(days=7)     # names rarely change
 _STRUCTURE_RETRY_TTL = datetime.timedelta(hours=6)   # back off after a 403/404
 
@@ -129,6 +131,20 @@ def _map_asset(cid, a):
         "location_type": a.get("location_type"),
         "is_singleton": a.get("is_singleton"),
         "is_blueprint_copy": a.get("is_blueprint_copy"),
+    }
+
+
+def _map_blueprint(cid, b):
+    return {
+        "character_id": cid,
+        "item_id": b.get("item_id"),
+        "type_id": b.get("type_id"),
+        "material_efficiency": b.get("material_efficiency"),
+        "time_efficiency": b.get("time_efficiency"),
+        "runs": b.get("runs"),
+        "quantity": b.get("quantity"),
+        "location_id": b.get("location_id"),
+        "location_flag": b.get("location_flag"),
     }
 
 
@@ -407,6 +423,15 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         _replace(db, EsiStanding, cid, rows)
         return len(rows)
 
+    def _blueprints():
+        # needs the read_blueprints scope — no-op until the character re-links to grant it
+        if not _has_scope(char, _BLUEPRINTS_SCOPE):
+            return 0
+        rows = [_map_blueprint(cid, b) for b in esi.fetch_blueprints(cid, token)]
+        rows = [r for r in rows if r["item_id"]]
+        _replace(db, EsiBlueprintCopy, cid, rows)
+        return len(rows)
+
     step("affiliation", _affiliation)
     step("wallet", _wallet)
     step("skills", _skills)
@@ -418,6 +443,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("contracts", _contracts)
     step("industry_jobs", _jobs)
     step("standings", _standings)
+    step("blueprints", _blueprints)
     step("wealth", _wealth)
 
     char.last_sync_at = utcnow()

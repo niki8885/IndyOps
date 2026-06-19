@@ -14,8 +14,8 @@ from app.core import config
 from app.core.database import (
     get_db, SessionLocal, UserDB,
     LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob,
-    EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger, CharacterWealthSnapshot,
-    CharacterSettings, MiningTaxWriteoff, InventoryItem, ProductionJob,
+    EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger, EsiBlueprintCopy,
+    CharacterWealthSnapshot, CharacterSettings, MiningTaxWriteoff, InventoryItem, ProductionJob,
 )
 from app.core.database_eve import EveSessionLocal, EveType, EveStation, EveSolarSystem, EveTypeMaterial
 from app.core.schemas import ProductionStatus
@@ -281,8 +281,8 @@ async def delete_character(
     char = _owned_char(db, char_id, current_user)
     cid = char.character_id
     for model in (EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob,
-                  EsiStanding, EsiImplant, EsiMiningLedger, CharacterWealthSnapshot,
-                  CharacterSettings, MiningTaxWriteoff):
+                  EsiStanding, EsiImplant, EsiMiningLedger, EsiBlueprintCopy,
+                  CharacterWealthSnapshot, CharacterSettings, MiningTaxWriteoff):
         db.query(model).filter(model.character_id == cid).delete(synchronize_session=False)
     db.delete(char)
     db.commit()
@@ -396,6 +396,49 @@ async def get_assets(
         }
         for a in assets
     ]
+
+
+@router.get("/{char_id}/blueprints", summary="Owned blueprints (BPOs/BPCs)", responses={**ERR_404})
+async def get_blueprints(
+    char_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    char = _owned_char(db, char_id, current_user)
+    bps = db.query(EsiBlueprintCopy).filter(EsiBlueprintCopy.character_id == char.character_id).all()
+
+    bp_names = _type_names(eve_db, [b.type_id for b in bps])
+    products = eve_repo.products_for_blueprints(eve_db, [b.type_id for b in bps])
+    prod_names = _type_names(eve_db, [p["product_type_id"] for p in products.values()])
+
+    loc_ids = {b.location_id for b in bps if b.location_id}
+    station_names = _station_names(eve_db, loc_ids)
+    structure_names = _structure_names(db, loc_ids)
+
+    def _loc_name(b):
+        if not b.location_id:
+            return None
+        return station_names.get(b.location_id) or structure_names.get(b.location_id) or f"#{b.location_id}"
+
+    out = []
+    for b in bps:
+        prod = products.get(b.type_id)
+        is_bpo = (b.runs is not None and b.runs < 0) or b.quantity == -1
+        out.append({
+            "item_id": b.item_id, "type_id": b.type_id,
+            "type_name": bp_names.get(b.type_id, {}).get("name"),
+            "product_type_id": prod["product_type_id"] if prod else None,
+            "product_name": prod_names.get(prod["product_type_id"], {}).get("name") if prod else None,
+            "activity_id": prod["activity_id"] if prod else None,
+            "is_bpo": is_bpo,
+            "me": b.material_efficiency, "te": b.time_efficiency,
+            "runs": None if is_bpo else b.runs, "quantity": b.quantity,
+            "location_id": b.location_id, "location_name": _loc_name(b),
+            "location_flag": b.location_flag,
+        })
+    out.sort(key=lambda r: ((r["location_name"] or "~"), (r["type_name"] or "")))
+    return out
 
 
 @router.get("/{char_id}/contracts", summary="Contracts", responses={**ERR_404})

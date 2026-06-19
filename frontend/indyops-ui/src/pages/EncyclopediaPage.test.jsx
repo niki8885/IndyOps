@@ -19,7 +19,7 @@ describe('EncyclopediaPage', () => {
     expect(screen.getAllByText('Monte-Carlo Simulation').length).toBeGreaterThan(0)
     // the other article is listed in the sidebar (also referenced in the MC body)
     expect(screen.getAllByText('Scenario Simulation').length).toBeGreaterThan(0)
-    // the quiz renders at the bottom of the active article
-    expect(await screen.findByText(/Quiz — 10 questions/)).toBeInTheDocument()
+    // the quiz renders at the bottom of the active article (count is content-driven)
+    expect(await screen.findByText(/Quiz — \d+ questions/)).toBeInTheDocument()
   })
 })
