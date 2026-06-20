@@ -33,6 +33,7 @@ from app.services.facility_bonus import (
 )
 from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_calculation
 from app.services import blueprints as bp_svc
+from app.services import production_report_pdf
 from app.services.scheduling import stage_schedule
 from app.services.pricing import flag_unrealistic, resolve_price
 from app.services import skills as skills_svc
@@ -467,6 +468,33 @@ async def calculate(
             logger.warning("production scenario analysis failed: %s", exc)
             result["scenario_analysis"] = {"error": str(exc)}
     return result
+
+
+class ProductionReportRequest(BaseModel):
+    """A finished production calc (the CalcResult the Calculator already rendered) plus
+    a small meta block, rendered to a branded PDF. Posting the result keeps the report
+    decoupled from a recompute — it formats exactly what the user is looking at."""
+    result: dict
+    meta: dict = {}
+    share_code: Optional[str] = None
+    share_url: Optional[str] = None
+
+
+@router.post("/report/pdf")
+async def production_report(body: ProductionReportRequest,
+                           current_user: UserDB = Depends(get_current_user)):
+    """Detailed production PDF (bill of materials, job-cost breakdown, time, P&L) for a
+    single Calculator build — the manufacturing counterpart to the MC / Scenario PDFs."""
+    pdf = production_report_pdf.render_production_pdf({
+        "meta": body.meta or {},
+        "result": body.result or {},
+        "share_code": body.share_code or (body.result or {}).get("share_code"),
+        "share_url": body.share_url or (body.result or {}).get("share_url"),
+    })
+    name = (body.meta or {}).get("product_name") or "production"
+    safe = "".join(c if c.isalnum() else "_" for c in str(name)).strip("_") or "production"
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{safe}_production.pdf"'})
 
 
 # Recursive make-vs-buy chain + slot assignment

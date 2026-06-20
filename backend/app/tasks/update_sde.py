@@ -366,6 +366,34 @@ def update_activity_products(db) -> int:
                 "activity_id": _coerce(r, "activityID", int),
                 "product_type_id": _coerce(r, "productTypeID", int),
                 "quantity": _coerce(r, "quantity", int),
+            }
+            for r in batch
+        ]
+        stmt = pg_insert(EveActivityProduct).values(values)
+        # NB: don't touch ``probability`` here — it lives in a *separate* fuzzwork table
+        # (industryActivityProbabilities) and is populated by update_activity_probabilities.
+        return stmt.on_conflict_do_update(
+            index_elements=["type_id", "activity_id", "product_type_id"],
+            set_={"quantity": stmt.excluded["quantity"]},
+        )
+
+    return _upsert_chunks(db, build, raw)
+
+
+def update_activity_probabilities(db) -> int:
+    """Invention success probabilities live in their OWN fuzzwork table
+    (``industryActivityProbabilities``: typeID, activityID, productTypeID, probability),
+    NOT in industryActivityProducts. Merge them onto the matching activity-product rows
+    so ``eve_activity_products.probability`` is populated (else invention success chance
+    reads 0). Must run AFTER update_activity_products so the rows exist."""
+    raw = _dedup(_download_csv("industryActivityProbabilities"), "typeID", "activityID", "productTypeID")
+
+    def build(batch):
+        values = [
+            {
+                "type_id": _coerce(r, "typeID", int),
+                "activity_id": _coerce(r, "activityID", int),
+                "product_type_id": _coerce(r, "productTypeID", int),
                 "probability": _coerce(r, "probability", float),
             }
             for r in batch
@@ -373,7 +401,7 @@ def update_activity_products(db) -> int:
         stmt = pg_insert(EveActivityProduct).values(values)
         return stmt.on_conflict_do_update(
             index_elements=["type_id", "activity_id", "product_type_id"],
-            set_={"quantity": stmt.excluded["quantity"], "probability": stmt.excluded["probability"]},
+            set_={"probability": stmt.excluded["probability"]},
         )
 
     return _upsert_chunks(db, build, raw)
@@ -683,6 +711,7 @@ STEPS: list[tuple[str, Any]] = [
     ("activity_times", update_activity_times),
     ("activity_materials", update_activity_materials),
     ("activity_products", update_activity_products),
+    ("activity_probabilities", update_activity_probabilities),
     ("activity_skills", update_activity_skills),
     ("rig_bonuses", update_rig_bonuses),
     ("reprocessing_rigs", update_reprocessing_rigs),

@@ -43,11 +43,21 @@ def test_research_time_scales_with_levels_and_skills():
 def test_research_cost_breakdown():
     jc = r.research_cost(manuf_eiv_1run=1_000_000.0, from_lvl=0, to_lvl=1,
                          index=0.05, cost_role_pct=0.0, facility_tax_pct=0.0)
-    # base = EIV × 0.02 × ratio(0→1=1) = 20,000; system = ×0.05 = 1,000; +SCC 4% of base = 800
+    # base = EIV × 0.02 × ratio(0→1=1) = 20,000; system = ×0.05 = 1,000.
+    # ME/TE research is charged HALF the SCC surcharge (2%, not 4%) — verified in-game.
     assert jc.base_cost == pytest.approx(20000.0)
     assert jc.system_cost == pytest.approx(1000.0)
-    assert jc.scc_surcharge == pytest.approx(800.0)
-    assert jc.install_cost == pytest.approx(1800.0)
+    assert jc.scc_surcharge == pytest.approx(400.0)         # 2% of 20,000
+    assert jc.install_cost == pytest.approx(1400.0)
+
+
+def test_research_scc_is_half_of_copy_scc():
+    # Copying keeps the full 4% SCC; ME/TE research is half (2%).
+    copy = r.copy_plan(base_copy_time_per_run=100, manuf_eiv_1run=1_000_000.0,
+                       runs_per_copy=1, copies=1, copy_index=0.05)
+    research = r.research_cost(1_000_000.0, 0, 1, index=0.05)
+    assert copy["cost"]["scc_surcharge"] == pytest.approx(copy["cost"]["base_cost"] * 0.04)
+    assert research.scc_surcharge == pytest.approx(research.base_cost * 0.02)
 
 
 def test_te_time_saving_and_payback():

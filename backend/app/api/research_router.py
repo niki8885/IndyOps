@@ -11,11 +11,12 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.adapters import market
 from app.core.database import get_db, Facility, LinkedCharacter, EsiSkill, UserDB
-from app.core.database_eve import EveSessionLocal
+from app.core.database_eve import EveSessionLocal, EveSolarSystem
 from app.core.security import get_current_user
 from app.repositories import eve as eve_repo
 from app.repositories import cost_index_repo as ci_repo
@@ -131,16 +132,44 @@ def _facility(db: Session, user_id: int, facility_id: Optional[int]):
         Facility.id == facility_id, Facility.user_id == user_id).first()
 
 
-def _index_for(db: Session, fac: Optional[Facility], activity: int) -> float:
-    """Per-activity system cost index for a facility: persisted table → manual SCI → 0."""
+def _resolve_system_id(eve_db, fac: Optional[Facility]) -> Optional[int]:
+    """The facility's solar_system_id, backfilled from its system_name via the SDE when
+    the stored id is missing (older facilities / a system typed instead of picked).
+    Without this the per-activity cost indices never resolve and everything falls back
+    to the single manual manufacturing index."""
     if not fac:
-        return 0.0
+        return None
+    if fac.solar_system_id:
+        return fac.solar_system_id
+    if fac.system_name:
+        row = (eve_db.query(EveSolarSystem.solar_system_id)
+               .filter(func.lower(EveSolarSystem.solar_system_name) == fac.system_name.strip().lower())
+               .first())
+        if row:
+            return int(row[0])
+    return None
+
+
+def _live_index(system_id: int, key: str) -> Optional[float]:
+    """Live ESI cost index for one (system, activity) — the fallback when the persisted
+    snapshot has no row yet (e.g. the cost-index worker hasn't covered this system)."""
+    try:
+        return market.esi_cost_indices().get(system_id, {}).get(key)
+    except Exception:
+        return None
+
+
+def _index_for(db: Session, system_id: Optional[int], manual_sci, activity: int) -> float:
+    """Per-activity system cost index: persisted table → live ESI → manual SCI → 0."""
     key = _INDEX_KEY.get(activity)
-    if fac.solar_system_id and key:
-        idx = ci_repo.index_for(db, fac.solar_system_id, key, default=-1.0)
+    if system_id and key:
+        idx = ci_repo.index_for(db, system_id, key, default=-1.0)
         if idx >= 0:
             return idx
-    return float(fac.system_cost_index or 0.0)  # manual fallback (manufacturing index)
+        live = _live_index(system_id, key)
+        if live is not None:
+            return float(live)
+    return float(manual_sci or 0.0)  # manual fallback (manufacturing index)
 
 
 def _adjusted_prices() -> dict:
@@ -175,19 +204,21 @@ def _profile_out(p) -> Optional[dict]:
 async def copy_cost(body: CopyRequest,
                     current_user: UserDB = Depends(get_current_user),
                     db: Session = Depends(get_db)):
+    prof = _profile(db, current_user.id, body.character_id)
+    fac = _facility(db, current_user.id, body.facility_id)
     eve_db = EveSessionLocal()
     try:
         bp = _BP(eve_db, body.product_type_id, body.blueprint_type_id)
+        system_id = _resolve_system_id(eve_db, fac)
     finally:
         eve_db.close()
 
-    prof = _profile(db, current_user.id, body.character_id)
-    fac = _facility(db, current_user.id, body.facility_id)
     adjusted = _adjusted_prices()
 
     runs_per_copy = body.runs_per_copy or bp.max_runs or 1
     time_mult = prof.copy_time_mult if prof else 1.0
-    copy_index = _index_for(db, fac, eve_repo.COPYING)
+    manual_sci = fac.system_cost_index if fac else None
+    copy_index = _index_for(db, system_id, manual_sci, eve_repo.COPYING)
     cost_role = float(fac.cost_bonus or 0.0) if fac else 0.0
     tax = float(fac.tax or 0.0) if fac else 0.0
 
@@ -212,14 +243,15 @@ async def copy_cost(body: CopyRequest,
 async def me_te_payback(body: MeTeRequest,
                         current_user: UserDB = Depends(get_current_user),
                         db: Session = Depends(get_db)):
+    prof = _profile(db, current_user.id, body.character_id)
+    fac = _facility(db, current_user.id, body.facility_id)
     eve_db = EveSessionLocal()
     try:
         bp = _BP(eve_db, body.product_type_id, body.blueprint_type_id)
+        system_id = _resolve_system_id(eve_db, fac)
     finally:
         eve_db.close()
 
-    prof = _profile(db, current_user.id, body.character_id)
-    fac = _facility(db, current_user.id, body.facility_id)
     adjusted = _adjusted_prices()
 
     # Material valuation: client overrides, else ESI adjusted price.
@@ -230,8 +262,9 @@ async def me_te_payback(body: MeTeRequest,
 
     cost_role = float(fac.cost_bonus or 0.0) if fac else 0.0
     tax = float(fac.tax or 0.0) if fac else 0.0
-    me_index = _index_for(db, fac, eve_repo.ME_RESEARCH)
-    te_index = _index_for(db, fac, eve_repo.TE_RESEARCH)
+    manual_sci = fac.system_cost_index if fac else None
+    me_index = _index_for(db, system_id, manual_sci, eve_repo.ME_RESEARCH)
+    te_index = _index_for(db, system_id, manual_sci, eve_repo.TE_RESEARCH)
     me_mult = prof.me_research_time_mult if prof else 1.0
     te_mult = prof.te_research_time_mult if prof else 1.0
 
@@ -359,8 +392,10 @@ def _invention_ctx(eve_db, db, user_id, bp, fac, levels, adjusted):
     skill_names = eve_repo.type_names(eve_db, skill_ids)
     enc, sci1, sci2 = _classify_invention_skills(skill_ids, skill_names, levels)
 
-    manuf_index = _index_for(db, fac, eve_repo.MANUFACTURING)
-    inv_index = _index_for(db, fac, eve_repo.INVENTION)
+    system_id = _resolve_system_id(eve_db, fac)
+    manual_sci = fac.system_cost_index if fac else None
+    manuf_index = _index_for(db, system_id, manual_sci, eve_repo.MANUFACTURING)
+    inv_index = _index_for(db, system_id, manual_sci, eve_repo.INVENTION)
     cost_role = float(fac.cost_bonus or 0.0) if fac else 0.0
     tax = float(fac.tax or 0.0) if fac else 0.0
 
