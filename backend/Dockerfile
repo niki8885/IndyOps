@@ -16,6 +16,14 @@ COPY haskell/risk-engine/app/ ./app/
 RUN mkdir -p /out \
  && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/risk-engine
 
+# stage 1c: compile the Haskell invention-optimizer (offline, boot libs only) ─
+FROM haskell:9.6.6 AS invention-builder
+WORKDIR /build
+COPY haskell/invention-optimizer/src/ ./src/
+COPY haskell/invention-optimizer/app/ ./app/
+RUN mkdir -p /out \
+ && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/invention-optimizer
+
 # stage 2: compile the Fortran analytics-engine + profit-sim (gfortran only) ─
 FROM debian:bookworm-slim AS analytics-builder
 WORKDIR /build
@@ -63,6 +71,10 @@ ENV SCENARIO_SIM_BIN=/usr/local/bin/scenario-sim
 # Native risk-scoring / strategy-ranking engine (Haskell). Falls back to Python.
 COPY --from=risk-builder /out/risk-engine /usr/local/bin/risk-engine
 ENV RISK_ENGINE_BIN=/usr/local/bin/risk-engine
+
+# Native invention optimizer (IO-12, Haskell). Falls back to Python.
+COPY --from=invention-builder /out/invention-optimizer /usr/local/bin/invention-optimizer
+ENV INVENTION_OPTIMIZER_BIN=/usr/local/bin/invention-optimizer
 
 EXPOSE 8000
 

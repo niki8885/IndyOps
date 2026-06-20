@@ -18,10 +18,12 @@ from app.adapters import market
 from app.core.database import get_db, Facility, LinkedCharacter, EsiSkill, UserDB
 from app.core.database_eve import EveSessionLocal, EveSolarSystem
 from app.core.security import get_current_user
+from app.core.schemas import FacilityType
 from app.repositories import eve as eve_repo
 from app.repositories import cost_index_repo as ci_repo
 from app.services import research as research_svc
 from app.services import skills as skills_svc
+from app.services.facility_bonus import EC_COST_ROLE
 from app.services import invention as inv_svc
 from app.services.invention import Material
 from app.services.invention_opt import OptInput
@@ -125,11 +127,30 @@ def _profile(db: Session, user_id: int, character_id: Optional[int]):
     return skills_svc.profile_from(char.character_id, char.character_name, levels)
 
 
+_EC_TYPES = (FacilityType.RAITARU, FacilityType.AZBEL, FacilityType.SOTIYO)
+
+
 def _facility(db: Session, user_id: int, facility_id: Optional[int]):
     if not facility_id:
         return None
     return db.query(Facility).filter(
         Facility.id == facility_id, Facility.user_id == user_id).first()
+
+
+def _cost_role(fac) -> float:
+    """Effective job-cost reduction % for research/copy/invention.
+
+    EVE applies a structure ROLE bonus (Engineering Complexes) plus the activity's
+    cost rigs. The app auto-derives only *manufacturing* rigs (different rig family,
+    so they must NOT bleed onto research/copy/invention jobs); the facility's manual
+    ``Cost Bonus %`` field is the lever for the research/copy/invention cost rigs.
+    So the effective reduction = max(manual Cost Bonus %, EC role bonus). Mirrors the
+    Calculator's ``max(EC_COST_ROLE, cost_bonus)`` for ECs."""
+    if not fac:
+        return 0.0
+    manual = float(fac.cost_bonus or 0.0)
+    role = EC_COST_ROLE if fac.facility_type in _EC_TYPES else 0.0
+    return max(manual, role)
 
 
 def _resolve_system_id(eve_db, fac: Optional[Facility]) -> Optional[int]:
@@ -219,7 +240,7 @@ async def copy_cost(body: CopyRequest,
     time_mult = prof.copy_time_mult if prof else 1.0
     manual_sci = fac.system_cost_index if fac else None
     copy_index = _index_for(db, system_id, manual_sci, eve_repo.COPYING)
-    cost_role = float(fac.cost_bonus or 0.0) if fac else 0.0
+    cost_role = _cost_role(fac)
     tax = float(fac.tax or 0.0) if fac else 0.0
 
     plan = research_svc.copy_plan(
@@ -260,7 +281,7 @@ async def me_te_payback(body: MeTeRequest,
               for m in bp.materials]
     eiv = _eiv_1run(bp.materials, adjusted)
 
-    cost_role = float(fac.cost_bonus or 0.0) if fac else 0.0
+    cost_role = _cost_role(fac)
     tax = float(fac.tax or 0.0) if fac else 0.0
     manual_sci = fac.system_cost_index if fac else None
     me_index = _index_for(db, system_id, manual_sci, eve_repo.ME_RESEARCH)
@@ -319,8 +340,10 @@ def _clamp(v: int, lo: int, hi: int) -> int:
 def _facility_out(fac, copy_index=None, me_index=None, te_index=None) -> Optional[dict]:
     if not fac:
         return None
+    # cost_bonus_pct = the EFFECTIVE reduction applied (manual Cost Bonus % floored by
+    # the EC structure-role bonus), so the UI shows what actually hit the job cost.
     out = {"id": fac.id, "name": fac.name, "system_name": fac.system_name,
-           "cost_bonus_pct": fac.cost_bonus or 0.0, "tax_pct": fac.tax or 0.0}
+           "cost_bonus_pct": _cost_role(fac), "tax_pct": fac.tax or 0.0}
     if copy_index is not None:
         out["copy_index"] = copy_index
     if me_index is not None:
@@ -396,7 +419,7 @@ def _invention_ctx(eve_db, db, user_id, bp, fac, levels, adjusted):
     manual_sci = fac.system_cost_index if fac else None
     manuf_index = _index_for(db, system_id, manual_sci, eve_repo.MANUFACTURING)
     inv_index = _index_for(db, system_id, manual_sci, eve_repo.INVENTION)
-    cost_role = float(fac.cost_bonus or 0.0) if fac else 0.0
+    cost_role = _cost_role(fac)
     tax = float(fac.tax or 0.0) if fac else 0.0
 
     products: list[OptInput] = []

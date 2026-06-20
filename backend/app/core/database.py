@@ -605,6 +605,36 @@ class TradeTypeStat(Base):
     )
 
 
+class HaulCandidate(Base):
+    """A precomputed, auto-discovered Jita → C-J6MT haul candidate.
+
+    The haul scanner prices the most-liquid Jita items (daily volume floor, market
+    category allowlist) against C-J and keeps the profitable ones, storing the best
+    of the four methods' per-unit economics. Single route → keyed by item_id;
+    current-state upsert (the whole table is replaced each scan). NOT a hypertable."""
+    __tablename__ = "haul_candidates"
+
+    item_id = Column(Integer, primary_key=True)            # type_id
+    type_name = Column(String(200), nullable=True)
+    category_id = Column(Integer, nullable=True)
+    jita_buy = Column(Float, nullable=True)                # Jita best buy order
+    jita_sell = Column(Float, nullable=True)               # Jita lowest sell order
+    cj_buy = Column(Float, nullable=True)                  # C-J highest buy order
+    cj_sell = Column(Float, nullable=True)                 # C-J lowest sell order
+    item_volume_m3 = Column(Float, nullable=True)
+    daily_volume = Column(Float, nullable=True)            # Jita daily traded units
+    best_method = Column(String(12), nullable=True)        # e.g. "sell_buy"
+    profit_per_unit = Column(Float, nullable=True)
+    margin_pct = Column(Float, nullable=True)              # ROI fraction of the best method
+    transport_per_unit = Column(Float, nullable=True)      # default-rate courier cost / unit
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index("ix_haul_candidates_updated_at", "updated_at"),
+        Index("ix_haul_candidates_margin", "margin_pct"),
+    )
+
+
 class SimulationRun(Base):
     """A stored Monte-Carlo profit-simulation run (IO-22): the request snapshot,
     the risk-adjusted metrics, and the rendered per-run PDF. Roll-up reports are

@@ -1,11 +1,12 @@
 import { useState, lazy, Suspense } from 'react'
 import TradeOptimizerPage from './TradeOptimizerPage'
+import HaulEvaluatorPage from './HaulEvaluatorPage'
 
 // The Browser pulls in Plotly (~4MB) — keep it in its own lazy chunk so the
 // Optimizer subtab (chart-free, stays in the main bundle) never drags it in.
 const MarketBrowser = lazy(() => import('./MarketPage'))
 
-const SUBTABS = ['Browser', 'Optimizer']
+const SUBTABS = ['Browser', 'Optimizer', 'Haul']
 
 export default function MarketHub() {
   const [tab, setTab] = useState(0)
@@ -23,6 +24,7 @@ export default function MarketHub() {
         </Suspense>
       )}
       {tab === 1 && <TradeOptimizerPage />}
+      {tab === 2 && <HaulEvaluatorPage />}
     </div>
   )
 }

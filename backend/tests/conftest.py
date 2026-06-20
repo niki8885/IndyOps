@@ -24,7 +24,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import (
     Base, AnalyticsCache, MarketIndexSnapshot, TrackPrice,
-    TradeCandidate, StationTradeCandidate, TradeTypeStat,
+    TradeCandidate, StationTradeCandidate, TradeTypeStat, HaulCandidate,
 )
 from app.core.database_eve import (
     EveBase, EveType, EveActivityProduct, EveActivityMaterial, EveActivityTime, EveBlueprint,
@@ -40,6 +40,7 @@ def app_engine():
     Base.metadata.create_all(engine, tables=[
         MarketIndexSnapshot.__table__, TrackPrice.__table__, AnalyticsCache.__table__,
         TradeCandidate.__table__, StationTradeCandidate.__table__, TradeTypeStat.__table__,
+        HaulCandidate.__table__,
     ])
     yield engine
     engine.dispose()

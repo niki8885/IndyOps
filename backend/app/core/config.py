@@ -81,6 +81,14 @@ TRADE_MAX_UNIVERSE         = int(os.getenv("TRADE_MAX_UNIVERSE", "1500"))       
 TRADE_MAX_ORDER_PAGES      = int(os.getenv("TRADE_MAX_ORDER_PAGES", "300"))        # per-region order-book page cap
 TRADE_TTL_SECONDS          = int(os.getenv("TRADE_TTL_SECONDS", "900"))            # candidate freshness (query layer)
 
+# --- Jita → C-J6MT haul scanner (auto-discovery) ----------------------------
+# Separate from the cross-hub optimizer: a focused, bounded scan of the most
+# liquid Jita items priced against C-J (the C-J scrape is slow, so keep it small).
+TRADE_HAUL_MIN_VOLUME  = int(os.getenv("TRADE_HAUL_MIN_VOLUME", "100"))   # Jita daily-volume floor
+TRADE_HAUL_MAX_ITEMS   = int(os.getenv("TRADE_HAUL_MAX_ITEMS", "500"))    # cap (bounds the C-J scrape)
+TRADE_HAUL_SHIP_M3     = float(os.getenv("TRADE_HAUL_SHIP_M3", "1200"))   # default courier ISK/m³ for ranking
+TRADE_HAUL_TTL_SECONDS = int(os.getenv("TRADE_HAUL_TTL_SECONDS", "3600")) # scanner freshness (query layer)
+
 # Market category_ids that may become trade candidates (SDE invCategories):
 # 6 Ship, 7 Module, 8 Charge, 18 Drone, 87 Fighter. Excludes blueprints (9),
 # skillbooks (16), SKINs (91), etc. Override with a CSV env var.

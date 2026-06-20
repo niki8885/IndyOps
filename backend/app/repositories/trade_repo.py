@@ -12,7 +12,9 @@ from __future__ import annotations
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.core.database import TradeCandidate, StationTradeCandidate, TradeTypeStat
+from app.core.database import (
+    TradeCandidate, StationTradeCandidate, TradeTypeStat, HaulCandidate,
+)
 
 _CHUNK = 1000
 
@@ -97,6 +99,46 @@ def query_station_candidates(db, *, stations: list[int] | None = None,
 def latest_updated_at(db, model):
     """Newest updated_at across a candidate table (for the TTL freshness check)."""
     return db.query(func.max(model.updated_at)).scalar()
+
+
+def liquid_type_ids(db, region_id: int, min_volume: float, limit: int) -> list[tuple[int, float]]:
+    """The most-liquid types in one region from trade_type_stats: ``[(type_id,
+    daily_volume)]`` with ``daily_volume >= min_volume``, ordered desc, capped to
+    ``limit``. Drives the haul scanner's bounded Jita universe."""
+    rows = (
+        db.query(TradeTypeStat.type_id, TradeTypeStat.daily_volume)
+        .filter(TradeTypeStat.region_id == region_id,
+                TradeTypeStat.daily_volume.isnot(None),
+                TradeTypeStat.daily_volume >= min_volume)
+        .order_by(TradeTypeStat.daily_volume.desc())
+        .limit(limit)
+        .all()
+    )
+    return [(tid, float(dv)) for tid, dv in rows]
+
+
+def replace_haul_candidates(db, rows: list[dict]) -> int:
+    """Full-snapshot refresh of haul_candidates (delete-all + bulk insert); commits.
+    The table is small and current-state, so a clean replace beats prune-stale logic."""
+    db.query(HaulCandidate).delete()
+    if rows:
+        db.bulk_insert_mappings(HaulCandidate, rows)
+    db.commit()
+    return len(rows)
+
+
+def query_haul_candidates(db, *, min_margin: float = 0.0, method: str | None = None,
+                          category_id: int | None = None, rank_by: str = "profit",
+                          limit: int = 100) -> list[HaulCandidate]:
+    """Profitable Jita → C-J haul candidates, ranked by per-unit profit or ROI desc."""
+    q = db.query(HaulCandidate).filter(
+        HaulCandidate.margin_pct.isnot(None), HaulCandidate.margin_pct >= min_margin)
+    if method:
+        q = q.filter(HaulCandidate.best_method == method)
+    if category_id is not None:
+        q = q.filter(HaulCandidate.category_id == category_id)
+    order = HaulCandidate.margin_pct if rank_by == "roi" else HaulCandidate.profit_per_unit
+    return q.order_by(order.desc()).limit(limit).all()
 
 
 def load_type_stats(db, region_id: int, type_ids: list[int]) -> dict[int, dict]:

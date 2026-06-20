@@ -60,6 +60,14 @@ jobs:
           ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
           ./build/spec
 
+      - name: Build + test invention-optimizer
+        working-directory: haskell/invention-optimizer
+        run: |
+          mkdir -p bin build
+          ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/invention-optimizer
+          ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
+          ./build/spec
+
       # Likewise build the Fortran engines and run their cross-language parity
       # tests, so a logic regression (not just a compile error) blocks the deploy
       # before the engines ship in the image.
@@ -87,6 +95,12 @@ jobs:
         run: pytest tests/test_risk_engine_haskell_parity.py
         env:
           RISK_ENGINE_BIN: ${{ github.workspace }}/haskell/risk-engine/bin/risk-engine
+
+      - name: Run invention-optimizer parity test
+        working-directory: backend
+        run: pytest tests/test_invention_optimizer_parity.py
+        env:
+          INVENTION_OPTIMIZER_BIN: ${{ github.workspace }}/haskell/invention-optimizer/bin/invention-optimizer
 
   # -------------------------------------------------------------------------
   # 1. Build Docker images and push to GHCR

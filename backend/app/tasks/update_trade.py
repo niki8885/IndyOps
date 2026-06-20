@@ -16,6 +16,7 @@ Two jobs at two cadences (see app.jobs):
 All ESI/SDE math beyond the adapters lives in pure ``app.services.trade``.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from app.core import config
@@ -27,6 +28,8 @@ from app.repositories import eve_market, trade_repo
 from app.services import trade
 
 logger = logging.getLogger(__name__)
+
+JITA_REGION = 10000002  # The Forge — the haul scanner's source hub
 
 
 # ── order-book reduction & universe selection ───────────────────────────────
@@ -279,7 +282,101 @@ def run_trade_history_update() -> dict:
     return summary
 
 
+# ── Jita → C-J6MT haul scanner (auto-discovery, bounded — C-J scrape is slow) ──
+
+def _f(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _jita_prices(type_ids: list[int]) -> dict[int, dict]:
+    """Per-type Jita ``{'buy','sell'}`` from one Fuzzwork aggregate fetch (percentile→best)."""
+    agg = market.fuzzwork_aggregates_or_empty(JITA_REGION, type_ids)
+    out: dict[int, dict] = {}
+    for tid in type_ids:
+        s = agg.get(str(tid)) or {}
+        b, se = s.get("buy") or {}, s.get("sell") or {}
+        out[tid] = {"buy": _f(b.get("percentile") or b.get("max")),
+                    "sell": _f(se.get("percentile") or se.get("min"))}
+    return out
+
+
+def _cj_prices(type_ids: list[int]) -> dict[int, dict]:
+    """Per-type C-J ``{'buy','sell'}`` from the appraise.gnf.lt scrape (parallel, 8 workers)."""
+    if not type_ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(market.gnf_local, type_ids))
+    return {tid: {"buy": _f(p.get("buy")), "sell": _f(p.get("sell"))}
+            for tid, p in zip(type_ids, results) if p}
+
+
+def run_haul_scan_update() -> dict:
+    """Auto-discover profitable Jita → C-J6MT hauls among the most-liquid Jita items.
+
+    Universe = ``trade_type_stats`` for The Forge with daily volume ≥ TRADE_HAUL_MIN_VOLUME
+    (already category-allowlisted by the history job), capped to TRADE_HAUL_MAX_ITEMS by
+    volume — kept small because the C-J scrape is per-item and slow. For each, prices Jita
+    (Fuzzwork) vs C-J (gnf), keeps the best-of-4-methods if profitable, replaces
+    ``haul_candidates``."""
+    db = SessionLocal()
+    eve_db = EveSessionLocal()
+    summary = {"universe": 0, "candidates": 0, "errors": []}
+    try:
+        liquid = trade_repo.liquid_type_ids(
+            db, JITA_REGION, config.TRADE_HAUL_MIN_VOLUME, config.TRADE_HAUL_MAX_ITEMS)
+        type_ids = [t for t, _ in liquid]
+        summary["universe"] = len(type_ids)
+        if not type_ids:
+            logger.info("haul scan: no liquid Jita types yet (run trade history first)")
+            return summary
+
+        dvol = dict(liquid)
+        meta = eve_market.types_market_meta(eve_db, type_ids)
+        jita = _jita_prices(type_ids)
+        cj = _cj_prices(type_ids)
+
+        broker, tax, rate = config.TRADE_BROKER_FEE, config.TRADE_SALES_TAX, config.TRADE_HAUL_SHIP_M3
+        now = datetime.now(timezone.utc)
+        rows: list[dict] = []
+        for tid in type_ids:
+            m = meta.get(tid) or {}
+            if m.get("category_id") not in config.TRADE_CATEGORY_ALLOWLIST:
+                continue
+            j, c = jita.get(tid, {}), cj.get(tid, {})
+            vol_m3 = m.get("volume") or 0.0
+            ship = vol_m3 * rate
+            best = trade.best_haul_method(
+                jita_buy=j.get("buy"), jita_sell=j.get("sell"),
+                cj_buy=c.get("buy"), cj_sell=c.get("sell"), qty=1,
+                broker_fee=broker, sales_tax=tax, shipping_per_unit=ship)
+            if not best or best["profit"] <= 0:
+                continue
+            rows.append({
+                "item_id": tid, "type_name": m.get("type_name"), "category_id": m.get("category_id"),
+                "jita_buy": j.get("buy"), "jita_sell": j.get("sell"),
+                "cj_buy": c.get("buy"), "cj_sell": c.get("sell"),
+                "item_volume_m3": vol_m3, "daily_volume": dvol.get(tid),
+                "best_method": best["method"], "profit_per_unit": best["profit"],
+                "margin_pct": best["roi"], "transport_per_unit": round(ship, 2),
+                "updated_at": now,
+            })
+        summary["candidates"] = trade_repo.replace_haul_candidates(db, rows)
+        logger.info("haul scan: universe=%s candidates=%s", summary["universe"], summary["candidates"])
+    except Exception as exc:
+        db.rollback()
+        logger.exception("haul scan update failed")
+        summary["errors"].append(str(exc))
+    finally:
+        eve_db.close()
+        db.close()
+    return summary
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     print(run_trade_history_update())
     print(run_trade_orders_update())
+    print(run_haul_scan_update())

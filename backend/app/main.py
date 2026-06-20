@@ -21,6 +21,7 @@ from app.api.simulation_router import router as simulation_router
 from app.api.characters_router import router as characters_router
 from app.api.ore_router import router as ore_router
 from app.api.trade_router import router as trade_router
+from app.api.haul_router import router as haul_router
 from app.api.agenda_router import router as agenda_router
 from app.api.encyclopedia_router import router as encyclopedia_router
 
@@ -60,6 +61,7 @@ app.include_router(simulation_router, prefix="/api/v1/simulation", tags=["Simula
 app.include_router(characters_router, prefix="/api/v1/characters", tags=["Personal File"])
 app.include_router(ore_router, prefix="/api/v1/ore", tags=["Ore Acquisition"])
 app.include_router(trade_router, prefix="/api/v1/trade", tags=["Trade Optimizer"])
+app.include_router(haul_router, prefix="/api/v1/trade", tags=["Trade Haul"])
 app.include_router(agenda_router, prefix="/api/v1/agenda", tags=["Agenda"])
 app.include_router(encyclopedia_router, prefix="/api/v1/encyclopedia", tags=["Encyclopedia"])
 
