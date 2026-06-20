@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
-import { get, post, patch, del } from '../api/client'
+import { get, post, patch, del, downloadPost } from '../api/client'
 import SimulationPanel from '../components/SimulationPanel'
 import ScenarioPanel from '../components/ScenarioPanel'
 import ShareBar from '../components/ShareBar'
@@ -257,6 +257,7 @@ function CalculatorTab({ sharedJob }) {
   const [jobForm, setJobForm]         = useState({ project_id: '', status: 'Planning', target: '', target_other: '', paks: '', units_per_pak: '', pack_tier: '', jita_sell: '', jita_buy: '', cj_sell: '', cj_buy: '', initial_contract_price: '', return_contract_price: '', code: '', contract_code: '', place: '', note: '' })
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
+  const [reportBusy, setReportBusy] = useState(false)
 
   // IndyJob (internal planned job) save panel
   const [indyOpen, setIndyOpen]       = useState(false)
@@ -444,6 +445,30 @@ function CalculatorTab({ sharedJob }) {
       setIndyForm(f => ({ ...f, blueprints: '', runs_per_bp: '', jita_sell: '', jita_buy: '' }))
     } catch (e) { setError(e.message) }
     finally { setCalcLoading(false) }
+  }
+
+  // Detailed production PDF (bill of materials, job-cost breakdown, time, P&L) for the
+  // current build — the manufacturing counterpart to the MC / Scenario PDFs.
+  async function downloadReport() {
+    if (!result) return
+    setReportBusy(true); setError('')
+    try {
+      const facName = facilities.find(f => f.id === Number(params.facility_id))?.name || null
+      const meta = {
+        product_name: result.output?.name || product?.name,
+        runs: Number(params.runs), windows: Number(params.windows) || 1,
+        me: Number(params.me), te: Number(params.te),
+        facility_name: facName,
+        produce_character: result.produce_character?.character_name || null,
+        sell_character: result.sell_character?.character_name || null,
+        created_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+      }
+      const name = (meta.product_name || 'production').replace(/[^a-z0-9]+/gi, '_')
+      await downloadPost('/manufacturing/report/pdf',
+        { result, meta, share_code: result.share_code, share_url: result.share_url },
+        `${name}_production.pdf`)
+    } catch (e) { setError(e.message) }
+    finally { setReportBusy(false) }
   }
 
   async function fillMaterialPrices() {
@@ -1119,7 +1144,13 @@ function CalculatorTab({ sharedJob }) {
             </Section>
           </div>
 
-          <ShareBar code={result.share_code} link={result.share_url} onOpen={openShared} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <ShareBar code={result.share_code} link={result.share_url} onOpen={openShared} />
+            <button className="btn btn-ghost" disabled={reportBusy} onClick={downloadReport}
+                    title="Detailed production PDF: bill of materials, job-cost breakdown, time and P&L">
+              {reportBusy ? 'Generating…' : '📄 Production report'}
+            </button>
+          </div>
           {/* IO-22 Monte-Carlo + IO-23 scenario simulation */}
           {result.simulation && <SimulationPanel run={result.simulation} projectId={result.simulation.project_id} />}
           <ScenarioPanel source="production" buildBody={buildCalcBody} targetTypeId={product?.type_id}

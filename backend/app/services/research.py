@@ -20,6 +20,11 @@ COPY_COST_FACTOR = 0.02
 MAX_ME = 10
 MAX_TE = 20
 
+# The SCC surcharge is 4% of the job cost base for manufacturing / copying / invention,
+# but EVE charges only HALF (2%) on the PTV of ME/TE *research* jobs — verified in-game:
+# index 8.91% (−25% rig/role) + 2% SCC on a 42.65M PTV reproduces the 3,733,940 ISK total.
+RESEARCH_SCC = SCC_SURCHARGE / 2
+
 
 # job installation cost
 
@@ -34,13 +39,15 @@ class JobCost:
     install_cost: float
 
 
-def _install(base_cost: float, index: float, cost_role_pct: float, facility_tax_pct: float) -> JobCost:
-    """Installation cost from a job base cost, mirroring services.manufacturing."""
+def _install(base_cost: float, index: float, cost_role_pct: float, facility_tax_pct: float,
+             scc_pct: float = SCC_SURCHARGE) -> JobCost:
+    """Installation cost from a job base cost, mirroring services.manufacturing.
+    ``scc_pct`` is the SCC surcharge rate (4% normally, 2% for ME/TE research)."""
     system_cost = base_cost * index
     structure_bonus = system_cost * cost_role_pct / 100
     gross = system_cost - structure_bonus
     tax = base_cost * facility_tax_pct / 100
-    scc = base_cost * SCC_SURCHARGE
+    scc = base_cost * scc_pct
     return JobCost(
         base_cost=round(base_cost, 2),
         system_cost_index=index,
@@ -105,9 +112,9 @@ def research_time(base_time: int, from_lvl: int, to_lvl: int,
 
 def research_cost(manuf_eiv_1run: float, from_lvl: int, to_lvl: int, index: float,
                   cost_role_pct: float = 0.0, facility_tax_pct: float = 0.0) -> JobCost:
-    """Install cost to research from ``from_lvl`` to ``to_lvl``."""
+    """Install cost to research from ``from_lvl`` to ``to_lvl`` (ME/TE: 2% SCC)."""
     base_cost = manuf_eiv_1run * COPY_COST_FACTOR * _level_ratio(from_lvl, to_lvl)
-    return _install(base_cost, index, cost_role_pct, facility_tax_pct)
+    return _install(base_cost, index, cost_role_pct, facility_tax_pct, scc_pct=RESEARCH_SCC)
 
 
 def me_material_savings(materials: list[dict], from_me: int, to_me: int,

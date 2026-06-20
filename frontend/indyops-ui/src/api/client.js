@@ -32,14 +32,7 @@ export const put    = (path, body)  => req('PUT',    path, body)
 export const patch  = (path, body)  => req('PATCH',  path, body)
 export const del    = (path)        => req('DELETE',  path)
 
-// Fetch a binary response (e.g. a PDF) and trigger a browser download.
-export async function download(path, filename) {
-  const token = localStorage.getItem('token')
-  const res = await fetch(`${BASE}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const blob = await res.blob()
+function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -48,4 +41,24 @@ export async function download(path, filename) {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
+}
+
+// Fetch a binary response (e.g. a PDF) and trigger a browser download.
+export async function download(path, filename) {
+  const token = localStorage.getItem('token')
+  const res = await fetch(`${BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  triggerDownload(await res.blob(), filename)
+}
+
+// POST a JSON body and download the binary response (e.g. a generated PDF report).
+export async function downloadPost(path, body, filename) {
+  const token = localStorage.getItem('token')
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`${BASE}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  triggerDownload(await res.blob(), filename)
 }
