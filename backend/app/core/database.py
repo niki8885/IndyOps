@@ -142,7 +142,8 @@ class Facility(Base):
     cost_bonus = Column(Float, nullable=True)  # material/time cost reduction %
 
     system_name = Column(String(200), nullable=True, index=True)
-    system_cost_index = Column(Float, nullable=True)  # ESI manufacturing cost index
+    solar_system_id = Column(Integer, nullable=True, index=True)  # SDE id → per-activity indices
+    system_cost_index = Column(Float, nullable=True)  # ESI manufacturing cost index (legacy single value)
 
     # Rigs — stored as (eve_type_id, display name) pairs
     rig1_type_id = Column(Integer, nullable=True)
@@ -156,6 +157,19 @@ class Facility(Base):
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="facilities")
+
+
+class SystemCostIndex(Base):
+    """ESI industry cost index per (solar system, activity), refreshed by a worker
+    job. Activity key matches ESI ``/industry/systems/`` (``manufacturing``,
+    ``copying``, ``invention``, ``researching_material_efficiency``,
+    ``researching_time_efficiency``, ``reaction``). Values are fractions."""
+    __tablename__ = "system_cost_indices"
+
+    solar_system_id = Column(Integer, primary_key=True)
+    activity = Column(String(40), primary_key=True)
+    cost_index = Column(Float, nullable=False, default=0.0)
+    updated_at = Column(DateTime, nullable=True)
 
 
 class Blueprint(Base):

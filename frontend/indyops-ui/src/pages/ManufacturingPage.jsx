@@ -9,8 +9,9 @@ import { codeFromInput } from '../utils/shareCode'
 // Plotly (~4MB) only loads when the chain graph actually renders — keeps it out
 // of the eagerly-imported Manufacturing bundle.
 const ChainGraph = lazy(() => import('../components/ChainGraph'))
+const ResearchModule = lazy(() => import('./manufacturing/ResearchModule'))
 
-const TABS = ['Calculator', 'Chain', 'PAK Jobs', 'IndyJob', 'Inventory Analysis']
+const TABS = ['Calculator', 'Chain', 'Research', 'PAK Jobs', 'IndyJob', 'Inventory Analysis']
 
 // A styled on/off swapper for the simulation suite — replaces the old plain checkbox
 // and makes clear it covers both Monte-Carlo risk *and* scenario stress tests.
@@ -213,9 +214,10 @@ export default function ManufacturingPage() {
       </div>
       {tab === 0 && <CalculatorTab sharedJob={sharedJob?.source === 'production' ? sharedJob : null} />}
       {tab === 1 && <ChainTab sharedJob={sharedJob?.source === 'chain' ? sharedJob : null} />}
-      {tab === 2 && <PakJobsTab />}
-      {tab === 3 && <IndyJobsTab />}
-      {tab === 4 && <InventoryAnalysisTab />}
+      {tab === 2 && <Suspense fallback={<div className="empty-state">Loading…</div>}><ResearchModule /></Suspense>}
+      {tab === 3 && <PakJobsTab />}
+      {tab === 4 && <IndyJobsTab />}
+      {tab === 5 && <InventoryAnalysisTab />}
     </div>
   )
 }

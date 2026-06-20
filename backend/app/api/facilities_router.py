@@ -27,6 +27,7 @@ class FacilityCreate(BaseModel):
     tax: Optional[float] = None
     cost_bonus: Optional[float] = None
     system_name: Optional[str] = None
+    solar_system_id: Optional[int] = None
     system_cost_index: Optional[float] = None
     rig1: Optional[RigIn] = None
     rig2: Optional[RigIn] = None
@@ -40,6 +41,7 @@ class FacilityUpdate(BaseModel):
     tax: Optional[float] = None
     cost_bonus: Optional[float] = None
     system_name: Optional[str] = None
+    solar_system_id: Optional[int] = None
     system_cost_index: Optional[float] = None
     rig1: Optional[RigIn] = None
     rig2: Optional[RigIn] = None
@@ -58,6 +60,7 @@ class FacilityOut(BaseModel):
     tax: Optional[float] = None
     cost_bonus: Optional[float] = None
     system_name: Optional[str] = None
+    solar_system_id: Optional[int] = None
     system_cost_index: Optional[float] = None
     rig1: RigOut
     rig2: RigOut
@@ -73,7 +76,8 @@ class FacilityOut(BaseModel):
             id=f.id, user_id=f.user_id, organisation_id=f.organisation_id, name=f.name,
             facility_type=f.facility_type,
             tax=f.tax, cost_bonus=f.cost_bonus,
-            system_name=f.system_name, system_cost_index=f.system_cost_index,
+            system_name=f.system_name, solar_system_id=f.solar_system_id,
+            system_cost_index=f.system_cost_index,
             rig1=RigOut(type_id=f.rig1_type_id, name=f.rig1_name),
             rig2=RigOut(type_id=f.rig2_type_id, name=f.rig2_name),
             rig3=RigOut(type_id=f.rig3_type_id, name=f.rig3_name),
@@ -122,6 +126,7 @@ async def create_facility(
         tax=body.tax,
         cost_bonus=body.cost_bonus,
         system_name=body.system_name,
+        solar_system_id=body.solar_system_id,
         system_cost_index=body.system_cost_index,
         rig1_type_id=body.rig1.type_id if body.rig1 else None,
         rig1_name=body.rig1.name if body.rig1 else None,
@@ -160,6 +165,7 @@ async def update_facility(
     if body.tax is not None: f.tax = body.tax
     if body.cost_bonus is not None: f.cost_bonus = body.cost_bonus
     if body.system_name is not None: f.system_name = body.system_name
+    if body.solar_system_id is not None: f.solar_system_id = body.solar_system_id
     if body.system_cost_index is not None: f.system_cost_index = body.system_cost_index
 
     if body.rig1 is not None:

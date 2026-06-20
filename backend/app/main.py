@@ -12,6 +12,7 @@ from app.api.deliveries_router import router as deliveries_router
 from app.api.facilities_router import router as facilities_router
 from app.api.blueprints_router import router as blueprints_router
 from app.api.manufacturing_router import router as manufacturing_router
+from app.api.research_router import router as research_router
 from app.api.eve_router import router as eve_router
 from app.api.analysis_router import router as analysis_router
 from app.api.market_router import router as market_router
@@ -50,6 +51,7 @@ app.include_router(deliveries_router, prefix="/api/v1/deliveries", tags=["Delive
 app.include_router(facilities_router, prefix="/api/v1/facilities", tags=["Facilities"])
 app.include_router(blueprints_router, prefix="/api/v1/blueprints", tags=["Blueprints"])
 app.include_router(manufacturing_router, prefix="/api/v1/manufacturing", tags=["Manufacturing"])
+app.include_router(research_router, prefix="/api/v1/manufacturing/research", tags=["Blueprint Research"])
 app.include_router(eve_router, prefix="/api/v1/eve", tags=["EVE SDE"])
 app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])
 app.include_router(market_router, prefix="/api/v1/market", tags=["Market Browser"])

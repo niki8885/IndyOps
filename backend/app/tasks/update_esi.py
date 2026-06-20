@@ -272,6 +272,14 @@ def _asset_structure_ids(db, character_id) -> set:
     return by_kind["structure"]
 
 
+def _blueprint_structure_ids(db, character_id) -> set:
+    rows = (
+        db.query(EsiBlueprintCopy.location_id)
+        .filter(EsiBlueprintCopy.character_id == character_id).all()
+    )
+    return {loc for (loc,) in rows if asset_location.maybe_structure_id(loc)}
+
+
 # Per-character sync
 
 def sync_character(db, char: LinkedCharacter) -> dict:
@@ -390,6 +398,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         if not _has_scope(char, _STRUCTURE_SCOPE):
             return 0
         ids = set(_asset_structure_ids(db, cid))
+        ids |= _blueprint_structure_ids(db, cid)  # blueprints can live outside synced assets
         if char.location_type == "structure" and char.location_id:
             ids.add(char.location_id)  # also name the citadel the character is docked in
         return _resolve_structures(db, token, ids)
@@ -439,11 +448,11 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("location", _location)
     step("implants", _implants)
     step("mining", _mining)
-    step("structures", _structures)
     step("contracts", _contracts)
     step("industry_jobs", _jobs)
     step("standings", _standings)
     step("blueprints", _blueprints)
+    step("structures", _structures)  # after blueprints: resolves their location ids too
     step("wealth", _wealth)
 
     char.last_sync_at = utcnow()

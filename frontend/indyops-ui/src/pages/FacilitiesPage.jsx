@@ -17,7 +17,7 @@ const TYPE_COLOR = {
 
 const EMPTY_FORM = {
   name: '', facility_type: 'Raitaru', organisation_id: '',
-  tax: '', cost_bonus: '', system_name: '', system_cost_index: '',
+  tax: '', cost_bonus: '', system_name: '', solar_system_id: null, system_cost_index: '',
   rig1: { type_id: null, name: null },
   rig2: { type_id: null, name: null },
   rig3: { type_id: null, name: null },
@@ -67,6 +67,7 @@ export default function FacilitiesPage() {
       tax: f.tax ?? '',
       cost_bonus: f.cost_bonus ?? '',
       system_name: f.system_name ?? '',
+      solar_system_id: f.solar_system_id ?? null,
       system_cost_index: f.system_cost_index ?? '',
       rig1: { type_id: f.rig1.type_id, name: f.rig1.name },
       rig2: { type_id: f.rig2.type_id, name: f.rig2.name },
@@ -90,6 +91,7 @@ export default function FacilitiesPage() {
       tax:               form.tax !== '' ? Number(form.tax) : null,
       cost_bonus:        form.cost_bonus !== '' ? Number(form.cost_bonus) : null,
       system_name:       form.system_name || null,
+      solar_system_id:   form.solar_system_id ?? null,
       system_cost_index: form.system_cost_index !== '' ? Number(form.system_cost_index) : null,
       rig1: form.rig1.name ? form.rig1 : null,
       rig2: form.rig2.name ? form.rig2 : null,
@@ -148,9 +150,9 @@ export default function FacilitiesPage() {
     }
   }
 
-  // when a system is chosen, store name and auto-fetch its cost index
-  function onSystemChange(name) {
-    setForm(f => ({ ...f, system_name: name }))
+  // when a system is chosen, store name + id and auto-fetch its cost index
+  function onSystemChange(name, sys) {
+    setForm(f => ({ ...f, system_name: name, solar_system_id: sys?.solar_system_id ?? null }))
     setSciInfo('')
     setSciRaw(null)
     if (name) fetchSci(name, form.facility_type)

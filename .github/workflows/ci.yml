@@ -206,3 +206,39 @@ jobs:
         run: |
           pip install pytest numpy
           pytest tests/test_risk_engine_haskell_parity.py --noconftest -q
+
+  # -------------------------------------------------------------------------
+  # Haskell invention-optimizer — build, unit tests, and cross-language parity
+  # against the Python oracle (decryptor × product ranking, haskell/invention-optimizer)
+  # -------------------------------------------------------------------------
+  invention-optimizer:
+    name: Invention optimizer (Haskell) + parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GHC
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.6"
+
+      - name: Build engine + run Haskell tests
+        working-directory: haskell/invention-optimizer
+        run: |
+          mkdir -p bin build
+          ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/invention-optimizer
+          ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
+          ./build/spec
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cross-language parity (Python oracle vs native binary)
+        working-directory: backend
+        env:
+          INVENTION_OPTIMIZER_BIN: ${{ github.workspace }}/haskell/invention-optimizer/bin/invention-optimizer
+        run: |
+          pip install pytest
+          pytest tests/test_invention_optimizer_parity.py --noconftest -q
