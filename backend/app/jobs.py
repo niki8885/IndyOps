@@ -16,6 +16,7 @@ from app.core.indices_data import INDEX_META, INDEX_ORDER
 from app.adapters import analytics_engine
 from app.repositories import cache_repo, market_repo
 from app.tasks.update_indices import run_index_update
+from app.tasks.update_cost_indices import run_cost_index_update
 from app.tasks.update_sde import run_sde_update
 from app.tasks.update_tracking import run_tracking_update
 from app.tasks.update_esi import sync_all_active
@@ -30,6 +31,7 @@ _DEFAULT_WINDOW = 10   # the API's default; other windows recompute on miss
 _LOCK_KEYS = {
     "sde": 4101, "index": 4102, "tracking": 4103, "esi": 4104,
     "trade_orders": 4105, "trade_history": 4106, "alerts": 4107,
+    "cost_idx": 4108,
 }
 
 
@@ -124,6 +126,10 @@ def job_alerts():
     _run("alerts", run_alert_evaluation)
 
 
+def job_cost_indices():
+    _run("cost_idx", run_cost_index_update)
+
+
 def register(scheduler) -> None:
     """Attach the cron jobs to a scheduler (worker process owns it)."""
     scheduler.add_job(job_sde, "cron", hour=3, minute=0, id="sde_update_job", replace_existing=True)
@@ -133,3 +139,4 @@ def register(scheduler) -> None:
     scheduler.add_job(job_trade_orders, "cron", minute="*/10", id="trade_orders_job", replace_existing=True)
     scheduler.add_job(job_trade_history, "cron", hour="*/6", minute=15, id="trade_history_job", replace_existing=True)
     scheduler.add_job(job_alerts, "cron", minute="*/5", id="alerts_eval_job", replace_existing=True)
+    scheduler.add_job(job_cost_indices, "cron", hour="*/6", minute=20, id="cost_index_job", replace_existing=True)

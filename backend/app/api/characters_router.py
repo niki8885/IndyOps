@@ -421,22 +421,36 @@ async def get_blueprints(
             return None
         return station_names.get(b.location_id) or structure_names.get(b.location_id) or f"#{b.location_id}"
 
-    out = []
+    # Stack identical prints (same type/ME/TE/runs/location) into one row with a count;
+    # ESI returns one item per blueprint instance, so without this the tab shows dozens
+    # of duplicate rows. BPOs carry ESI's -1 quantity sentinel — never surface it.
+    groups: dict = {}
     for b in bps:
         prod = products.get(b.type_id)
         is_bpo = (b.runs is not None and b.runs < 0) or b.quantity == -1
-        out.append({
-            "item_id": b.item_id, "type_id": b.type_id,
-            "type_name": bp_names.get(b.type_id, {}).get("name"),
-            "product_type_id": prod["product_type_id"] if prod else None,
-            "product_name": prod_names.get(prod["product_type_id"], {}).get("name") if prod else None,
-            "activity_id": prod["activity_id"] if prod else None,
-            "is_bpo": is_bpo,
-            "me": b.material_efficiency, "te": b.time_efficiency,
-            "runs": None if is_bpo else b.runs, "quantity": b.quantity,
-            "location_id": b.location_id, "location_name": _loc_name(b),
-            "location_flag": b.location_flag,
-        })
+        runs = None if is_bpo else b.runs
+        key = (b.type_id, b.material_efficiency, b.time_efficiency,
+               "bpo" if is_bpo else runs, b.location_id, b.location_flag)
+        g = groups.get(key)
+        if g is None:
+            g = {
+                "key": "|".join(str(x) for x in key),
+                "item_id": b.item_id,  # representative instance
+                "type_id": b.type_id,
+                "type_name": bp_names.get(b.type_id, {}).get("name"),
+                "product_type_id": prod["product_type_id"] if prod else None,
+                "product_name": prod_names.get(prod["product_type_id"], {}).get("name") if prod else None,
+                "activity_id": prod["activity_id"] if prod else None,
+                "is_bpo": is_bpo,
+                "me": b.material_efficiency, "te": b.time_efficiency,
+                "runs": runs, "count": 0,
+                "location_id": b.location_id, "location_name": _loc_name(b),
+                "location_flag": b.location_flag,
+            }
+            groups[key] = g
+        g["count"] += 1
+
+    out = list(groups.values())
     out.sort(key=lambda r: ((r["location_name"] or "~"), (r["type_name"] or "")))
     return out
 

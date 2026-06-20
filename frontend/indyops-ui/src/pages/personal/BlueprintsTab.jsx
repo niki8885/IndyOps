@@ -1,7 +1,10 @@
 import { useState, useMemo } from 'react'
 import { useApi, fmtNum } from './common'
 
-const typeIcon = (id, size = 32) => `https://images.evetech.net/types/${id}/icon?size=${size}`
+// Blueprint types have no `/icon` render (it 404s) — use the blueprint art:
+// `/bp` for originals, `/bpc` for copies.
+const bpIcon = (id, isBpo, size = 32) =>
+  `https://images.evetech.net/types/${id}/${isBpo ? 'bp' : 'bpc'}?size=${size}`
 
 const COLS = [
   { key: 'type_name',     label: 'Blueprint' },
@@ -9,7 +12,7 @@ const COLS = [
   { key: 'me',            label: 'ME', num: true },
   { key: 'te',            label: 'TE', num: true },
   { key: 'runs',          label: 'Runs', num: true },
-  { key: 'quantity',      label: 'Qty', num: true },
+  { key: 'count',         label: 'Qty', num: true },
   { key: 'product_name',  label: 'Produces' },
   { key: 'location_name', label: 'Location' },
 ]
@@ -92,8 +95,8 @@ export default function BlueprintsTab({ charId }) {
           </thead>
           <tbody>
             {rows.map(b => (
-              <tr key={b.item_id}>
-                <td><img src={typeIcon(b.type_id)} alt="" width={24} height={24} style={{ borderRadius: 3 }} /></td>
+              <tr key={b.key || b.item_id}>
+                <td><img src={bpIcon(b.type_id, b.is_bpo)} alt="" width={24} height={24} style={{ borderRadius: 3 }} /></td>
                 <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{b.type_name || b.type_id}</td>
                 <td>
                   <span className={`badge ${b.is_bpo ? 'badge-ok' : 'badge-warn'}`}>{b.is_bpo ? 'BPO' : 'BPC'}</span>
@@ -101,7 +104,7 @@ export default function BlueprintsTab({ charId }) {
                 <td style={{ textAlign: 'right' }}>{b.me ?? 0}</td>
                 <td style={{ textAlign: 'right' }}>{b.te ?? 0}</td>
                 <td style={{ textAlign: 'right' }}>{b.is_bpo ? '∞' : fmtNum(b.runs)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtNum(b.quantity)}</td>
+                <td style={{ textAlign: 'right' }}>{fmtNum(b.count)}</td>
                 <td style={{ color: 'var(--text)' }}>{b.product_name || '—'}</td>
                 <td>{b.location_name || b.location_id || '—'}</td>
                 <td style={{ color: 'var(--text)', fontSize: 12 }}>{b.location_flag}</td>

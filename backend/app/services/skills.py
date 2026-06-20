@@ -12,18 +12,24 @@ from dataclasses import dataclass
 from typing import Mapping
 
 # ── industry/market skill type_ids (SDE) ──────────────────────────────────────
-SKILL_INDUSTRY = 3380           # −4%/level manufacturing job time
+SKILL_INDUSTRY = 3380  # −4%/level manufacturing job time
 SKILL_ADVANCED_INDUSTRY = 3388  # −3%/level job time (manufacturing + reactions + …)
-SKILL_ACCOUNTING = 16622        # −11%/level sales (transaction) tax
-SKILL_BROKER_RELATIONS = 3446   # −0.30%/level broker fee
+SKILL_ACCOUNTING = 16622  # −11%/level sales (transaction) tax
+SKILL_BROKER_RELATIONS = 3446  # −0.30%/level broker fee
+
+# Blueprint research / copy time-reduction skills (each on top of Advanced Industry).
+SKILL_SCIENCE = 3402  # −5%/level blueprint COPY time
+SKILL_RESEARCH = 3403  # −5%/level Time Efficiency (TE) research time
+SKILL_METALLURGY = 3409  # −5%/level Material Efficiency (ME) research time
+_RESEARCH_SKILL_PER_LVL = 0.05
 
 # ── industry job-slot skills (each +1 concurrent job per level; base 1 slot) ──
-SKILL_MASS_PRODUCTION = 3387                # +1 manufacturing slot / level
-SKILL_ADVANCED_MASS_PRODUCTION = 24625      # +1 manufacturing slot / level
-SKILL_LABORATORY_OPERATION = 3406           # +1 science slot / level
+SKILL_MASS_PRODUCTION = 3387  # +1 manufacturing slot / level
+SKILL_ADVANCED_MASS_PRODUCTION = 24625  # +1 manufacturing slot / level
+SKILL_LABORATORY_OPERATION = 3406  # +1 science slot / level
 SKILL_ADVANCED_LABORATORY_OPERATION = 24624  # +1 science slot / level
-SKILL_MASS_REACTIONS = 45748                # +1 reaction slot / level
-SKILL_ADVANCED_MASS_REACTIONS = 45749       # +1 reaction slot / level
+SKILL_MASS_REACTIONS = 45748  # +1 reaction slot / level
+SKILL_ADVANCED_MASS_REACTIONS = 45749  # +1 reaction slot / level
 
 _MAX_SLOTS = 11  # 1 base + 5 + 5 with both skills at V
 
@@ -36,7 +42,7 @@ _OCCUPYING_STATUSES = {"active", "ready", "paused"}
 _SLOT_CATEGORIES = ("manufacturing", "science", "reaction")
 
 # ── reprocessing / refining skills ────────────────────────────────────────────
-SKILL_REPROCESSING = 3385             # +3%/level reprocessing yield
+SKILL_REPROCESSING = 3385  # +3%/level reprocessing yield
 SKILL_REPROCESSING_EFFICIENCY = 3389  # +2%/level reprocessing yield
 # Ore-specific *Processing* skills (+2%/level, applies only to that ore family).
 SKILL_ORE_PROCESSING = {
@@ -57,12 +63,12 @@ _ADV_INDUSTRY_PER_LVL = 0.03
 # Market-fee model (percentage points). Bases are the NPC defaults; players selling
 # in Upwell structures may pay less, but these are the standard planning figures.
 SALES_TAX_BASE_PCT = 7.5
-SALES_TAX_PER_ACCOUNTING = 0.11        # 11% *relative* cut per Accounting level
+SALES_TAX_PER_ACCOUNTING = 0.11  # 11% *relative* cut per Accounting level
 BROKER_BASE_PCT = 3.0
-BROKER_PER_RELATIONS_PCT = 0.30        # absolute % cut per Broker Relations level
+BROKER_PER_RELATIONS_PCT = 0.30  # absolute % cut per Broker Relations level
 BROKER_PER_FACTION_STANDING_PCT = 0.03  # absolute % cut per point of faction standing
-BROKER_PER_CORP_STANDING_PCT = 0.02     # absolute % cut per point of corp standing
-BROKER_MIN_PCT = 1.0                    # NPC broker fee floor
+BROKER_PER_CORP_STANDING_PCT = 0.02  # absolute % cut per point of corp standing
+BROKER_MIN_PCT = 1.0  # NPC broker fee floor
 
 
 def _lvl(skills: Mapping[int, int], skill_id: int) -> int:
@@ -80,6 +86,25 @@ def reaction_time_mult(skills: Mapping[int, int]) -> float:
     """Job-time multiplier for reactions: Advanced Industry only (the Industry skill
     is manufacturing-only)."""
     return 1 - _ADV_INDUSTRY_PER_LVL * _lvl(skills, SKILL_ADVANCED_INDUSTRY)
+
+
+def _adv_industry_mult(skills: Mapping[int, int]) -> float:
+    return 1 - _ADV_INDUSTRY_PER_LVL * _lvl(skills, SKILL_ADVANCED_INDUSTRY)
+
+
+def copy_time_mult(skills: Mapping[int, int]) -> float:
+    """Copy-job time multiplier: Advanced Industry (−3%/lvl) × Science (−5%/lvl)."""
+    return _adv_industry_mult(skills) * (1 - _RESEARCH_SKILL_PER_LVL * _lvl(skills, SKILL_SCIENCE))
+
+
+def me_research_time_mult(skills: Mapping[int, int]) -> float:
+    """ME-research time multiplier: Advanced Industry (−3%/lvl) × Metallurgy (−5%/lvl)."""
+    return _adv_industry_mult(skills) * (1 - _RESEARCH_SKILL_PER_LVL * _lvl(skills, SKILL_METALLURGY))
+
+
+def te_research_time_mult(skills: Mapping[int, int]) -> float:
+    """TE-research time multiplier: Advanced Industry (−3%/lvl) × Research (−5%/lvl)."""
+    return _adv_industry_mult(skills) * (1 - _RESEARCH_SKILL_PER_LVL * _lvl(skills, SKILL_RESEARCH))
 
 
 def sales_tax_pct(skills: Mapping[int, int]) -> float:
@@ -163,12 +188,18 @@ class IndustryProfile:
     character_name: str
     industry_lvl: int = 0
     advanced_industry_lvl: int = 0
+    science_lvl: int = 0
+    research_lvl: int = 0
+    metallurgy_lvl: int = 0
     accounting_lvl: int = 0
     broker_relations_lvl: int = 0
     best_faction_standing: float = 0.0
     best_corp_standing: float = 0.0
     man_time_mult: float = 1.0
     react_time_mult: float = 1.0
+    copy_time_mult: float = 1.0
+    me_research_time_mult: float = 1.0
+    te_research_time_mult: float = 1.0
     sales_tax_pct: float = SALES_TAX_BASE_PCT
     broker_fee_pct: float = BROKER_BASE_PCT
 
@@ -183,12 +214,18 @@ def profile_from(character_id: int, character_name: str,
         character_name=character_name,
         industry_lvl=_lvl(skills, SKILL_INDUSTRY),
         advanced_industry_lvl=_lvl(skills, SKILL_ADVANCED_INDUSTRY),
+        science_lvl=_lvl(skills, SKILL_SCIENCE),
+        research_lvl=_lvl(skills, SKILL_RESEARCH),
+        metallurgy_lvl=_lvl(skills, SKILL_METALLURGY),
         accounting_lvl=_lvl(skills, SKILL_ACCOUNTING),
         broker_relations_lvl=_lvl(skills, SKILL_BROKER_RELATIONS),
         best_faction_standing=best_faction_standing,
         best_corp_standing=best_corp_standing,
         man_time_mult=manufacturing_time_mult(skills),
         react_time_mult=reaction_time_mult(skills),
+        copy_time_mult=copy_time_mult(skills),
+        me_research_time_mult=me_research_time_mult(skills),
+        te_research_time_mult=te_research_time_mult(skills),
         sales_tax_pct=round(sales_tax_pct(skills), 4),
         broker_fee_pct=round(broker_fee_pct(skills, best_faction_standing, best_corp_standing), 4),
     )

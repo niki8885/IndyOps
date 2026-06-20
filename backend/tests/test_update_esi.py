@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import (
     Base, LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract,
     EsiIndustryJob, EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger,
-    CharacterWealthSnapshot,
+    EsiBlueprintCopy, CharacterWealthSnapshot,
 )
 from app.tasks import update_esi as ue
 
@@ -32,7 +32,7 @@ CID = 90000001
 _ESI_TABLES = [
     LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract,
     EsiIndustryJob, EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger,
-    CharacterWealthSnapshot,
+    EsiBlueprintCopy, CharacterWealthSnapshot,
 ]
 
 # every scope the task gates on, so the optional endpoints all run

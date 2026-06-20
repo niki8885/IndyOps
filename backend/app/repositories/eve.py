@@ -12,8 +12,22 @@ from app.core.database_eve import (
 )
 
 MANUFACTURING = 1
+ME_RESEARCH = 3
+TE_RESEARCH = 4
+COPYING = 5
+INVENTION = 8
 REACTION = 11
 INDUSTRY_ACTIVITIES = (MANUFACTURING, REACTION)
+
+
+def max_runs(eve_db, blueprint_type_id: int) -> Optional[int]:
+    """Blueprint max runs per copy (``eve_blueprints.max_production_limit``); None if unknown."""
+    row = (
+        eve_db.query(EveBlueprint.max_production_limit)
+        .filter(EveBlueprint.type_id == blueprint_type_id)
+        .first()
+    )
+    return int(row[0]) if row and row[0] is not None else None
 
 # SDE classification constants (stable across releases).
 CATEGORY_ASTEROID = 25   # invCategories: ore / compressed ore live here

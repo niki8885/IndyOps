@@ -16,8 +16,6 @@ See the "Resolving EVE ESI Asset Locations" reference for the full shape.
 
 _MAX_DEPTH = 10  # generous cycle/corruption guard; real nesting tops out at ~4–5
 
-# ID ranges that are safe to read by magnitude (used only when location_type is
-# absent — structures and item ids overlap, so they can't be told apart by id).
 _SYSTEM_LO, _SYSTEM_HI = 30_000_000, 32_000_000
 _STATION_LO, _STATION_HI = 60_000_000, 64_000_000
 
@@ -31,6 +29,10 @@ def _infer_kind(location_id):
     if _STATION_LO <= location_id < _STATION_HI:
         return "station"
     return None  # ambiguous: item vs structure — needs the item-map membership test
+
+
+def maybe_structure_id(location_id) -> bool:
+    return location_id is not None and _infer_kind(location_id) is None
 
 
 def resolve_root(location_id, location_type, items_by_id, depth=0):
