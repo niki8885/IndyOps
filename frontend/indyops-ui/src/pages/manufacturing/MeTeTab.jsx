@@ -66,6 +66,10 @@ function MeCard({ me, fac, pricesOk }) {
       <Row k="Saving / run" v={fmtIsk(me.saving_per_run)} />
       <Row k="Research time" v={fmtTime(me.research_time_s)} />
       <Row k="Research cost" v={fmtIsk(me.research_cost.install_cost)} />
+      {me.research_cost.structure_bonus > 0 && (
+        <Row k={`Structure / rig bonus −${(fac?.cost_bonus_pct ?? 0).toFixed(1)}%`}
+             v={`− ${fmtIsk(me.research_cost.structure_bonus)}`} dim />
+      )}
       <Row k="ME index" v={`${((fac?.me_index ?? 0) * 100).toFixed(2)}%`} dim />
 
       <table style={{ marginTop: 12 }}>
@@ -104,6 +108,10 @@ function TeCard({ te, fac }) {
       <Row k="Manuf time / run" v={`${fmtTime(te.manuf_time_from_s)} → ${fmtTime(te.manuf_time_to_s)}`} />
       <Row k="Research time" v={fmtTime(te.research_time_s)} />
       <Row k="Research cost" v={fmtIsk(te.research_cost.install_cost)} />
+      {te.research_cost.structure_bonus > 0 && (
+        <Row k={`Structure / rig bonus −${(fac?.cost_bonus_pct ?? 0).toFixed(1)}%`}
+             v={`− ${fmtIsk(te.research_cost.structure_bonus)}`} dim />
+      )}
       <Row k="TE index" v={`${((fac?.te_index ?? 0) * 100).toFixed(2)}%`} dim />
     </div>
   )

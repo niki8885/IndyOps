@@ -119,6 +119,65 @@ def plan_trade(buy_price: float, item_volume_m3: float, profit_isk: float | None
     return {"units": units, "trip_profit": trip_profit, "trip_cost": trip_cost}
 
 
+# The four Jita → C-J haul methods, keyed ``"<jita-side>_<cj-side>"``: the order book
+# you transact against on each leg. Jita ``buy`` = place a buy order, ``sell`` = hit
+# sell orders; C-J ``buy`` = dump to buy orders, ``sell`` = list a sell order. Shared
+# by the on-demand evaluator (api.haul_router) and the auto scanner (tasks.update_trade).
+HAUL_METHODS: dict[str, tuple[str, str, str]] = {
+    "buy_sell":  ("buy", "sell",  "Buy order @ Jita → sell order @ C-J"),
+    "buy_buy":   ("buy", "buy",   "Buy order @ Jita → C-J buy orders"),
+    "sell_sell": ("sell", "sell", "Jita sell orders → sell order @ C-J"),
+    "sell_buy":  ("sell", "buy",  "Jita sell orders → C-J buy orders"),
+}
+
+
+def best_haul_method(*, jita_buy, jita_sell, cj_buy, cj_sell, qty, broker_fee, sales_tax,
+                     shipping_per_unit=0.0, rank_by="profit") -> dict | None:
+    """Evaluate all four methods and return the best one (by ``profit`` or ``roi``),
+    annotated with its ``method`` key — or None if none is priceable."""
+    best = None
+    for mk, (acq, sell, _) in HAUL_METHODS.items():
+        r = haul_eval(jita_buy=jita_buy, jita_sell=jita_sell, cj_buy=cj_buy, cj_sell=cj_sell,
+                      qty=qty, acquire_side=acq, sell_side=sell, broker_fee=broker_fee,
+                      sales_tax=sales_tax, shipping_per_unit=shipping_per_unit)
+        if r and (best is None or r[rank_by] > best[rank_by]):
+            best = {**r, "method": mk}
+    return best
+
+
+def haul_eval(*, jita_buy: float | None, jita_sell: float | None,
+              cj_buy: float | None, cj_sell: float | None, qty: float,
+              acquire_side: str, sell_side: str, broker_fee: float, sales_tax: float,
+              shipping_per_unit: float = 0.0) -> dict | None:
+    """Per-line economics of hauling one item Jita → C-J for one (acquire, sell) method.
+
+    ``acquire_side``: ``'buy'`` = place a BUY order at Jita (pay ``jita_buy`` + broker
+    fee); ``'sell'`` = buy instantly from Jita SELL orders (``jita_sell``, no fee).
+    ``sell_side``: ``'sell'`` = list a SELL order at C-J (``cj_sell`` − broker − sales
+    tax); ``'buy'`` = dump into C-J BUY orders (``cj_buy`` − sales tax, no broker).
+    ``broker_fee``/``sales_tax`` are fractions. Returns ``None`` if a needed price is
+    missing/zero (the method isn't priceable for this item)."""
+    acq = jita_buy if acquire_side == "buy" else jita_sell
+    rev = cj_sell if sell_side == "sell" else cj_buy
+    if not acq or acq <= 0 or not rev or rev <= 0:
+        return None
+    unit_cost = acq * (1.0 + broker_fee) if acquire_side == "buy" else acq
+    unit_rev = rev * (1.0 - broker_fee - sales_tax) if sell_side == "sell" else rev * (1.0 - sales_tax)
+    n = max(0.0, float(qty or 0))
+    unit_profit = unit_rev - unit_cost - max(shipping_per_unit, 0.0)
+    profit = unit_profit * n
+    capital = (unit_cost + max(shipping_per_unit, 0.0)) * n
+    return {
+        "acquire_unit": round(unit_cost, 2),
+        "revenue_unit": round(unit_rev, 2),
+        "shipping_unit": round(max(shipping_per_unit, 0.0), 2),
+        "unit_profit": round(unit_profit, 2),
+        "profit": round(profit, 2),
+        "capital": round(capital, 2),
+        "roi": round(profit / capital, 6) if capital > 0 else 0.0,
+    }
+
+
 def volume_scores(daily_volumes: dict[int, float]) -> dict[int, float]:
     """Normalise each type's daily volume to 0..1 via log1p min-max over the set.
 

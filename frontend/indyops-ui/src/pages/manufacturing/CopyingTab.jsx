@@ -61,6 +61,10 @@ export default function CopyingTab({ facilities, characters }) {
           <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '10px 0' }} />
           <Row k="System cost index" v={`${((res.facility?.copy_index ?? 0) * 100).toFixed(2)}%`} dim />
           <Row k="Job base cost" v={fmtIsk(c.cost.base_cost)} dim />
+          {c.cost.structure_bonus > 0 && (
+            <Row k={`Structure / rig bonus −${(res.facility?.cost_bonus_pct ?? 0).toFixed(1)}%`}
+                 v={`− ${fmtIsk(c.cost.structure_bonus)}`} dim />
+          )}
           <Row k="Facility tax + SCC" v={fmtIsk((c.cost.facility_tax || 0) + (c.cost.scc_surcharge || 0))} dim />
           <Row k="Install cost" v={fmtIsk(c.cost.install_cost)} strong />
         </div>
