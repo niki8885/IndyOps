@@ -21,14 +21,20 @@ from app.repositories import eve as eve_repo
 from app.repositories import cost_index_repo as ci_repo
 from app.services import research as research_svc
 from app.services import skills as skills_svc
+from app.services import invention as inv_svc
+from app.services.invention import Material
+from app.services.invention_opt import OptInput
+from app.adapters import invention_optimizer as inv_opt
 
 router = APIRouter()
 
 # ESI cost-index activity keys per industry activity.
 _INDEX_KEY = {
+    eve_repo.MANUFACTURING: ci_repo.ACT_MANUFACTURING,
     eve_repo.COPYING: ci_repo.ACT_COPYING,
     eve_repo.ME_RESEARCH: ci_repo.ACT_ME_RESEARCH,
     eve_repo.TE_RESEARCH: ci_repo.ACT_TE_RESEARCH,
+    eve_repo.INVENTION: ci_repo.ACT_INVENTION,
 }
 
 
@@ -91,6 +97,18 @@ class _BP:
         names = eve_repo.type_names(eve_db, [blueprint_type_id, product_type_id])
         self.blueprint_name = names.get(blueprint_type_id)
         self.product_name = names.get(product_type_id)
+
+
+def _skill_levels(db: Session, user_id: int, character_id: Optional[int]) -> dict[int, int]:
+    """Raw ``{skill_id: trained_level}`` for one of the user's characters ({} if none)."""
+    if not character_id:
+        return {}
+    char = db.query(LinkedCharacter).filter(
+        LinkedCharacter.id == character_id, LinkedCharacter.user_id == user_id).first()
+    if not char:
+        return {}
+    return {s.skill_id: (s.trained_level or 0)
+            for s in db.query(EsiSkill).filter(EsiSkill.character_id == char.character_id).all()}
 
 
 def _profile(db: Session, user_id: int, character_id: Optional[int]):
@@ -277,3 +295,213 @@ def _facility_out(fac, copy_index=None, me_index=None, te_index=None) -> Optiona
     if te_index is not None:
         out["te_index"] = te_index
     return out
+
+
+# ── invention ─────────────────────────────────────────────────────────────────
+
+class InventionRequest(BaseModel):
+    product_type_id: Optional[int] = None       # T1 item or blueprint to invent from
+    blueprint_type_id: Optional[int] = None
+    final_product_type_id: Optional[int] = None  # chosen T2 item (default: first)
+    decryptor: str = "No Decryptor"
+    runs: int = 10
+    facility_id: Optional[int] = None
+    character_id: Optional[int] = None
+    reference_bpc_price: Optional[float] = None  # contract price of the T2 BPC to compare
+
+
+class OptimizeRequest(BaseModel):
+    product_type_id: Optional[int] = None
+    blueprint_type_id: Optional[int] = None
+    facility_id: Optional[int] = None
+    character_id: Optional[int] = None
+    weights: Optional[dict] = None
+
+
+_DISP_2 = ("cost_per_attempt", "cost_per_bpc", "cost_per_run", "manuf_cost_per_run",
+           "sell_per_unit", "cost_per_unit", "profit_per_unit", "profit_per_run",
+           "margin_pct", "score")
+
+
+def _round_row(r: dict) -> dict:
+    out = dict(r)
+    if out.get("probability") is not None:
+        out["probability"] = round(out["probability"], 4)
+    for k in _DISP_2:
+        if out.get(k) is not None:
+            out[k] = round(out[k], 2)
+    return out
+
+
+def _classify_invention_skills(skill_ids, names, levels) -> tuple[int, int, int]:
+    """Split a blueprint's invention skills into (encryption lvl, science1 lvl, science2 lvl)."""
+    enc, sci = 0, []
+    for sid in skill_ids:
+        lvl = int(levels.get(sid, 0) or 0)
+        if "Encryption" in (names.get(sid) or ""):
+            enc = lvl
+        else:
+            sci.append(lvl)
+    return enc, (sci[0] if sci else 0), (sci[1] if len(sci) > 1 else 0)
+
+
+def _invention_ctx(eve_db, db, user_id, bp, fac, levels, adjusted):
+    """Build the per-product :class:`OptInput` list + datacore/skill context for a
+    T1 blueprint. Raises 404 if the blueprint has no invention products."""
+    inv_products = eve_repo.invention_products(eve_db, bp.blueprint_type_id)
+    if not inv_products:
+        raise HTTPException(404, "This blueprint is not a T1 invention source")
+
+    datacores = eve_repo.materials(eve_db, bp.blueprint_type_id, eve_repo.INVENTION)
+    datacore_cost = sum(d["base_qty"] * adjusted.get(d["type_id"], 0.0) for d in datacores)
+
+    skill_ids = eve_repo.invention_skill_ids(eve_db, bp.blueprint_type_id)
+    skill_names = eve_repo.type_names(eve_db, skill_ids)
+    enc, sci1, sci2 = _classify_invention_skills(skill_ids, skill_names, levels)
+
+    manuf_index = _index_for(db, fac, eve_repo.MANUFACTURING)
+    inv_index = _index_for(db, fac, eve_repo.INVENTION)
+    cost_role = float(fac.cost_bonus or 0.0) if fac else 0.0
+    tax = float(fac.tax or 0.0) if fac else 0.0
+
+    products: list[OptInput] = []
+    for ip in inv_products:
+        t2_bpc = ip["product_type_id"]
+        t2 = eve_repo.product_for_blueprint(eve_db, t2_bpc)
+        if not t2:
+            continue
+        t2_item = t2["product_type_id"]
+        t2_mats = eve_repo.materials(eve_db, t2_bpc, eve_repo.MANUFACTURING)
+        t2_eiv = sum(m["base_qty"] * adjusted.get(m["type_id"], 0.0) for m in t2_mats)
+        name = eve_repo.type_names(eve_db, [t2_item]).get(t2_item, str(t2_item))
+        manuf_install = t2_eiv * (manuf_index * (1 - cost_role / 100)
+                                  + tax / 100 + inv_svc.SCC_SURCHARGE)
+        products.append(OptInput(
+            product_type_id=t2_item, product_name=name,
+            base_prob=ip["probability"], base_runs=ip["base_runs"],
+            units_per_run=t2["qty_per_run"],
+            datacore_cost=datacore_cost,
+            invention_install_cost=inv_svc.invention_install(t2_eiv, inv_index, cost_role, tax),
+            manuf_install_per_run=manuf_install,
+            sell_per_unit=adjusted.get(t2_item, 0.0),
+            materials=[Material(qty=m["base_qty"], price=adjusted.get(m["type_id"], 0.0)) for m in t2_mats],
+            mat_extra_mult=1.0, encryption=enc, sci1=sci1, sci2=sci2,
+        ))
+    if not products:
+        raise HTTPException(404, "Invention products have no manufacturing recipe")
+
+    meta = {
+        "datacores": [{"type_id": d["type_id"], "name": d["name"], "qty": d["base_qty"]} for d in datacores],
+        "datacore_cost": round(datacore_cost, 2),
+        "skills": {"encryption": enc, "science_1": sci1, "science_2": sci2},
+        "invention_index": inv_index, "manufacturing_index": manuf_index,
+    }
+    return products, meta
+
+
+@router.post("/invention/options")
+async def invention_options(body: OptimizeRequest,
+                            current_user: UserDB = Depends(get_current_user),
+                            db: Session = Depends(get_db)):
+    """Available T2 products + decryptors + the character's invention skills."""
+    eve_db = EveSessionLocal()
+    try:
+        bp = _BP(eve_db, body.product_type_id, body.blueprint_type_id)
+        levels = _skill_levels(db, current_user.id, body.character_id)
+        fac = _facility(db, current_user.id, body.facility_id)
+        products, meta = _invention_ctx(eve_db, db, current_user.id, bp, fac, levels, _adjusted_prices())
+    finally:
+        eve_db.close()
+    return {
+        "blueprint_type_id": bp.blueprint_type_id, "blueprint_name": bp.blueprint_name,
+        "products": [{"product_type_id": p.product_type_id, "product_name": p.product_name,
+                      "base_runs": p.base_runs, "base_probability": p.base_prob} for p in products],
+        "decryptors": [d.name for d in inv_svc.DECRYPTORS],
+        **meta,
+    }
+
+
+@router.post("/invention")
+async def invention(body: InventionRequest,
+                    current_user: UserDB = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """Economics of one invention config (product + decryptor) over ``runs`` attempts."""
+    eve_db = EveSessionLocal()
+    try:
+        bp = _BP(eve_db, body.product_type_id, body.blueprint_type_id)
+        levels = _skill_levels(db, current_user.id, body.character_id)
+        fac = _facility(db, current_user.id, body.facility_id)
+        adjusted = _adjusted_prices()
+        products, meta = _invention_ctx(eve_db, db, current_user.id, bp, fac, levels, adjusted)
+    finally:
+        eve_db.close()
+
+    prod = next((p for p in products if p.product_type_id == body.final_product_type_id), products[0])
+    dec = inv_svc.DECRYPTOR_BY_NAME.get(body.decryptor, inv_svc.DECRYPTORS[0])
+    dprice = adjusted.get(dec.type_id, 0.0) if dec.type_id else 0.0
+
+    row = inv_svc.evaluate(
+        base_prob=prod.base_prob, base_runs=prod.base_runs, units_per_run=prod.units_per_run,
+        datacore_cost=prod.datacore_cost, decryptor_price=dprice,
+        invention_install_cost=prod.invention_install_cost,
+        manuf_install_per_run=prod.manuf_install_per_run, sell_per_unit=prod.sell_per_unit,
+        materials=prod.materials, mat_extra_mult=prod.mat_extra_mult,
+        encryption=prod.encryption, sci1=prod.sci1, sci2=prod.sci2, decryptor=dec)
+
+    runs = max(1, int(body.runs))
+    prob = row["probability"]
+    expected = runs * prob
+    total_cost = runs * row["cost_per_attempt"]
+
+    compare = None
+    ref = body.reference_bpc_price
+    if ref and row["cost_per_bpc"] is not None:
+        compare = {
+            "reference_bpc_price": round(ref, 2),
+            "our_cost_per_bpc": round(row["cost_per_bpc"], 2),
+            "savings_per_bpc": round(ref - row["cost_per_bpc"], 2),
+            "cheaper_to_invent": row["cost_per_bpc"] < ref,
+        }
+
+    return {
+        "blueprint_type_id": bp.blueprint_type_id, "blueprint_name": bp.blueprint_name,
+        "final_product_type_id": prod.product_type_id, "final_product_name": prod.product_name,
+        "decryptor": dec.name, "runs": runs,
+        "expected_successful_bpcs": round(expected, 2),
+        "total_cost": round(total_cost, 2),
+        "datacore_cost_per_attempt": meta["datacore_cost"],
+        "decryptor_price": round(dprice, 2),
+        "result": _round_row(row),
+        "reference": compare,
+        "facility": _facility_out(fac),
+        "skills": meta["skills"],
+        "products": [{"product_type_id": p.product_type_id, "product_name": p.product_name} for p in products],
+        "decryptors": [d.name for d in inv_svc.DECRYPTORS],
+    }
+
+
+@router.post("/invention/optimize")
+async def invention_optimize(body: OptimizeRequest,
+                             current_user: UserDB = Depends(get_current_user),
+                             db: Session = Depends(get_db)):
+    """Sweep every (T2 product × decryptor) and rank by production profitability."""
+    eve_db = EveSessionLocal()
+    try:
+        bp = _BP(eve_db, body.product_type_id, body.blueprint_type_id)
+        levels = _skill_levels(db, current_user.id, body.character_id)
+        fac = _facility(db, current_user.id, body.facility_id)
+        adjusted = _adjusted_prices()
+        products, meta = _invention_ctx(eve_db, db, current_user.id, bp, fac, levels, adjusted)
+    finally:
+        eve_db.close()
+
+    prices = {tid: adjusted.get(tid, 0.0) for tid in inv_svc.DECRYPTOR_TYPE_IDS}
+    ranked, engine = inv_opt.optimize(products, inv_svc.DECRYPTORS, prices, body.weights)
+    return {
+        "blueprint_type_id": bp.blueprint_type_id, "blueprint_name": bp.blueprint_name,
+        "engine": engine,
+        "facility": _facility_out(fac),
+        "skills": meta["skills"], "datacore_cost": meta["datacore_cost"],
+        "ranked": [_round_row(r) for r in ranked],
+        "prices_available": bool(adjusted),
+    }

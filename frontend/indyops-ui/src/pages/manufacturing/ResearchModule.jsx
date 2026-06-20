@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { get } from '../../api/client'
 import CopyingTab from './CopyingTab'
 import MeTeTab from './MeTeTab'
+import InventionTab from './InventionTab'
+import InventionOptimizerTab from './InventionOptimizerTab'
 
 const SUBTABS = ['Copying', 'ME / TE Payback', 'Invention', 'Invention Optimizer']
 
@@ -24,12 +26,8 @@ export default function ResearchModule() {
       </div>
       {sub === 0 && <CopyingTab {...shared} />}
       {sub === 1 && <MeTeTab {...shared} />}
-      {sub === 2 && <Placeholder name="Invention" />}
-      {sub === 3 && <Placeholder name="Invention Optimizer" />}
+      {sub === 2 && <InventionTab {...shared} />}
+      {sub === 3 && <InventionOptimizerTab {...shared} />}
     </div>
   )
-}
-
-function Placeholder({ name }) {
-  return <div className="empty-state" style={{ marginTop: 24 }}>{name} — coming in the next stage.</div>
 }

@@ -29,6 +29,40 @@ def max_runs(eve_db, blueprint_type_id: int) -> Optional[int]:
     )
     return int(row[0]) if row and row[0] is not None else None
 
+
+def invention_products(eve_db, blueprint_type_id: int) -> list[dict]:
+    """T2 blueprint outputs of a T1 blueprint's invention (activity 8): each is the
+    invented ``product_type_id`` (a T2 BPC type), its base ``runs`` (SDE quantity)
+    and base success ``probability``."""
+    rows = (
+        eve_db.query(EveActivityProduct)
+        .filter(
+            EveActivityProduct.type_id == blueprint_type_id,
+            EveActivityProduct.activity_id == INVENTION,
+        )
+        .all()
+    )
+    return [
+        {"product_type_id": r.product_type_id,
+         "base_runs": int(r.quantity or 1),
+         "probability": float(r.probability or 0.0)}
+        for r in rows
+    ]
+
+
+def invention_skill_ids(eve_db, blueprint_type_id: int) -> list[int]:
+    """Skill type_ids required for a blueprint's invention (one racial Encryption
+    Methods skill + two datacore science skills)."""
+    rows = (
+        eve_db.query(EveActivitySkill.skill_id)
+        .filter(
+            EveActivitySkill.type_id == blueprint_type_id,
+            EveActivitySkill.activity_id == INVENTION,
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
+
 # SDE classification constants (stable across releases).
 CATEGORY_ASTEROID = 25   # invCategories: ore / compressed ore live here
 GROUP_MINERAL = 18       # invGroups: the eight minerals + Morphite (and, since
