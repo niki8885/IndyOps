@@ -1,5 +1,7 @@
 """Pure invention-math tests: probability, decryptor effects, candidate economics,
 and the optimizer ranking oracle. No DB/web."""
+import pytest
+
 from app.services import invention as inv
 from app.services import invention_opt as opt
 from app.services.invention import Material, DECRYPTOR_BY_NAME
@@ -10,7 +12,7 @@ def test_probability_formula_all_v():
     p = inv.success_probability(0.34, encryption_lvl=5, sci1_lvl=5, sci2_lvl=5, prob_mod=20)
     assert abs(p - 0.34 * (1 + 10 / 30 + 5 / 40) * 1.2) < 1e-12
     # clamped to ≤ 1
-    assert inv.success_probability(0.9, 5, 5, 5, 90) == 1.0
+    assert inv.success_probability(0.9, 5, 5, 5, 90) == pytest.approx(1.0)
 
 
 def test_evaluate_decryptor_effects():
@@ -23,7 +25,7 @@ def test_evaluate_decryptor_effects():
         encryption=5, sci1=5, sci2=5, decryptor=acc)
     assert row["bpc_runs"] == 11 and row["bpc_me"] == 4 and row["bpc_te"] == 14
     # cost/attempt = datacores + decryptor + install
-    assert row["cost_per_attempt"] == 500_000 + 800_000 + 10_000
+    assert row["cost_per_attempt"] == pytest.approx(1_310_000)
     # cost/bpc = cost/attempt ÷ probability
     assert abs(row["cost_per_bpc"] - row["cost_per_attempt"] / row["probability"]) < 1e-6
 

@@ -7,8 +7,8 @@ from typing import Optional
 from sqlalchemy import func
 
 from app.core.database_eve import (
-    EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveBlueprint,
-    EveGroup, EveMetaType, EveTypeMaterial, EveReprocessingRig,
+    EveType, EveActivityMaterial, EveActivityProduct, EveActivityTime, EveActivitySkill,
+    EveBlueprint, EveGroup, EveMetaType, EveTypeMaterial, EveReprocessingRig,
 )
 
 MANUFACTURING = 1

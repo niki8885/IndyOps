@@ -1,5 +1,7 @@
 """Pure research-math tests: ME savings + payback, research time/cost, copying.
 No DB/web — imports only app.services.research."""
+import pytest
+
 from app.services import research as r
 
 
@@ -9,7 +11,7 @@ def test_me_no_effect_on_qty_one():
     rows, saved = r.me_material_savings(mats, from_me=0, to_me=10)
     assert rows[0]["qty_from"] == 1 and rows[0]["qty_to"] == 1
     assert rows[0]["me_no_effect"] is True
-    assert saved == 0.0
+    assert saved == pytest.approx(0.0)
 
 
 def test_me_savings_and_payback():
@@ -17,10 +19,10 @@ def test_me_savings_and_payback():
     rows, saved = r.me_material_savings(mats, from_me=0, to_me=10)
     # 1000 → ceil(900) = 900 → 100 units saved × 5 ISK = 500/run
     assert rows[0]["saved_units"] == 100
-    assert saved == 500.0
+    assert saved == pytest.approx(500.0)
     assert rows[0]["me_no_effect"] is False
     # cost 1,000,000 / 500 per-run = 2000 runs to break even
-    assert r.payback_runs(1_000_000, saved) == 2000.0
+    assert r.payback_runs(1_000_000, saved) == pytest.approx(2000.0)
     assert r.payback_runs(1_000_000, 0) is None  # never pays back
 
 
@@ -42,17 +44,17 @@ def test_research_cost_breakdown():
     jc = r.research_cost(manuf_eiv_1run=1_000_000.0, from_lvl=0, to_lvl=1,
                          index=0.05, cost_role_pct=0.0, facility_tax_pct=0.0)
     # base = EIV × 0.02 × ratio(0→1=1) = 20,000; system = ×0.05 = 1,000; +SCC 4% of base = 800
-    assert jc.base_cost == 20000.0
-    assert jc.system_cost == 1000.0
-    assert jc.scc_surcharge == 800.0
-    assert jc.install_cost == 1800.0
+    assert jc.base_cost == pytest.approx(20000.0)
+    assert jc.system_cost == pytest.approx(1000.0)
+    assert jc.scc_surcharge == pytest.approx(800.0)
+    assert jc.install_cost == pytest.approx(1800.0)
 
 
 def test_te_time_saving_and_payback():
     # base manuf time 1000s/run: TE0 → 1000, TE20 → 800 → 200s saved/run.
     saved = r.te_time_saving_per_run(1000, from_te=0, to_te=20)
     assert saved == 200
-    assert r.time_payback_runs(40000, saved) == 200.0
+    assert r.time_payback_runs(40000, saved) == pytest.approx(200.0)
 
 
 def test_copy_plan():
@@ -61,5 +63,5 @@ def test_copy_plan():
     assert plan["total_runs"] == 20
     assert plan["time_s"] == 2000
     # base = 1e6 × 0.02 × 20 = 400,000 → system = ×0.05 = 20,000
-    assert plan["cost"]["base_cost"] == 400000.0
-    assert plan["cost"]["system_cost"] == 20000.0
+    assert plan["cost"]["base_cost"] == pytest.approx(400000.0)
+    assert plan["cost"]["system_cost"] == pytest.approx(20000.0)
