@@ -3,6 +3,7 @@ from typing import Optional
 
 from app.core.database_eve import (
     EveType, EveGroup, EveRegion, EveSolarSystem, EveStation, EveMarketGroup,
+    EveMetaType,
 )
 
 
@@ -40,18 +41,22 @@ def types_info(eve_db, type_ids: list[int]) -> dict[int, dict]:
 
 
 def types_market_meta(eve_db, type_ids: list[int]) -> dict[int, dict]:
-    """{type_id: {type_name, category_id, volume, market_group_id, published}}.
+    """{type_id: {type_name, category_id, group_id, meta_group_id, volume,
+    market_group_id, published}}.
 
-    Single EveType ⋈ EveGroup query — supplies both the category gate (for the
-    trade allowlist) and the item volume (m³, for transport cost). Complements
-    :func:`types_info`, which lacks volume/category.
+    Single EveType ⋈ EveGroup ⋈ EveMetaType query — supplies the category/group
+    gates (trade allowlist + Drugs-by-group), the tech-level meta group (T1/T2/
+    Faction filtering; NULL ⇒ Tech I) and the item volume (m³, for transport cost).
+    Complements :func:`types_info`, which lacks volume/category.
     """
     rows = (
         eve_db.query(
             EveType.type_id, EveType.type_name, EveType.volume,
-            EveType.market_group_id, EveType.published, EveGroup.category_id,
+            EveType.market_group_id, EveType.published, EveType.group_id,
+            EveGroup.category_id, EveMetaType.meta_group_id,
         )
         .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
+        .outerjoin(EveMetaType, EveType.type_id == EveMetaType.type_id)
         .filter(EveType.type_id.in_(type_ids or [-1]))
         .all()
     )
@@ -61,10 +66,30 @@ def types_market_meta(eve_db, type_ids: list[int]) -> dict[int, dict]:
             "volume": vol,
             "market_group_id": mgid,
             "published": bool(pub),
+            "group_id": gid,
             "category_id": cat,
+            "meta_group_id": meta,
         }
-        for tid, name, vol, mgid, pub, cat in rows
+        for tid, name, vol, mgid, pub, gid, cat, meta in rows
     }
+
+
+def type_ids_in_groups(eve_db, group_ids) -> list[int]:
+    """Published, market-listed type_ids in the given inventory groups (e.g. the
+    booster/"Drugs" group). Drives the haul scanner's extra universe inclusion."""
+    ids = [int(g) for g in (group_ids or [])]
+    if not ids:
+        return []
+    rows = (
+        eve_db.query(EveType.type_id)
+        .filter(
+            EveType.group_id.in_(ids),
+            EveType.published.is_(True),
+            EveType.market_group_id.isnot(None),
+        )
+        .all()
+    )
+    return [tid for (tid,) in rows]
 
 
 def region_name(eve_db, region_id: int) -> Optional[str]:

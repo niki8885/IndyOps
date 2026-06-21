@@ -68,6 +68,10 @@ ENV PROFIT_SIM_BIN=/usr/local/bin/profit-sim
 COPY --from=analytics-builder /build/analytics-engine/bin/scenario-sim /usr/local/bin/scenario-sim
 ENV SCENARIO_SIM_BIN=/usr/local/bin/scenario-sim
 
+# Native Markowitz portfolio optimiser (trade haul planner), same Fortran project.
+COPY --from=analytics-builder /build/analytics-engine/bin/portfolio-opt /usr/local/bin/portfolio-opt
+ENV PORTFOLIO_OPT_BIN=/usr/local/bin/portfolio-opt
+
 # Native risk-scoring / strategy-ranking engine (Haskell). Falls back to Python.
 COPY --from=risk-builder /out/risk-engine /usr/local/bin/risk-engine
 ENV RISK_ENGINE_BIN=/usr/local/bin/risk-engine

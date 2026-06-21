@@ -225,25 +225,29 @@ def run_trade_orders_update() -> dict:
 
 def _history_universe(db) -> list[int]:
     """Type_ids to refresh history for: the current candidates, or — on cold
-    start — discover from the hub order books, bounded by allowlist + cap."""
-    type_ids = trade_repo.distinct_candidate_type_ids(db)
-    if type_ids:
-        return type_ids
-
-    seen: set[int] = set()
-    for hub in HUBS.values():
-        orders = market.esi_region_orders_all(hub["region_id"], max_pages=config.TRADE_MAX_ORDER_PAGES)
-        for o in orders:
-            if o.get("location_id") == hub["station_id"] and o.get("type_id") is not None:
-                seen.add(o["type_id"])
+    start — discover from the hub order books, bounded by allowlist + cap. Always
+    unions in the haul scanner's drug/booster groups so they get liquidity stats
+    (they're outside the cross-hub category allowlist, so wouldn't appear otherwise)."""
     eve_db = EveSessionLocal()
     try:
+        drugs = eve_market.type_ids_in_groups(eve_db, config.TRADE_HAUL_DRUG_GROUPS)
+
+        type_ids = trade_repo.distinct_candidate_type_ids(db)
+        if type_ids:
+            return list(dict.fromkeys(type_ids + drugs))
+
+        seen: set[int] = set()
+        for hub in HUBS.values():
+            orders = market.esi_region_orders_all(hub["region_id"], max_pages=config.TRADE_MAX_ORDER_PAGES)
+            for o in orders:
+                if o.get("location_id") == hub["station_id"] and o.get("type_id") is not None:
+                    seen.add(o["type_id"])
         meta = eve_market.types_market_meta(eve_db, list(seen))
+        bounded = [t for t, m in meta.items()
+                   if m.get("published") and m.get("category_id") in config.TRADE_CATEGORY_ALLOWLIST]
+        return list(dict.fromkeys(bounded[: config.TRADE_MAX_UNIVERSE] + drugs))
     finally:
         eve_db.close()
-    bounded = [t for t, m in meta.items()
-               if m.get("published") and m.get("category_id") in config.TRADE_CATEGORY_ALLOWLIST]
-    return bounded[: config.TRADE_MAX_UNIVERSE]
 
 
 def run_trade_history_update() -> dict:
@@ -343,7 +347,9 @@ def run_haul_scan_update() -> dict:
         rows: list[dict] = []
         for tid in type_ids:
             m = meta.get(tid) or {}
-            if m.get("category_id") not in config.TRADE_CATEGORY_ALLOWLIST:
+            cat, grp = m.get("category_id"), m.get("group_id")
+            # haul allowlist (no fighters) OR an extra drug/booster group
+            if cat not in config.TRADE_HAUL_CATEGORY_ALLOWLIST and grp not in config.TRADE_HAUL_DRUG_GROUPS:
                 continue
             j, c = jita.get(tid, {}), cj.get(tid, {})
             vol_m3 = m.get("volume") or 0.0
@@ -355,7 +361,8 @@ def run_haul_scan_update() -> dict:
             if not best or best["profit"] <= 0:
                 continue
             rows.append({
-                "item_id": tid, "type_name": m.get("type_name"), "category_id": m.get("category_id"),
+                "item_id": tid, "type_name": m.get("type_name"), "category_id": cat,
+                "group_id": grp, "meta_group_id": m.get("meta_group_id"),
                 "jita_buy": j.get("buy"), "jita_sell": j.get("sell"),
                 "cj_buy": c.get("buy"), "cj_sell": c.get("sell"),
                 "item_volume_m3": vol_m3, "daily_volume": dvol.get(tid),

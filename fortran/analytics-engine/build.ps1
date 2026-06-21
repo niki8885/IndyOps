@@ -36,3 +36,11 @@ $scn = @(
 & gfortran @flags @scn "$d\build\compat.o" -o "$d\bin\scenario-sim.exe"
 if ($LASTEXITCODE -ne 0) { throw "scenario-sim build failed ($LASTEXITCODE)" }
 Write-Host "built $d\bin\scenario-sim.exe"
+
+# portfolio-opt: Markowitz mean-variance optimiser (reuses json only)
+$port = @(
+    "src\json.f90", "src\portfolio.f90", "app\portfolioopt.f90"
+) | ForEach-Object { Join-Path $d $_ }
+& gfortran @flags @port "$d\build\compat.o" -o "$d\bin\portfolio-opt.exe"
+if ($LASTEXITCODE -ne 0) { throw "portfolio-opt build failed ($LASTEXITCODE)" }
+Write-Host "built $d\bin\portfolio-opt.exe"

@@ -9,7 +9,7 @@ advances deterministically each run.
 """
 from __future__ import annotations
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.database import (
@@ -128,15 +128,29 @@ def replace_haul_candidates(db, rows: list[dict]) -> int:
 
 
 def query_haul_candidates(db, *, min_margin: float = 0.0, method: str | None = None,
-                          category_id: int | None = None, rank_by: str = "profit",
-                          limit: int = 100) -> list[HaulCandidate]:
-    """Profitable Jita → C-J haul candidates, ranked by per-unit profit or ROI desc."""
+                          category_id: int | None = None, group_ids: list[int] | None = None,
+                          meta_groups: set[int] | None = None, type_ids: list[int] | None = None,
+                          rank_by: str = "profit", limit: int = 100) -> list[HaulCandidate]:
+    """Profitable Jita → C-J haul candidates, ranked by per-unit profit or ROI desc.
+
+    ``group_ids`` filters by SDE group (the Drugs bucket) instead of ``category_id``.
+    ``meta_groups`` keeps only those tech-level meta groups; a NULL meta_group_id is
+    treated as Tech I (1). ``type_ids`` restricts to an explicit set (portfolio reads)."""
     q = db.query(HaulCandidate).filter(
         HaulCandidate.margin_pct.isnot(None), HaulCandidate.margin_pct >= min_margin)
     if method:
         q = q.filter(HaulCandidate.best_method == method)
-    if category_id is not None:
+    if type_ids is not None:
+        q = q.filter(HaulCandidate.item_id.in_(type_ids or [-1]))
+    if group_ids:
+        q = q.filter(HaulCandidate.group_id.in_(group_ids))
+    elif category_id is not None:
         q = q.filter(HaulCandidate.category_id == category_id)
+    if meta_groups:
+        conds = [HaulCandidate.meta_group_id.in_(list(meta_groups))]
+        if 1 in meta_groups:                       # Tech I also covers the no-meta-row items
+            conds.append(HaulCandidate.meta_group_id.is_(None))
+        q = q.filter(or_(*conds))
     order = HaulCandidate.margin_pct if rank_by == "roi" else HaulCandidate.profit_per_unit
     return q.order_by(order.desc()).limit(limit).all()
 

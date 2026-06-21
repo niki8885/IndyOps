@@ -617,6 +617,8 @@ class HaulCandidate(Base):
     item_id = Column(Integer, primary_key=True)            # type_id
     type_name = Column(String(200), nullable=True)
     category_id = Column(Integer, nullable=True)
+    group_id = Column(Integer, nullable=True)              # SDE invGroup (Drugs = boosters)
+    meta_group_id = Column(Integer, nullable=True)         # 1 T1 · 2 T2 · 4 Faction (NULL ⇒ T1)
     jita_buy = Column(Float, nullable=True)                # Jita best buy order
     jita_sell = Column(Float, nullable=True)               # Jita lowest sell order
     cj_buy = Column(Float, nullable=True)                  # C-J highest buy order
@@ -632,6 +634,7 @@ class HaulCandidate(Base):
     __table_args__ = (
         Index("ix_haul_candidates_updated_at", "updated_at"),
         Index("ix_haul_candidates_margin", "margin_pct"),
+        Index("ix_haul_candidates_meta", "meta_group_id"),
     )
 
 

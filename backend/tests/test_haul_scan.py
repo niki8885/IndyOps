@@ -44,6 +44,31 @@ def test_replace_and_query_haul_candidates(app_session):
     assert trade_repo.query_haul_candidates(app_session) == []
 
 
+def test_query_filters_by_group_meta_and_type_ids(app_session):
+    trade_repo.replace_haul_candidates(app_session, [
+        {"item_id": 1, "type_name": "T1mod", "category_id": 7, "group_id": 60, "meta_group_id": None,
+         "profit_per_unit": 100.0, "margin_pct": 0.10, "best_method": "sell_buy", "updated_at": datetime(2026, 1, 1)},
+        {"item_id": 2, "type_name": "T2mod", "category_id": 7, "group_id": 60, "meta_group_id": 2,
+         "profit_per_unit": 100.0, "margin_pct": 0.10, "best_method": "sell_buy", "updated_at": datetime(2026, 1, 1)},
+        {"item_id": 3, "type_name": "FactionMod", "category_id": 7, "group_id": 60, "meta_group_id": 4,
+         "profit_per_unit": 100.0, "margin_pct": 0.10, "best_method": "sell_buy", "updated_at": datetime(2026, 1, 1)},
+        {"item_id": 4, "type_name": "Booster", "category_id": 20, "group_id": 303, "meta_group_id": None,
+         "profit_per_unit": 100.0, "margin_pct": 0.10, "best_method": "sell_buy", "updated_at": datetime(2026, 1, 1)},
+    ])
+    # meta filter: T2 + Faction excludes the NULL(=T1) module, keeps T2/Faction/booster(NULL→T1?)…
+    t2_faction = {r.item_id for r in trade_repo.query_haul_candidates(app_session, meta_groups={2, 4})}
+    assert t2_faction == {2, 3}                       # NULL meta (1,4-as-booster) excluded
+    # T1 includes NULL meta rows
+    t1 = {r.item_id for r in trade_repo.query_haul_candidates(app_session, meta_groups={1})}
+    assert t1 == {1, 4}
+    # group filter (Drugs) overrides category
+    drugs = [r.item_id for r in trade_repo.query_haul_candidates(app_session, group_ids=[303])]
+    assert drugs == [4]
+    # explicit type_ids restriction
+    subset = {r.item_id for r in trade_repo.query_haul_candidates(app_session, type_ids=[2, 4])}
+    assert subset == {2, 4}
+
+
 # ── worker ────────────────────────────────────────────────────────────────────
 
 def test_run_haul_scan_keeps_profitable_drops_loss(app_engine, eve_engine, monkeypatch):
@@ -84,5 +109,49 @@ def test_run_haul_scan_keeps_profitable_drops_loss(app_engine, eve_engine, monke
         rows = s.query(HaulCandidate).all()
         assert [r.item_id for r in rows] == [100]
         assert rows[0].profit_per_unit > 0 and rows[0].best_method in update_trade.trade.HAUL_METHODS
+    finally:
+        s.close()
+
+
+def test_run_haul_scan_excludes_fighters_includes_drugs(app_engine, eve_engine, monkeypatch):
+    AppSession = sessionmaker(bind=app_engine)
+    monkeypatch.setattr(update_trade, "SessionLocal", AppSession)
+    monkeypatch.setattr(update_trade, "EveSessionLocal", sessionmaker(bind=eve_engine))
+
+    forge = update_trade.JITA_REGION
+    s = AppSession()
+    s.add_all([
+        TradeTypeStat(region_id=forge, type_id=100, daily_volume=400.0, sample_days=14, computed_at=datetime(2026, 1, 1)),
+        TradeTypeStat(region_id=forge, type_id=200, daily_volume=300.0, sample_days=14, computed_at=datetime(2026, 1, 1)),
+        TradeTypeStat(region_id=forge, type_id=300, daily_volume=200.0, sample_days=14, computed_at=datetime(2026, 1, 1)),
+    ])
+    s.commit(); s.close()
+
+    # 100 ship (kept), 200 fighter cat 87 (dropped), 300 booster group 303 / cat 20 (kept by group)
+    monkeypatch.setattr(eve_market, "types_market_meta", lambda eve_db, ids: {
+        100: {"type_name": "Ship", "volume": 100.0, "market_group_id": 1, "published": True,
+              "category_id": 6, "group_id": 25, "meta_group_id": 1},
+        200: {"type_name": "Fighter", "volume": 100.0, "market_group_id": 1, "published": True,
+              "category_id": 87, "group_id": 1537, "meta_group_id": 2},
+        300: {"type_name": "Booster", "volume": 1.0, "market_group_id": 1, "published": True,
+              "category_id": 20, "group_id": 303, "meta_group_id": None},
+    })
+    # all three priced profitably (Jita cheap, C-J rich)
+    monkeypatch.setattr(market, "fuzzwork_aggregates_or_empty", lambda region, ids: {
+        "100": {"buy": {"max": 1_000_000}, "sell": {"min": 1_100_000}},
+        "200": {"buy": {"max": 1_000_000}, "sell": {"min": 1_100_000}},
+        "300": {"buy": {"max": 1_000_000}, "sell": {"min": 1_100_000}},
+    })
+    monkeypatch.setattr(market, "gnf_local", lambda tid: {"buy": 3_000_000, "sell": 3_200_000})
+
+    summary = update_trade.run_haul_scan_update()
+    assert summary["errors"] == []
+
+    s = AppSession()
+    try:
+        rows = {r.item_id: r for r in s.query(HaulCandidate).all()}
+        assert set(rows) == {100, 300}                 # fighter (200) excluded; booster (300) kept
+        assert rows[300].group_id == 303 and rows[300].category_id == 20
+        assert rows[100].meta_group_id == 1
     finally:
         s.close()
