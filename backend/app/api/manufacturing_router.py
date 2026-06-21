@@ -365,7 +365,11 @@ async def calculate(
     mat_role = body.material_role_pct
     time_role = body.time_role_pct
     if body.facility_id:
+        from app.api.facilities_router import accessible_facility_ids
+        allowed = accessible_facility_ids(db, current_user.id)
         f = db.query(Facility).filter(Facility.id == body.facility_id).first()
+        if f and f.id not in allowed:
+            f = None                      # not yours / not shared / not followed-public
         if f:
             if not sci and f.system_cost_index:
                 sci = f.system_cost_index
@@ -752,9 +756,11 @@ def _build_facilities(body: "ChainCalcRequest", db: Session, user_id: int) -> li
     none are chosen. The default location stays rig-free so its behaviour is unchanged.
     """
     if body.structures:
-        fac_ids = [s.place_id for s in body.structures]
+        from app.api.facilities_router import accessible_facility_ids
+        allowed = accessible_facility_ids(db, user_id)
+        fac_ids = [s.place_id for s in body.structures if s.place_id in allowed]
         facs = {f.id: f for f in db.query(Facility).filter(
-            Facility.id.in_(fac_ids or [-1]), Facility.user_id == user_id).all()}
+            Facility.id.in_(fac_ids or [-1])).all()}
         eve_db = EveSessionLocal()
         try:
             react_sci = _reaction_sci_by_facility(eve_db, list(facs.values()))
@@ -1318,8 +1324,9 @@ async def facility_bonuses(
     scaled by the structure system's security band. Auto-skips rigs that
     don't apply to the product's category.
     """
-    f = db.query(Facility).filter(Facility.id == facility_id, Facility.user_id == current_user.id).first()
-    if not f:
+    from app.api.facilities_router import accessible_facility_ids
+    f = db.query(Facility).filter(Facility.id == facility_id).first()
+    if not f or f.id not in accessible_facility_ids(db, current_user.id):
         raise HTTPException(404, "Facility not found")
 
     eve_db = EveSessionLocal()

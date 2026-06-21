@@ -5,10 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.adapters import esi
-from app.core.database import get_db, Organisation, OrganisationMember, Employee, UserDB
-from app.core.schemas import EmployeeType, OrganisationType
+from app.core.database import (
+    get_db, Organisation, OrganisationFollow, OrganisationMember, Employee, UserDB,
+)
+from app.core.schemas import EmployeeType, OrganisationType, Visibility
 from app.core.security import get_current_user
 from app.api.responses import ERR_400, ERR_403, ERR_404
+
+PUBLIC = Visibility.PUBLIC.value
 
 
 def corp_logo_url(corporation_id: Optional[int], size: int = 64) -> Optional[str]:
@@ -33,6 +37,7 @@ class OrganisationCreate(BaseModel):
     corporation_id: Optional[int] = None
     corporation_name: Optional[str] = None
     is_public: bool = False
+    visibility: Optional[Visibility] = None   # preferred; is_public kept in sync
 
 
 class OrganisationUpdate(BaseModel):
@@ -41,6 +46,7 @@ class OrganisationUpdate(BaseModel):
     corporation_id: Optional[int] = None
     corporation_name: Optional[str] = None
     is_public: Optional[bool] = None
+    visibility: Optional[Visibility] = None
 
 
 class OrganisationOut(BaseModel):
@@ -52,6 +58,8 @@ class OrganisationOut(BaseModel):
     corporation_name: Optional[str] = None
     corporation_logo: Optional[str] = None   # EVE image-server logo (corp orgs)
     is_public: bool = False
+    visibility: str = "private"
+    following: bool = False            # the current user follows (watches) this public org
     created_at: datetime.datetime
     my_role: Optional[str] = None      # role of the current user in this org
     member_count: Optional[int] = None
@@ -141,13 +149,15 @@ def _require_write(db: Session, org: Organisation, user: UserDB):
 def _org_out(db: Session, org: Organisation, user_id: int) -> OrganisationOut:
     role = _get_member_role(db, org, user_id)
     count = db.query(OrganisationMember).filter(OrganisationMember.org_id == org.id).count()
+    following = bool(db.query(OrganisationFollow).filter(
+        OrganisationFollow.user_id == user_id, OrganisationFollow.org_id == org.id).first())
     return OrganisationOut(
         id=org.id, name=org.name, owner_id=org.owner_id,
         org_type=org.org_type, corporation_id=org.corporation_id,
         corporation_name=org.corporation_name,
         corporation_logo=corp_logo_url(org.corporation_id) if org.org_type == OrganisationType.CORPORATION.value else None,
-        is_public=org.is_public, created_at=org.created_at,
-        my_role=role, member_count=count,
+        is_public=org.is_public, visibility=org.visibility or "private", following=following,
+        created_at=org.created_at, my_role=role, member_count=count,
     )
 
 
@@ -164,13 +174,16 @@ async def create_organisation(
     if db.query(Organisation).filter(Organisation.name == body.name).first():
         raise HTTPException(status_code=400, detail="Organisation name already taken")
 
+    vis = (body.visibility.value if body.visibility
+           else (PUBLIC if body.is_public else Visibility.PRIVATE.value))
     org = Organisation(
         name=body.name,
         owner_id=current_user.id,
         org_type=body.org_type.value,
         corporation_id=body.corporation_id,
         corporation_name=body.corporation_name,
-        is_public=body.is_public,
+        visibility=vis,
+        is_public=(vis == PUBLIC),
     )
     db.add(org)
     db.commit()
@@ -201,8 +214,12 @@ async def update_organisation(
         org.corporation_id = body.corporation_id
     if body.corporation_name is not None:
         org.corporation_name = body.corporation_name
-    if body.is_public is not None:
+    if body.visibility is not None:
+        org.visibility = body.visibility.value
+        org.is_public = (org.visibility == PUBLIC)
+    elif body.is_public is not None:
         org.is_public = body.is_public
+        org.visibility = PUBLIC if body.is_public else Visibility.PRIVATE.value
 
     db.commit()
     db.refresh(org)
@@ -237,6 +254,19 @@ async def list_public_organisations(
 ):
     """All public orgs — includes is_member flag via my_role (None = not a member)."""
     orgs = db.query(Organisation).filter(Organisation.is_public == True).order_by(Organisation.name).all()  # noqa: E712
+    return [_org_out(db, o, current_user.id) for o in orgs]
+
+
+@router.get("/followed", response_model=List[OrganisationOut])
+async def list_followed_organisations(
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Orgs the user follows (watch list) — distinct from joined membership."""
+    ids = {r[0] for r in db.query(OrganisationFollow.org_id).filter(
+        OrganisationFollow.user_id == current_user.id).all()}
+    orgs = (db.query(Organisation).filter(Organisation.id.in_(ids)).order_by(Organisation.name).all()
+            if ids else [])
     return [_org_out(db, o, current_user.id) for o in orgs]
 
 
@@ -328,6 +358,39 @@ async def leave_organisation(
     if not m:
         raise HTTPException(status_code=404, detail="Not a member")
     db.delete(m)
+    db.commit()
+
+
+@router.post("/{org_id}/follow", response_model=OrganisationOut, responses={**ERR_400, **ERR_403, **ERR_404})
+async def follow_organisation(
+        org_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Add a public org to your watch list (lightweight — does NOT make you a member)."""
+    org = _get_org_or_404(db, org_id)
+    if not org.is_public:
+        raise HTTPException(status_code=403, detail="This organisation is not public")
+    if org.owner_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You own this organisation")
+    exists = db.query(OrganisationFollow).filter(
+        OrganisationFollow.org_id == org_id, OrganisationFollow.user_id == current_user.id).first()
+    if not exists:
+        db.add(OrganisationFollow(org_id=org_id, user_id=current_user.id))
+        db.commit()
+    return _org_out(db, org, current_user.id)
+
+
+@router.delete("/{org_id}/follow", status_code=status.HTTP_204_NO_CONTENT, responses={**ERR_404})
+async def unfollow_organisation(
+        org_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    db.query(OrganisationFollow).filter(
+        OrganisationFollow.org_id == org_id,
+        OrganisationFollow.user_id == current_user.id,
+    ).delete(synchronize_session=False)
     db.commit()
 
 

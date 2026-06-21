@@ -375,7 +375,203 @@ scenarios are labelled as parameter approximations.`,
   ],
 }
 
-export const ARTICLES = [monteCarlo, scenarios]
+const markowitz = {
+  key: 'markowitz',
+  title: 'Portfolio Allocation (Markowitz)',
+  section: 'finance',
+  sectionLabel: 'Quantitative Finance',
+  level: 'Intermediate → Advanced',
+  difficulty: 2,
+  summary: 'Don’t pick the single best item — pick the mix that gives the most expected return for the risk you accept. Mean-variance optimisation, the efficient frontier, the covariance that powers diversification, and the water-filling solution behind the haul optimizer.',
+  body: `# Portfolio Allocation (Markowitz)
+
+**Mean-variance optimisation** chooses *how much* of your budget to put into each option so the
+whole portfolio earns the most expected return for the amount of risk you are willing to carry.
+Its key insight: the risk of a portfolio is **not** the average risk of its parts — combining
+imperfectly-correlated assets cancels some risk for free.
+
+> In one line: don't pick the single best item, pick the *mix* with the best return for your risk.
+
+## From picking winners to building a portfolio
+
+The naive move is to dump everything into the highest-return option. But a single position rises
+*and falls* with one price. Spreading the budget across several positions whose prices don't move
+in lockstep keeps the expected return while shrinking the swings. Markowitz turned that intuition
+into math — and showed exactly how much to hold of each.
+
+## A little history
+
+**Harry Markowitz** published *"Portfolio Selection"* in 1952 (Journal of Finance) — the birth of
+**Modern Portfolio Theory**. He was the first to treat risk quantitatively as the **variance** of
+returns and to formalise diversification as a covariance effect. The work earned him the 1990 Nobel
+Memorial Prize in Economics (shared with William Sharpe and Merton Miller).
+
+## Two numbers per asset: return and risk
+
+Describe each asset \`i\` by two moments: an **expected return** \`μᵢ = E[rᵢ]\` and a **risk**, the
+standard deviation \`σᵢ\` (or variance \`σᵢ²\`). Choose **weights** \`wᵢ\` — the fraction of the
+budget in each asset, with \`Σ wᵢ = 1\`. Then the portfolio has
+
+- expected return \`r_p = Σ wᵢ·μᵢ\` — a simple weighted average (linear in the weights);
+- variance \`σ_p² = Σᵢ Σⱼ wᵢ·wⱼ·σᵢⱼ = wᵀ·Σ·w\` — a **quadratic** form in the weights, where \`Σ\`
+  is the **covariance matrix**.
+
+The return is linear and boring; all the interesting behaviour lives in that quadratic variance.
+
+## Covariance is where diversification lives
+
+The off-diagonal entries are \`σᵢⱼ = ρᵢⱼ·σᵢ·σⱼ\`, with the **correlation** \`ρᵢⱼ\` between −1 and
++1. Mix two assets and the combined risk depends on \`ρ\`:
+
+- \`ρ = +1\` (move together): no benefit — portfolio σ is the weighted average of the σ's.
+- \`ρ < 1\`: the combined σ is **less** than that average — some risk cancels.
+- \`ρ = −1\`: risk can cancel almost completely.
+
+The lower the correlation, the more risk diversifies away. This is often called the only free lunch
+in finance. When assets are **independent** (\`ρ = 0\`, a *diagonal* \`Σ\`) the variance collapses to
+\`σ_p² = Σ wᵢ²·σᵢ²\`.
+
+## The power of diversification
+
+Take \`N\` independent assets with equal variance \`σ²\` and equal weights \`wᵢ = 1/N\`. The portfolio
+variance becomes \`σ_p² = σ²/N\` — it shrinks like \`1/N\`. The asset-specific (**idiosyncratic**)
+risk washes out; what's left is the **systematic** risk common to everything (a market-wide move),
+which no amount of diversification removes.
+
+[[fig:diversification|Adding more independent positions drives portfolio σ down like σ̄/√N, flattening at the systematic-risk floor that can't be diversified away.]]
+
+## The efficient frontier
+
+For every target return there is a portfolio with the **smallest possible variance**. Plot all of
+them in *(risk, return)* space and you get a curve. Its upper edge is the **efficient frontier**:
+for a given risk it gives the most return, and for a given return the least risk. Any portfolio
+*below* the frontier is dominated — you can do strictly better. The leftmost point is the
+**minimum-variance portfolio**, the safest mix you can build from these assets.
+
+[[fig:efficientFrontier|Each blue dot is one asset; the green curve is the efficient frontier (best return per unit of risk). The white point is the minimum-variance portfolio; the amber point is a constrained, liquidity-capped choice that sits inside the frontier.]]
+
+## The optimisation problem
+
+Pick a point on the frontier by trading return against risk with a **risk-aversion** parameter
+\`λ ≥ 0\`:
+
+\`max_w  wᵀμ − (λ/2)·wᵀΣw\`   subject to   \`Σ wᵢ = 1\`   and (long-only)   \`wᵢ ≥ 0\`.
+
+- \`λ → 0\` — chase return: concentrate on the highest-\`μ\` asset.
+- \`λ → ∞\` — minimise variance: head for the minimum-variance portfolio.
+
+Sweeping \`λ\` from small to large traces the **entire** efficient frontier. Mathematically this is
+a **quadratic program** — a quadratic objective with linear constraints — solved via its
+Lagrangian / **KKT** conditions. With the constraints dropped, the optimum is \`w ∝ Σ⁻¹μ\`, the
+classic **two-fund (tangency)** result.
+
+## Sharpe ratio and the tangency portfolio
+
+If a **risk-free** asset paying \`r_f\` exists, the best risk-adjusted portfolio maximises the
+**Sharpe ratio** \`(r_p − r_f)/σ_p\` — excess return per unit of risk. The straight line from
+\`r_f\` tangent to the frontier is the **capital allocation line**, and its touch point is the
+**tangency portfolio**.
+
+> EVE has no real risk-free asset, so IndyOps drops \`r_f\` and steers purely with \`λ\`.
+
+## Solving the diagonal case in closed form
+
+When you ignore cross-correlations (a **diagonal** \`Σ\`), the KKT conditions collapse to a tidy
+**water-filling** rule: \`wᵢ = max(0, (μᵢ − ν)/(λ·σᵢ²))\`. The single scalar \`ν\` is a *cutoff*
+("water level") chosen so the weights sum to 1. Since \`Σ wᵢ(ν)\` only decreases as \`ν\` rises,
+\`ν\` is found by **bisection**. Assets whose return sits below the cutoff get **zero** weight; the
+rest get more the higher their return and the lower their variance.
+
+[[fig:waterfill|Each bar is an asset's expected return μᵢ. Only the part above the cutoff ν is funded (green); the higher above the line and the lower its variance, the bigger the weight. Assets entirely below ν get nothing.]]
+
+## Long-only and other constraints
+
+The \`wᵢ ≥ 0\` constraint forbids **short-selling** — you can't hold a negative quantity of an EVE
+item. Real plans add more: a **budget**, a **maximum weight** per asset, a minimum lot size. These
+turn the clean closed form into a *bounded* problem solved numerically, but the spirit is the same.
+
+## Limitations — handle with care
+
+- **Estimation error.** \`μ\` and \`Σ\` are *estimated* from noisy history, and mean-variance is
+  notoriously sensitive to them — tiny input changes swing the weights wildly ("error
+  maximisation"). Shrinkage and constraints tame this.
+- **Single period.** It optimises one horizon and ignores rebalancing over time.
+- **Symmetric risk.** Variance penalises upside and downside equally and underweights fat tails;
+  for tail risk reach for CVaR (see the Monte-Carlo article).
+- **Ignores liquidity.** It assumes you can buy and sell the optimal amounts. Often you can't.
+
+## In IndyOps
+
+The **haul portfolio optimizer** (Market → Jita-C-J → Auto scanner) is mean-variance tuned for
+trading reality:
+
+- Each candidate's expected return \`μ\` is its per-unit **ROI**; its risk \`σ\` is the Jita price
+  **coefficient of variation** from market history (floored, so a stable-priced arbitrage isn't
+  treated as riskless and grabbed whole).
+- The covariance is **diagonal**, so the native Fortran \`portfolio-opt\` engine solves it by the
+  water-filling rule above — matched exactly by a Python oracle for parity.
+- Then two caps make the plan **sellable**: a **liquidity cap** (\`participation · daily volume ·
+  sell-through days\`) and a **diversification cap** (max share of budget per item). Because the
+  real risk in hauling is *being unable to offload the position* — not day-to-day price wiggle —
+  those caps, not \`σ\`, do most of the work.
+- The report plots the **efficient frontier** with your chosen (liquidity-capped) portfolio marked
+  *inside* it, plus the realised allocation weights.`,
+  quiz: [
+    { q: 'Mean-variance (Markowitz) optimisation trades off…', answer: 2,
+      options: ['Blueprint ME vs TE', 'Buy price vs sell price', 'Expected return vs risk (variance)', 'Volume vs cargo'],
+      explain: 'It maximises return for a chosen level of risk — the two moments μ and σ².' },
+    { q: 'A portfolio’s expected return r_p equals…', answer: 0,
+      options: ['Σ wᵢ·μᵢ — the weighted average of asset returns', 'The single highest μᵢ', 'wᵀΣw', 'max(μᵢ) − min(μᵢ)'],
+      explain: 'Return is linear in the weights; variance is the quadratic part.' },
+    { q: 'A portfolio’s variance σ_p² is…', answer: 3,
+      options: ['Σ wᵢ·μᵢ', 'The average of the σᵢ', 'Always σ²/N', 'wᵀΣw — quadratic, depending on the covariances'],
+      explain: 'σ_p² = ΣΣ wᵢwⱼσᵢⱼ = wᵀΣw; the covariances are what make diversification possible.' },
+    { q: 'Diversification reduces risk the MOST when the assets are…', answer: 1,
+      options: ['Perfectly positively correlated', 'Low- or negatively correlated', 'All identical', 'High variance'],
+      explain: 'Low ρ means their moves partly cancel — the combined σ drops below the weighted average.' },
+    { q: 'With covariance σᵢⱼ = ρᵢⱼ·σᵢ·σⱼ, if ρ = +1 between two assets…', answer: 2,
+      options: ['Risk vanishes', 'Variance becomes negative', 'There is no diversification benefit', 'The return doubles'],
+      explain: 'At ρ=1 the portfolio σ is just the weighted average of the σ’s — nothing cancels.' },
+    { q: 'For N independent, equal-risk assets held in equal weights, σ_p² =…', answer: 1,
+      options: ['σ²·N', 'σ²/N', 'σ²', 'N/σ²'],
+      explain: 'Idiosyncratic risk averages away like 1/N as you add independent positions.' },
+    { q: 'The risk that remains after diversifying across many assets is…', answer: 3,
+      options: ['Idiosyncratic risk', 'Estimation error', 'Zero', 'Systematic (market-wide) risk'],
+      explain: 'Diversification removes asset-specific risk; the common market component stays.' },
+    { q: 'The efficient frontier is…', answer: 0,
+      options: ['The set of portfolios with the most return for each level of risk', 'A single optimal portfolio', 'The list of all assets', 'The line of zero-risk portfolios'],
+      explain: 'It is the upper-left boundary; portfolios below it are dominated.' },
+    { q: 'The minimum-variance portfolio sits…', answer: 2,
+      options: ['At the top-right of the frontier', 'Off the frontier', 'At the leftmost point of the frontier (lowest risk)', 'At ρ = 1'] },
+    { q: 'In max wᵀμ − (λ/2)·wᵀΣw, increasing the risk-aversion λ makes the optimiser…', answer: 1,
+      options: ['Chase the highest return', 'More risk-averse, toward the minimum-variance portfolio', 'Ignore the covariances', 'Short more assets'],
+      explain: 'Large λ weights the −(λ/2)wᵀΣw risk term heavily.' },
+    { q: 'As λ → 0 the optimiser tends to…', answer: 3,
+      options: ['Equal-weight everything', 'Pick the minimum-variance portfolio', 'Fail to solve', 'Concentrate on the highest-return asset'],
+      explain: 'With no risk penalty it just maximises wᵀμ.' },
+    { q: 'Mathematically the Markowitz problem is a…', answer: 2,
+      options: ['Linear program', 'Sorting problem', 'Quadratic program (quadratic objective, linear constraints)', 'Differential equation'] },
+    { q: 'The Sharpe ratio is…', answer: 0,
+      options: ['(r_p − r_f)/σ_p — excess return per unit of risk', 'r_p · σ_p', 'σ_p − r_p', 'The number of assets'],
+      explain: 'It measures risk-adjusted return; the tangency portfolio maximises it.' },
+    { q: 'For a diagonal Σ the weights are wᵢ = max(0,(μᵢ − ν)/(λ·σᵢ²)). The cutoff ν is chosen so…', answer: 1,
+      options: ['Every asset gets equal weight', 'The weights sum to 1 (found by bisection)', 'Variance is zero', 'μ equals σ'],
+      explain: 'Σ wᵢ(ν) decreases monotonically in ν, so a single bisection finds the level that normalises the weights.' },
+    { q: 'In that water-filling solution, an asset whose return μᵢ is below the cutoff ν gets weight…', answer: 2,
+      options: ['The largest weight', '1/N', 'Zero', 'A negative weight'],
+      explain: 'max(0, …) clamps it out — only assets above the water level are funded.' },
+    { q: 'The long-only constraint wᵢ ≥ 0 means…', answer: 1,
+      options: ['You must hold every asset', 'No short-selling (you can’t hold negative quantities)', 'Weights can exceed 1', 'The budget is ignored'] },
+    { q: 'A well-known weakness of mean-variance optimisation is that it is…', answer: 3,
+      options: ['Too slow to compute', 'Unable to diversify', 'Only valid for two assets', 'Very sensitive to estimation error in μ and Σ'],
+      explain: 'Small changes in the noisy inputs can swing the weights — sometimes called "error maximisation".' },
+    { q: 'In the IndyOps haul optimizer, the dominant real risk handled by the caps (rather than by σ) is…', answer: 0,
+      options: ['Liquidity — being unable to sell the volume you bought', 'Blueprint ME', 'Sales tax', 'Courier collateral'],
+      explain: 'σ is price volatility; the binding constraint when hauling is offloading the position, so liquidity + diversification caps do most of the work.' },
+  ],
+}
+
+export const ARTICLES = [monteCarlo, scenarios, markowitz]
 
 // articles grouped by section (for the sidebar)
 export const SECTIONS = ARTICLES.reduce((acc, a) => {

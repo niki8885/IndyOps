@@ -104,10 +104,20 @@ TRADE_HAUL_DRUG_GROUPS = {
 # --- Trade portfolio optimizer (Markowitz mean-variance, native Fortran) -----
 # Risk aversion λ in max wᵀμ − (λ/2)·wᵀΣw (diagonal Σ); higher = more risk-averse.
 TRADE_PORTFOLIO_RISK_AVERSION = float(os.getenv("TRADE_PORTFOLIO_RISK_AVERSION", "8.0"))
-# Liquidity horizon (days) for the per-item quantity cap (daily_volume × horizon).
+# Liquidity horizon (days) you expect to sell a position over (per-item qty cap).
 TRADE_PORTFOLIO_HORIZON_DAYS  = int(os.getenv("TRADE_PORTFOLIO_HORIZON_DAYS", "7"))
+# Fraction of an item's DAILY traded volume you can realistically capture (the C-J
+# sell-side is thinner than Jita, so keep this low) — qty cap = participation·vol·days.
+TRADE_PORTFOLIO_PARTICIPATION = float(os.getenv("TRADE_PORTFOLIO_PARTICIPATION", "0.10"))
+# Diversification: max share of the budget a single item may take (with few items
+# selected the effective cap floors at 1/N so the budget can still be deployed).
+TRADE_PORTFOLIO_MAX_WEIGHT    = float(os.getenv("TRADE_PORTFOLIO_MAX_WEIGHT", "0.25"))
 # Fallback return volatility when an item has no Jita price CV in trade_type_stats.
 TRADE_PORTFOLIO_DEFAULT_SIGMA = float(os.getenv("TRADE_PORTFOLIO_DEFAULT_SIGMA", "0.15"))
+# Floor on the per-item volatility fed to the optimizer, so a stable-priced arbitrage
+# item isn't treated as riskless (which would make mean-variance dump the whole budget
+# into it). Real risk here is liquidity, handled by the caps above.
+TRADE_PORTFOLIO_MIN_SIGMA     = float(os.getenv("TRADE_PORTFOLIO_MIN_SIGMA", "0.05"))
 
 # Market category_ids that may become trade candidates (SDE invCategories):
 # 6 Ship, 7 Module, 8 Charge, 18 Drone, 87 Fighter. Excludes blueprints (9),

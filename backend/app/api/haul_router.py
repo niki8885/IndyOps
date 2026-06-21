@@ -285,7 +285,9 @@ class PortfolioRequest(BaseModel):
     character_id: Optional[int] = None      # LinkedCharacter.id (trading char → taxes/fees)
     courier_per_m3: float = 1200.0          # Jita → C-J courier rate
     risk_aversion: Optional[float] = None   # Markowitz λ (default from config)
-    horizon_days: Optional[int] = None      # liquidity-cap horizon (default from config)
+    horizon_days: Optional[int] = None      # sell-through horizon for the liquidity cap
+    max_weight: Optional[float] = None      # max budget share per item, 0..1 (diversification)
+    participation: Optional[float] = None   # fraction of daily volume capturable, 0..1
     share_base: Optional[str] = None        # client origin, for the PDF QR/share link
 
 
@@ -324,6 +326,9 @@ def _compute_portfolio(db: Session, user: UserDB, body: PortfolioRequest) -> dic
     rate = max(body.courier_per_m3 or 0.0, 0.0)
     lam = body.risk_aversion if body.risk_aversion is not None else config.TRADE_PORTFOLIO_RISK_AVERSION
     horizon = body.horizon_days or config.TRADE_PORTFOLIO_HORIZON_DAYS
+    participation = (body.participation if body.participation is not None
+                     else config.TRADE_PORTFOLIO_PARTICIPATION)
+    max_weight = body.max_weight if body.max_weight is not None else config.TRADE_PORTFOLIO_MAX_WEIGHT
 
     type_ids = [int(t) for t in (body.type_ids or [])]
     rows = (trade_repo.query_haul_candidates(db, type_ids=type_ids, limit=max(len(type_ids), 1))
@@ -339,7 +344,8 @@ def _compute_portfolio(db: Session, user: UserDB, body: PortfolioRequest) -> dic
         if not best or best["capital"] <= 0:
             continue
         cv = (stats.get(r.item_id) or {}).get("volatility_cv")
-        sigma = cv if (cv and cv > 0) else config.TRADE_PORTFOLIO_DEFAULT_SIGMA
+        base_sigma = cv if (cv and cv > 0) else config.TRADE_PORTFOLIO_DEFAULT_SIGMA
+        sigma = max(base_sigma, config.TRADE_PORTFOLIO_MIN_SIGMA)  # don't treat arbitrage as riskless
         assets.append({
             "type_id": r.item_id, "name": r.type_name, "category_id": r.category_id,
             "unit_cost": best["capital"], "unit_profit": best["profit"], "roi": best["roi"],
@@ -353,13 +359,15 @@ def _compute_portfolio(db: Session, user: UserDB, body: PortfolioRequest) -> dic
     if assets:
         mu_v = [a["roi"] for a in assets]
         sig_v = [a["sigma"] for a in assets]
-        weights, metrics, engine = portfolio_engine.optimize_weights(mu_v, sig_v, lam)
-        result = portfolio_svc.build_portfolio(assets, weights, body.budget, horizon_days=horizon)
-        result["totals"]["stddev"] = metrics["stddev"]
-        result["totals"]["exp_return"] = metrics["exp_return"]
+        weights, _metrics, engine = portfolio_engine.optimize_weights(mu_v, sig_v, lam)
+        result = portfolio_svc.build_portfolio(
+            assets, weights, body.budget, horizon_days=horizon,
+            participation=participation, max_weight=max_weight)
+        t = result["totals"]
+        # the chosen point is the REALIZED portfolio (caps push it inside the frontier)
         result["frontier"] = {
             "points": portfolio_svc.efficient_frontier(mu_v, sig_v),
-            "chosen": {"risk_aversion": lam, "stddev": metrics["stddev"], "exp_return": metrics["exp_return"]},
+            "chosen": {"risk_aversion": lam, "stddev": t["stddev"], "exp_return": t["exp_return"]},
             "assets": [{"name": a["name"], "stddev": a["sigma"], "exp_return": a["roi"]} for a in assets],
         }
     else:
@@ -373,7 +381,8 @@ def _compute_portfolio(db: Session, user: UserDB, body: PortfolioRequest) -> dic
         "character_id": fees["character_id"], "character_name": fees["character_name"],
         "sales_tax_pct": round(fees["sales_tax_pct"], 4), "broker_fee_pct": round(fees["broker_fee_pct"], 4),
         "courier_per_m3": rate, "budget": round(max(body.budget or 0.0, 0.0), 2),
-        "risk_aversion": lam, "horizon_days": horizon, "engine": engine,
+        "risk_aversion": lam, "horizon_days": horizon, "participation": participation,
+        "max_weight": max_weight, "engine": engine,
     }
     return {"meta": meta, "result": result, "unmatched": unmatched}
 
@@ -392,7 +401,7 @@ def haul_portfolio_pdf(body: PortfolioRequest, current_user: UserDB = Depends(ge
     """The same optimized portfolio as a branded PDF report (production-style letterhead
     + share code/QR)."""
     data = _compute_portfolio(db, current_user, body)
-    code = share_repo.store_share(db, "trade_portfolio", body.model_dump(exclude={"share_base"}))
+    code = share_repo.store_share(db, "haulport", body.model_dump(exclude={"share_base"}))
     base = (body.share_base or "").rstrip("/")
     share_url = f"{base}/market?portfolio={code}" if base else code
     report = {

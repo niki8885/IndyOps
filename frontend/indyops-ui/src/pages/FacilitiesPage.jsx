@@ -15,8 +15,16 @@ const TYPE_COLOR = {
   Other:   '#8b93b0',
 }
 
+const VIS = [
+  { v: 'private', label: 'Private' },
+  { v: 'public', label: 'Public' },
+  { v: 'group', label: 'Group (soon)' },
+]
+const VIS_COLOR = { private: '#8b93b0', public: '#4caf7d', group: '#c8a951' }
+const visLabel = v => ({ private: 'Private', public: 'Public', group: 'Group' }[v] || 'Private')
+
 const EMPTY_FORM = {
-  name: '', facility_type: 'Raitaru', organisation_id: '',
+  name: '', facility_type: 'Raitaru', visibility: 'private', organisation_id: '',
   tax: '', cost_bonus: '', system_name: '', solar_system_id: null, system_cost_index: '',
   rig1: { type_id: null, name: null },
   rig2: { type_id: null, name: null },
@@ -35,17 +43,33 @@ export default function FacilitiesPage() {
   const [sciInfo, setSciInfo]       = useState('')
   const [sciRaw, setSciRaw]         = useState(null)   // {manufacturing, reaction} from ESI
   const [orgs, setOrgs]             = useState([])
+  const [publicFacs, setPublicFacs] = useState([])
+  const [showPublic, setShowPublic] = useState(false)
 
   async function load() {
     try {
       const params = filter ? `?facility_type=${filter}` : ''
       const data = await get(`/facilities${params}`)
       setFacilities(data)
-    } catch {}
+    } catch { /* ignore */ }
   }
 
+  async function loadPublic() {
+    try { setPublicFacs(await get('/facilities/public')) } catch { /* ignore */ }
+  }
+
+  async function follow(id) {
+    try { await post(`/facilities/${id}/follow`); await Promise.all([load(), loadPublic()]) } catch { /* ignore */ }
+  }
+  async function unfollow(id) {
+    try { await del(`/facilities/${id}/follow`); await Promise.all([load(), loadPublic()]) } catch { /* ignore */ }
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
   useEffect(() => { load() }, [filter])
   useEffect(() => { get('/organisations').then(setOrgs).catch(() => {}) }, [])
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { if (showPublic) loadPublic() }, [showPublic])
 
   const orgName = id => orgs.find(o => o.id === id)?.name || '—'
 
@@ -63,6 +87,7 @@ export default function FacilitiesPage() {
     setForm({
       name: f.name,
       facility_type: f.facility_type,
+      visibility: f.visibility ?? 'private',
       organisation_id: f.organisation_id ?? '',
       tax: f.tax ?? '',
       cost_bonus: f.cost_bonus ?? '',
@@ -87,6 +112,7 @@ export default function FacilitiesPage() {
     const body = {
       name:              form.name,
       facility_type:     form.facility_type,
+      visibility:        form.visibility,
       organisation_id:   form.organisation_id ? Number(form.organisation_id) : null,
       tax:               form.tax !== '' ? Number(form.tax) : null,
       cost_bonus:        form.cost_bonus !== '' ? Number(form.cost_bonus) : null,
@@ -116,7 +142,7 @@ export default function FacilitiesPage() {
 
   async function remove(id) {
     if (!confirm('Delete facility?')) return
-    try { await del(`/facilities/${id}`); load() } catch {}
+    try { await del(`/facilities/${id}`); load() } catch { /* ignore */ }
   }
 
   const set = k => v => setForm(f => ({ ...f, [k]: v }))
@@ -174,7 +200,45 @@ export default function FacilitiesPage() {
           {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
         <button className="btn btn-primary btn-sm" onClick={openCreate}>+ Add facility</button>
+        <button className={`btn btn-sm ${showPublic ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setShowPublic(s => !s)}>
+          {showPublic ? 'Hide public' : 'Browse public'}
+        </button>
       </div>
+
+      {/* ── Public facilities (browse + follow) ── */}
+      {showPublic && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <h3 style={{ marginBottom: 12, fontSize: 14 }}>Public facilities</h3>
+          {publicFacs.length === 0
+            ? <div className="empty-state" style={{ padding: 16 }}>No public facilities shared by others yet</div>
+            : (
+              <table>
+                <thead>
+                  <tr><th>Name</th><th>Type</th><th>Owner</th><th>System</th><th>SCI</th><th>Tax %</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {publicFacs.map(f => (
+                    <tr key={f.id}>
+                      <td style={{ color: 'var(--text-white)', fontWeight: 500 }}>{f.name}</td>
+                      <td><TypeBadge t={f.facility_type} /></td>
+                      <td style={{ color: 'var(--text)', fontSize: 12 }}>{f.owner_name || '—'}</td>
+                      <td style={{ color: 'var(--text)' }}>{f.system_name || '—'}</td>
+                      <td style={{ color: 'var(--accent)', fontFamily: 'monospace' }}>
+                        {f.system_cost_index != null ? (f.system_cost_index * 100).toFixed(2) + '%' : '—'}
+                      </td>
+                      <td style={{ color: 'var(--text)' }}>{f.tax != null ? f.tax + '%' : '—'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {f.following
+                          ? <button className="btn btn-ghost btn-sm" onClick={() => unfollow(f.id)}>Unfollow</button>
+                          : <button className="btn btn-primary btn-sm" onClick={() => follow(f.id)}>+ Add to my list</button>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+        </div>
+      )}
 
       {/* ── Form ── */}
       {showForm && (
@@ -199,13 +263,23 @@ export default function FacilitiesPage() {
               </div>
             </div>
 
-            {/* Row 1b: organisation */}
-            <div>
-              <Label>Organisation <Hint>optional</Hint></Label>
-              <select value={form.organisation_id} onChange={setInput('organisation_id')}>
-                <option value="">— personal / none —</option>
-                {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-              </select>
+            {/* Row 1b: organisation + visibility */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 12 }}>
+              <div>
+                <Label>Organisation <Hint>optional</Hint></Label>
+                <select value={form.organisation_id} onChange={setInput('organisation_id')}>
+                  <option value="">— personal / none —</option>
+                  {orgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label>Visibility</Label>
+                <select value={form.visibility} onChange={setInput('visibility')}>
+                  {VIS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </select>
+                {form.visibility === 'public' && <Hint>others can follow &amp; use it</Hint>}
+                {form.visibility === 'group' && <div style={{ fontSize: 11, marginTop: 4, color: '#c8a951' }}>Group sharing is coming soon — acts as private for now.</div>}
+              </div>
             </div>
 
             {/* Row 2: system + SCI */}
@@ -292,6 +366,7 @@ export default function FacilitiesPage() {
                 <tr>
                   <th>Name</th>
                   <th>Type</th>
+                  <th>Visibility</th>
                   <th>Org</th>
                   <th>System</th>
                   <th>SCI</th>
@@ -306,16 +381,12 @@ export default function FacilitiesPage() {
               <tbody>
                 {facilities.map(f => (
                   <tr key={f.id}>
-                    <td style={{ color: 'var(--text-white)', fontWeight: 500 }}>{f.name}</td>
-                    <td>
-                      <span style={{
-                        fontSize: 11, fontWeight: 700, padding: '2px 8px',
-                        borderRadius: 3, background: TYPE_COLOR[f.facility_type] + '22',
-                        color: TYPE_COLOR[f.facility_type],
-                      }}>
-                        {f.facility_type}
-                      </span>
+                    <td style={{ color: 'var(--text-white)', fontWeight: 500 }}>
+                      {f.name}
+                      {!f.owned && <span style={{ fontSize: 10, color: 'var(--border2)', marginLeft: 6 }}>· {f.owner_name || 'shared'}</span>}
                     </td>
+                    <td><TypeBadge t={f.facility_type} /></td>
+                    <td><VisBadge v={f.visibility} owned={f.owned} /></td>
                     <td style={{ color: 'var(--text)', fontSize: 12 }}>{orgName(f.organisation_id)}</td>
                     <td style={{ color: 'var(--text)' }}>{f.system_name || '—'}</td>
                     <td style={{ color: 'var(--accent)', fontFamily: 'monospace' }}>
@@ -331,8 +402,14 @@ export default function FacilitiesPage() {
                     <RigCell rig={f.rig2} />
                     <RigCell rig={f.rig3} />
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      <button className="btn btn-ghost btn-sm" onClick={() => openEdit(f)} style={{ marginRight: 4 }}>Edit</button>
-                      <button className="btn btn-danger btn-sm" onClick={() => remove(f.id)}>✕</button>
+                      {f.owned
+                        ? <>
+                            <button className="btn btn-ghost btn-sm" onClick={() => openEdit(f)} style={{ marginRight: 4 }}>Edit</button>
+                            <button className="btn btn-danger btn-sm" onClick={() => remove(f.id)}>✕</button>
+                          </>
+                        : (f.following
+                            ? <button className="btn btn-ghost btn-sm" onClick={() => unfollow(f.id)}>Unfollow</button>
+                            : <span style={{ fontSize: 11, color: 'var(--border2)' }}>org-shared</span>)}
                     </td>
                   </tr>
                 ))}
@@ -342,6 +419,25 @@ export default function FacilitiesPage() {
         )
       }
     </div>
+  )
+}
+
+function TypeBadge({ t }) {
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 3,
+      background: (TYPE_COLOR[t] || '#8b93b0') + '22', color: TYPE_COLOR[t] || '#8b93b0',
+    }}>{t}</span>
+  )
+}
+
+function VisBadge({ v, owned }) {
+  const vis = v || 'private'
+  return (
+    <span title={!owned ? 'shared with you' : undefined} style={{
+      fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 3,
+      background: (VIS_COLOR[vis] || '#8b93b0') + '22', color: VIS_COLOR[vis] || '#8b93b0',
+    }}>{visLabel(vis)}</span>
   )
 }
 

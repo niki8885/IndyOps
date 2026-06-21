@@ -116,6 +116,24 @@ function baseDiscountByType(type) {
   return EC_FAC.has(type) ? EC_COST_ROLE : 0
 }
 
+// Facility <select> options, grouped into the user's own vs followed/org-shared
+// (public facilities they added to their list, or facilities of orgs they belong to).
+function facilityOptions(facilities) {
+  const mine = facilities.filter(f => f.owned !== false)
+  const shared = facilities.filter(f => f.owned === false)
+  if (shared.length === 0) return mine.map(f => <option key={f.id} value={f.id}>{f.name}</option>)
+  return (
+    <>
+      <optgroup label="My facilities">
+        {mine.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+      </optgroup>
+      <optgroup label="Followed / shared">
+        {shared.map(f => <option key={f.id} value={f.id}>{f.name}{f.owner_name ? ` · ${f.owner_name}` : ''}</option>)}
+      </optgroup>
+    </>
+  )
+}
+
 // Quick-preset bonuses for an un-saved structure (Default / no-buffs mode): the
 // structure ROLE (by type) plus one representative T2 industry rig per axis, security
 // -scaled like the backend (hi ×1.0 / low ×1.9 / null·WH ×2.1). A flat approximation —
@@ -776,7 +794,7 @@ function CalculatorTab({ sharedJob }) {
             <CLabel>Facility</CLabel>
             <select value={params.facility_id} onChange={setP('facility_id')}>
               <option value="">— none —</option>
-              {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+              {facilityOptions(facilities)}
             </select>
           </div>
           {characters.length > 0 && (
@@ -1930,7 +1948,7 @@ function ChainTab({ sharedJob }) {
               <CLabel>Facility</CLabel>
               <select value={singleFacilityId} onChange={e => setSingleFacilityId(e.target.value)}>
                 <option value="">— none —</option>
-                {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                {facilityOptions(facilities)}
               </select>
             </div>
             <NumField label="System Cost Index %" value={params.system_cost_index} onChange={setP('system_cost_index')} step={0.001} />

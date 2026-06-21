@@ -67,12 +67,41 @@ def _asset(tid, cost, profit, dv=10_000, vol=1.0):
 
 def test_allocation_fits_budget_and_caps_liquidity():
     assets = [_asset(1, 1_000.0, 100.0, dv=5), _asset(2, 2_000.0, 100.0, dv=10_000)]
-    out = portfolio.build_portfolio(assets, [0.9, 0.1], budget=1_000_000.0, horizon_days=7)
+    out = portfolio.build_portfolio(assets, [0.9, 0.1], budget=1_000_000.0,
+                                    horizon_days=7, participation=0.1, max_weight=1.0)
     t = out["totals"]
     assert t["capital_used"] <= t["budget"] + 1e-6
     a1 = next(a for a in out["allocations"] if a["type_id"] == 1)
-    assert a1["qty"] <= 5 * 7                       # liquidity cap = daily_volume·horizon
+    assert a1["qty"] <= int(5 * 0.1 * 7)            # liquidity cap = participation·vol·horizon
     assert t["expected_profit"] == round(sum(a["expected_profit"] for a in out["allocations"]), 2)
+
+
+def test_diversification_cap_and_realized_weights():
+    # one item has a far higher ROI, but no single item may exceed max_weight of budget,
+    # and the reported weight is the realized capital share (matches the quantities).
+    assets = [_asset(i, 1_000.0, 100.0 * (i + 1), dv=1_000_000) for i in range(5)]
+    mu = [a["roi"] for a in assets]
+    sig = [a["sigma"] for a in assets]
+    w, _ = portfolio.optimize(mu, sig, 8.0)
+    budget = 1_000_000_000.0
+    out = portfolio.build_portfolio(assets, w, budget, horizon_days=7,
+                                    participation=0.5, max_weight=0.2)
+    cap = 0.2 * budget
+    for a in out["allocations"]:
+        assert a["capital"] <= cap + a["unit_cost"]            # budget-share cap (one-unit slack)
+    used = out["totals"]["capital_used"]
+    assert abs(sum(a["weight"] for a in out["allocations"]) - 1.0) < 1e-6
+    for a in out["allocations"]:
+        assert abs(a["weight"] - (a["capital"] / used if used else 0.0)) < 1e-9
+
+
+def test_liquidity_participation_caps_quantity():
+    # huge ROI, thin volume: the position is bounded by participation·vol·days, not budget
+    assets = [_asset(1, 1_000.0, 5_000.0, dv=1_000)]
+    out = portfolio.build_portfolio(assets, [1.0], budget=1_000_000_000.0,
+                                    horizon_days=7, participation=0.1, max_weight=1.0)
+    assert out["allocations"][0]["qty"] <= int(1_000 * 0.1 * 7)   # = 700 units
+    assert out["totals"]["leftover"] > 0.0                        # budget can't be fully deployed
 
 
 def test_leftover_reallocated_to_best_roi():

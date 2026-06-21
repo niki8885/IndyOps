@@ -45,6 +45,15 @@ class OrganisationType(str, enum.Enum):
     CORPORATION = "Corporation"
 
 
+class Visibility(str, enum.Enum):
+    """Sharing setting for organisations & facilities. ``private`` = owner-only (today's
+    behaviour); ``public`` = others can follow (watch list) and use it; ``group`` = stub,
+    reserved for future org/group sharing — behaves as private for now."""
+    PRIVATE = "private"
+    PUBLIC = "public"
+    GROUP = "group"
+
+
 class ProductionStatus(str, enum.Enum):
     PLANNING = "Planning"
     PREPARING = "Preparing"
