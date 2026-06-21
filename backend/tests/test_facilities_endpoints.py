@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 from app.api import facilities_router as fr
 from app.api.facilities_router import FacilityCreate, FacilityUpdate, RigIn
 from app.core.database import Base, UserDB, Organisation, OrganisationMember
-from app.core.schemas import FacilityType, OrganisationType
+from app.core.schemas import FacilityType, OrganisationType, Visibility
 
 USER = SimpleNamespace(id=1)
 OTHER = SimpleNamespace(id=999)
@@ -130,6 +130,63 @@ def test_list_includes_member_org_facilities(db):
     db.commit()
     listed = run(fr.list_facilities(current_user=USER, db=db))
     assert [f.name for f in listed] == ["OrgFac"]
+
+
+# ── visibility + follow ──────────────────────────────────────────────────────
+
+def test_create_defaults_to_private_and_owned(db):
+    out = _create(db)
+    assert out.visibility == "private" and out.owned is True and out.following is False
+
+
+def test_public_list_shows_others_public_only(db):
+    _create(db, current_user=OTHER, name="Pub", visibility=Visibility.PUBLIC)
+    _create(db, current_user=OTHER, name="Priv", visibility=Visibility.PRIVATE)
+    _create(db, current_user=USER, name="MinePub", visibility=Visibility.PUBLIC)  # own → excluded
+    pub = run(fr.list_public_facilities(current_user=USER, db=db))
+    assert [f.name for f in pub] == ["Pub"]
+    assert pub[0].owned is False and pub[0].following is False and pub[0].owner_name == "other"
+
+
+def test_follow_public_facility_makes_it_usable(db):
+    fac = _create(db, current_user=OTHER, name="Shared", visibility=Visibility.PUBLIC)
+    assert run(fr.list_facilities(current_user=USER, db=db)) == []
+    assert fac.id not in fr.accessible_facility_ids(db, USER.id)
+
+    run(fr.follow_facility(facility_id=fac.id, current_user=USER, db=db))
+    listed = run(fr.list_facilities(current_user=USER, db=db))
+    assert [f.name for f in listed] == ["Shared"]
+    assert listed[0].owned is False and listed[0].following is True and listed[0].owner_name == "other"
+    assert fac.id in fr.accessible_facility_ids(db, USER.id)
+
+    run(fr.unfollow_facility(facility_id=fac.id, current_user=USER, db=db))
+    assert run(fr.list_facilities(current_user=USER, db=db)) == []
+    assert fac.id not in fr.accessible_facility_ids(db, USER.id)
+
+
+def test_cannot_follow_private_facility(db):
+    fac = _create(db, current_user=OTHER, name="Priv", visibility=Visibility.PRIVATE)
+    with pytest.raises(HTTPException) as ei:
+        run(fr.follow_facility(facility_id=fac.id, current_user=USER, db=db))
+    assert ei.value.status_code == 404
+
+
+def test_cannot_follow_own_facility(db):
+    fac = _create(db, name="Mine", visibility=Visibility.PUBLIC)
+    with pytest.raises(HTTPException) as ei:
+        run(fr.follow_facility(facility_id=fac.id, current_user=USER, db=db))
+    assert ei.value.status_code == 400
+
+
+def test_owner_making_followed_facility_private_drops_access(db):
+    fac = _create(db, current_user=OTHER, name="Shared", visibility=Visibility.PUBLIC)
+    run(fr.follow_facility(facility_id=fac.id, current_user=USER, db=db))
+    assert fac.id in fr.accessible_facility_ids(db, USER.id)
+    # owner flips it back to private → follower loses access even though the follow row remains
+    run(fr.update_facility(facility_id=fac.id, body=FacilityUpdate(visibility=Visibility.PRIVATE),
+                           current_user=OTHER, db=db))
+    assert fac.id not in fr.accessible_facility_ids(db, USER.id)
+    assert run(fr.list_facilities(current_user=USER, db=db)) == []
 
 
 # ── get ───────────────────────────────────────────────────────────────────

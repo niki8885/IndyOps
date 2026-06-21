@@ -105,74 +105,133 @@ def efficient_frontier(mu, sigma, lambdas=None) -> list[dict]:
     return out
 
 
-def _liquidity_cap(asset: dict, horizon_days: int) -> int | None:
+def _item_caps(asset: dict, budget: float, *, participation: float, horizon_days: int,
+               max_weight_frac: float) -> tuple[float, int | None]:
+    """The most you may deploy in one item — the tighter of a realistic LIQUIDITY limit
+    (``participation · daily_volume · horizon_days`` units) and a DIVERSIFICATION limit
+    (``max_weight_frac · budget`` ISK). Returns ``(cap_isk, cap_units)`` (cap_units None
+    when the item has no volume data → only the diversification cap applies)."""
+    c = float(asset.get("unit_cost") or 0.0)
     dv = asset.get("daily_volume")
-    if not dv:
-        return None
-    return int(math.floor(float(dv) * max(horizon_days, 0)))
+    cap_units = (int(math.floor(float(dv) * max(participation, 0.0) * max(horizon_days, 0)))
+                 if dv else None)
+    liq_isk = (cap_units * c) if (cap_units is not None and c > 0) else math.inf
+    div_isk = max(max_weight_frac, 0.0) * budget
+    return max(0.0, min(liq_isk, div_isk)), cap_units
 
 
 def build_portfolio(assets: list[dict], weights: list[float], budget: float, *,
-                    horizon_days: int = 7) -> dict:
-    """Turn optimal weights into integer buy quantities that fit the ISK ``budget``.
+                    horizon_days: int = 7, participation: float = 0.10,
+                    max_weight: float = 0.25) -> dict:
+    """Turn optimal weights into integer buy quantities that fit the ISK ``budget``,
+    bounded so the plan is actually *sellable*.
 
-    Each ``asset``: ``{type_id, name, unit_cost, unit_profit, roi, sigma,
-    unit_vol_m3, daily_volume, best_method, ...}`` (unit_cost = per-unit capital incl.
-    shipping; unit_profit = per-unit net). ``qty_i = floor(w_i*budget / unit_cost_i)``
-    capped by liquidity (``daily_volume * horizon_days``); leftover budget is then
-    greedily topped up by descending ROI (single pass), respecting the caps."""
+    Each ``asset``: ``{type_id, name, unit_cost, unit_profit, roi, sigma, unit_vol_m3,
+    daily_volume, best_method}`` (unit_cost = per-unit capital incl. shipping).
+
+    Two caps bound every position: a LIQUIDITY cap (``participation·daily_volume·
+    horizon_days`` units — you can't offload more than a slice of market volume) and a
+    DIVERSIFICATION cap (``max_weight`` of budget, floored at ``1/N`` so a small basket
+    can still spend the budget). The budget is distributed proportionally to the
+    optimizer weights via **capped water-filling** (when an item hits a cap its share
+    flows to the rest), leftover is topped up by best ROI under the same caps, and the
+    reported ``weight`` is the REALIZED capital share (so it matches the quantities)."""
     budget = max(float(budget or 0.0), 0.0)
+    n = len(assets)
+    weights = list(weights) + [0.0] * max(0, n - len(weights))
+    eff_maxw = max(max_weight, 1.0 / n) if n else 0.0
+
+    cap_isk: list[float] = []
+    cap_units: list[int | None] = []
+    for a in assets:
+        ci, cu = _item_caps(a, budget, participation=participation,
+                            horizon_days=horizon_days, max_weight_frac=eff_maxw)
+        cap_isk.append(ci)
+        cap_units.append(cu)
+
+    # 1) capped water-filling: distribute the budget proportionally to the weights,
+    #    never past a cap; a capped item's share redistributes to the others.
+    alloc_isk = [0.0] * n
+    active = [i for i in range(n)
+              if weights[i] > 0 and cap_isk[i] > 0 and float(assets[i].get("unit_cost") or 0) > 0]
+    remaining = budget
+    for _ in range(n + 2):
+        if remaining <= 1.0 or not active:
+            break
+        wsum = sum(weights[i] for i in active)
+        if wsum <= 0:
+            break
+        full_fill = remaining / wsum                       # ISK-per-weight if nobody caps
+        min_fill = min((cap_isk[i] - alloc_isk[i]) / weights[i] for i in active)
+        fill = min(full_fill, min_fill)
+        for i in active:
+            alloc_isk[i] += fill * weights[i]
+        remaining -= fill * wsum
+        if full_fill <= min_fill:
+            break
+        active = [i for i in active if alloc_isk[i] < cap_isk[i] - 1e-6]
+
+    # 2) integer quantities (floored), clamped to the liquidity unit cap
     allocs: list[dict] = []
-    for a, w in zip(assets, weights):
-        unit_cost = float(a.get("unit_cost") or 0.0)
-        cap = _liquidity_cap(a, horizon_days)
-        qty = int(math.floor((w * budget) / unit_cost)) if unit_cost > 0 else 0
-        if cap is not None:
-            qty = min(qty, cap)
+    for i, a in enumerate(assets):
+        c = float(a.get("unit_cost") or 0.0)
+        q = int(math.floor(alloc_isk[i] / c)) if c > 0 else 0
+        if cap_units[i] is not None:
+            q = min(q, cap_units[i])
         allocs.append({
             "type_id": a.get("type_id"), "name": a.get("name"),
             "category_id": a.get("category_id"), "best_method": a.get("best_method"),
-            "unit_cost": round(unit_cost, 2), "unit_profit": round(float(a.get("unit_profit") or 0.0), 2),
-            "roi": float(a.get("roi") or 0.0), "weight": float(w),
-            "unit_vol_m3": float(a.get("unit_vol_m3") or 0.0), "qty": max(qty, 0),
+            "unit_cost": round(c, 2), "unit_profit": round(float(a.get("unit_profit") or 0.0), 2),
+            "roi": float(a.get("roi") or 0.0), "sigma": float(a.get("sigma") or 0.0),
+            "unit_vol_m3": float(a.get("unit_vol_m3") or 0.0), "qty": max(q, 0),
         })
 
+    # 3) deploy leftover budget into the best-ROI items still under their caps
     spent = sum(al["qty"] * al["unit_cost"] for al in allocs)
     leftover = budget - spent
-    # greedy top-up by descending ROI, one shot per asset
-    for i in sorted(range(len(allocs)), key=lambda j: allocs[j]["roi"], reverse=True):
-        unit_cost = allocs[i]["unit_cost"]
-        if unit_cost <= 0 or unit_cost > leftover:
+    for i in sorted(range(n), key=lambda j: allocs[j]["roi"], reverse=True):
+        c = allocs[i]["unit_cost"]
+        if c <= 0 or c > leftover:
             continue
-        cap = _liquidity_cap(assets[i], horizon_days)
-        room = (cap - allocs[i]["qty"]) if cap is not None else None
-        extra = int(math.floor(leftover / unit_cost))
-        if room is not None:
-            extra = min(extra, max(room, 0))
+        cap_q = int(math.floor(cap_isk[i] / c))
+        if cap_units[i] is not None:
+            cap_q = min(cap_q, cap_units[i])
+        room = cap_q - allocs[i]["qty"]
+        if room <= 0:
+            continue
+        extra = min(int(math.floor(leftover / c)), room)
         if extra <= 0:
             continue
         allocs[i]["qty"] += extra
-        leftover -= extra * unit_cost
-        spent += extra * unit_cost
+        leftover -= extra * c
+        spent += extra * c
 
+    # 4) derived fields + REALIZED capital weights (so chart == table)
     for al in allocs:
         al["capital"] = round(al["qty"] * al["unit_cost"], 2)
         al["expected_profit"] = round(al["qty"] * al["unit_profit"], 2)
         al["volume_m3"] = round(al["qty"] * al["unit_vol_m3"], 2)
+    capital_used = sum(al["capital"] for al in allocs)
+    for al in allocs:
+        al["weight"] = (al["capital"] / capital_used) if capital_used > 0 else 0.0
     allocs.sort(key=lambda x: x["capital"], reverse=True)
 
-    capital_used = round(sum(al["capital"] for al in allocs), 2)
-    expected_profit = round(sum(al["expected_profit"] for al in allocs), 2)
-    total_volume = round(sum(al["volume_m3"] for al in allocs), 2)
+    expected_profit = sum(al["expected_profit"] for al in allocs)
+    realized_return = sum(al["weight"] * al["roi"] for al in allocs)
+    realized_var = sum((al["weight"] ** 2) * (al["sigma"] ** 2) for al in allocs)
     chosen = [al for al in allocs if al["qty"] > 0]
     totals = {
         "budget": round(budget, 2),
-        "capital_used": capital_used,
+        "capital_used": round(capital_used, 2),
         "leftover": round(budget - capital_used, 2),
-        "expected_profit": expected_profit,
+        "expected_profit": round(expected_profit, 2),
         "portfolio_roi": round(expected_profit / capital_used, 6) if capital_used > 0 else 0.0,
-        "total_volume_m3": total_volume,
+        "total_volume_m3": round(sum(al["volume_m3"] for al in allocs), 2),
+        "stddev": round(math.sqrt(max(realized_var, 0.0)), 8),
+        "exp_return": round(realized_return, 8),
         "n_assets": len(chosen),
-        "n_considered": len(allocs),
+        "n_considered": n,
     }
+    for al in allocs:
+        al.pop("sigma", None)
     return {"allocations": allocs, "totals": totals}

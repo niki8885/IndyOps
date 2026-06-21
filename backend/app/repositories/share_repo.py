@@ -25,7 +25,8 @@ _CODE_DIGITS = 8
 #   5    → trade haul portfolio reports
 #   9    → projects (Indy + PAK)
 # 0 and 6–8 are left free for future categories.
-_PREFIX = {"production": "1234", "chain": "1234", "trade_portfolio": "5",
+# NB: source is stored in a VARCHAR(12) column — keep keys ≤ 12 chars.
+_PREFIX = {"production": "1234", "chain": "1234", "haulport": "5",
            "project": "9", "indy": "9", "pak": "9"}
 _DEFAULT_PREFIX = "1234"
 

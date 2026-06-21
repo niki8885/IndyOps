@@ -53,6 +53,10 @@ def _summary_line(meta: dict) -> str:
                 f"Broker <b>{meta.get('broker_fee_pct', 0):.2f}%</b>")
     bits.append(f"Courier <b>{_isk(meta.get('courier_per_m3'))}/m³</b>")
     bits.append(f"Risk λ <b>{meta.get('risk_aversion', 0):g}</b>")
+    if meta.get("horizon_days"):
+        bits.append(f"Sell-through <b>{meta['horizon_days']}d</b>")
+    if meta.get("max_weight"):
+        bits.append(f"Max/item <b>{float(meta['max_weight']) * 100:.0f}%</b>")
     if meta.get("engine"):
         bits.append(f"Engine <b>{meta['engine']}</b>")
     return " · ".join(bits)

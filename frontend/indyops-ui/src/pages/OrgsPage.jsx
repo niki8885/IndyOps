@@ -4,6 +4,11 @@ import { get, post, patch, del } from '../api/client'
 const STATUSES = ['OWNER', 'ADMIN', 'SENIOR', 'JUNIOR', 'INTERN', 'OTHER', 'INACTIVE']
 const MEMBER_ROLES = ['ADMIN', 'SENIOR', 'JUNIOR', 'INTERN', 'OTHER']
 const ORG_TYPES = ['Personal', 'Corporation']
+const VIS = [
+  { v: 'private', label: 'Private' },
+  { v: 'public', label: 'Public' },
+  { v: 'group', label: 'Group (soon)' },
+]
 
 const STATUS_COLOR = {
   OWNER: '#c8a951', ADMIN: '#2980b9', SENIOR: '#27ae60',
@@ -58,23 +63,32 @@ function CorpIdField({ id, name, onIdChange, onNameLink }) {
 export default function OrgsPage() {
   const [orgs, setOrgs]         = useState([])
   const [publicOrgs, setPublicOrgs] = useState([])
-  const [form, setForm]         = useState({ name: '', org_type: 'Personal', corporation_name: '', corporation_id: '', is_public: false })
+  const [form, setForm]         = useState({ name: '', org_type: 'Personal', corporation_name: '', corporation_id: '', visibility: 'private' })
   const [error, setError]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [expanded, setExpanded] = useState(null)
 
   async function load() {
-    try { setOrgs(await get('/organisations')) } catch {}
+    try { setOrgs(await get('/organisations')) } catch { /* ignore */ }
   }
   async function loadPublic() {
     try {
       const all = await get('/organisations/public')
       // filter out orgs user is already a member/owner of
       setPublicOrgs(all.filter(o => o.my_role == null))
-    } catch {}
+    } catch { /* ignore */ }
   }
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load(); loadPublic() }, [])
+
+  async function followOrg(orgId, on) {
+    try {
+      if (on) await post(`/organisations/${orgId}/follow`, {})
+      else await del(`/organisations/${orgId}/follow`)
+      setPublicOrgs(prev => prev.map(o => o.id === orgId ? { ...o, following: on } : o))
+    } catch (err) { setError(err.message) }
+  }
 
   async function create(e) {
     e.preventDefault()
@@ -86,9 +100,9 @@ export default function OrgsPage() {
         org_type: form.org_type,
         corporation_name: form.corporation_name || null,
         corporation_id: form.corporation_id ? Number(form.corporation_id) : null,
-        is_public: form.is_public,
+        visibility: form.visibility,
       })
-      setForm({ name: '', org_type: 'Personal', corporation_name: '', corporation_id: '', is_public: false })
+      setForm({ name: '', org_type: 'Personal', corporation_name: '', corporation_id: '', visibility: 'private' })
       setOrgs(prev => [...prev, org])
       setExpanded(org.id)
     } catch (err) { setError(err.message) }
@@ -118,7 +132,6 @@ export default function OrgsPage() {
   }
 
   const setF = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
-  const setFBool = k => e => setForm(f => ({ ...f, [k]: e.target.checked }))
 
   return (
     <div>
@@ -154,11 +167,18 @@ export default function OrgsPage() {
               </div>
             </>
           )}
-          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={form.is_public} onChange={setFBool('is_public')} />
-              Public — visible to all users, anyone can join
-            </label>
+          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
+            <div>
+              <L>Visibility</L>
+              <select value={form.visibility} onChange={setF('visibility')} style={{ width: 200 }}>
+                {VIS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+              </select>
+              <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 4 }}>
+                {form.visibility === 'public' ? 'Visible to all — others can follow or join.'
+                  : form.visibility === 'group' ? 'Group sharing is coming soon — acts as private for now.'
+                  : 'Only you can see and use it.'}
+              </div>
+            </div>
             <button className="btn btn-primary" type="submit" disabled={loading}>
               {loading ? '…' : '+ Create'}
             </button>
@@ -211,6 +231,10 @@ export default function OrgsPage() {
                 <span style={{ fontSize: 12, color: 'var(--text)' }}>
                   {o.member_count} member{o.member_count !== 1 ? 's' : ''}
                 </span>
+                <button className="btn btn-ghost btn-sm" title="Add to your watch list (without joining)"
+                  onClick={() => followOrg(o.id, !o.following)}>
+                  {o.following ? '★ Following' : '☆ Follow'}
+                </button>
                 <button className="btn btn-primary btn-sm" onClick={() => joinOrg(o.id)}>Join</button>
               </div>
             ))}
@@ -237,8 +261,6 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
   const [edit, setEdit]           = useState({})
   const [tab, setTab]             = useState('chars')  // 'chars' | 'members'
 
-  useEffect(() => { if (open && !loaded) loadAll() }, [open])
-
   async function loadAll() {
     try {
       if (isOwner) {
@@ -250,14 +272,17 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
         setMembers(mems)
       }
       setLoaded(true)
-    } catch {}
+    } catch { /* ignore */ }
   }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
+  useEffect(() => { if (open && !loaded) loadAll() }, [open])
 
   function startEdit() {
     setEdit({
       name: org.name, org_type: org.org_type || 'Personal',
       corporation_name: org.corporation_name || '', corporation_id: org.corporation_id || '',
-      is_public: org.is_public ?? false,
+      visibility: org.visibility ?? 'private',
     })
     setEditing(true)
   }
@@ -269,7 +294,7 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
         org_type: edit.org_type,
         corporation_name: edit.corporation_name || null,
         corporation_id: edit.corporation_id ? Number(edit.corporation_id) : null,
-        is_public: edit.is_public,
+        visibility: edit.visibility,
       })
       onSaved(updated)
       setEditing(false)
@@ -304,7 +329,7 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
     try {
       await del(`/organisations/${org.id}/employees/${empId}`)
       setEmployees(prev => prev.filter(e => e.id !== empId))
-    } catch {}
+    } catch { /* ignore */ }
   }
 
   async function updateMemberRole(userId, role) {
@@ -332,7 +357,6 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
 
   const setF = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
   const setE = k => e => setEdit(f => ({ ...f, [k]: e.target.value }))
-  const setEBool = k => e => setEdit(f => ({ ...f, [k]: e.target.checked }))
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
@@ -350,6 +374,9 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
         </span>
         {org.is_public && (
           <span className="badge" style={{ background: '#1a2a1a', color: '#4caf7d' }}>Public</span>
+        )}
+        {org.visibility === 'group' && (
+          <span className="badge" style={{ background: '#2a2510', color: '#c8a951' }}>Group</span>
         )}
         {org.corporation_name && <span style={{ fontSize: 12, color: 'var(--text)' }}>{org.corporation_name}{org.corporation_id ? ` · ${org.corporation_id}` : ''}</span>}
         {org.my_role && (
@@ -396,10 +423,13 @@ function OrgCard({ org, open, onToggle, onDelete, onSaved, onLeft }) {
                   />
                 </div>
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text)', marginTop: 10, cursor: 'pointer' }}>
-                <input type="checkbox" checked={edit.is_public} onChange={setEBool('is_public')} />
-                Public — visible to all users, anyone can join
-              </label>
+              <div style={{ marginTop: 10 }}>
+                <L>Visibility</L>
+                <select value={edit.visibility} onChange={setE('visibility')} style={{ width: 220 }}>
+                  {VIS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </select>
+                {edit.visibility === 'group' && <span style={{ fontSize: 11, color: '#c8a951', marginLeft: 8 }}>acts as private for now</span>}
+              </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
                 <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>Cancel</button>
                 <button className="btn btn-primary btn-sm" onClick={saveEdit}>Save</button>

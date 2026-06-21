@@ -54,6 +54,8 @@ class Organisation(Base):
     corporation_id = Column(Integer, nullable=True)  # real in-game corp ID
     corporation_name = Column(String(200), nullable=True)
     is_public = Column(Boolean, nullable=False, default=False, server_default="false")
+    # 'private' | 'public' | 'group' — is_public mirrors (visibility == 'public') for back-compat
+    visibility = Column(String(10), nullable=False, default="private", server_default="private")
 
     created_at = Column(DateTime, default=utcnow)
 
@@ -137,6 +139,8 @@ class Facility(Base):
 
     name = Column(String(200), nullable=False)
     facility_type = Column(Enum(FacilityType), nullable=False, index=True)
+    # 'private' | 'public' | 'group' — public facilities can be followed + used by other users
+    visibility = Column(String(10), nullable=False, default="private", server_default="private", index=True)
 
     tax = Column(Float, nullable=True)  # broker/facility tax %
     cost_bonus = Column(Float, nullable=True)  # material/time cost reduction %
@@ -157,6 +161,30 @@ class Facility(Base):
     updated_at = Column(DateTime, nullable=True)
 
     owner = relationship("UserDB", backref="facilities")
+
+
+class FacilityFollow(Base):
+    """A user's watch-list entry for someone else's *public* facility — lets them use it
+    in their own calculations without owning it (distinct from org membership)."""
+    __tablename__ = "facility_follows"
+    __table_args__ = (UniqueConstraint("user_id", "facility_id", name="uq_facility_follow"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    facility_id = Column(Integer, ForeignKey("facilities.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class OrganisationFollow(Base):
+    """A user's watch-list entry for a *public* organisation — lightweight tracking,
+    separate from joining as a member (no role granted)."""
+    __tablename__ = "organisation_follows"
+    __table_args__ = (UniqueConstraint("user_id", "org_id", name="uq_org_follow"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey(_FK_ORGANISATIONS_ID, ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class SystemCostIndex(Base):

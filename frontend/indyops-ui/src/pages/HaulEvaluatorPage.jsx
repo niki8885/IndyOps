@@ -112,7 +112,10 @@ function HaulScanner() {
       return new Set([...s, ...visibleIds])
     })
   }
-  const selectedIds = [...selected]
+  // selection restricted to the currently-loaded universe — changing category/meta
+  // (which reloads the scan) auto-drops items no longer present, without mutating state.
+  const universeIds = new Set((res?.items || []).map(i => i.type_id))
+  const selectedIds = [...selected].filter(id => universeIds.has(id))
 
   return (
     <div>
@@ -155,7 +158,7 @@ function HaulScanner() {
         <>
           {res.stale && <div className="warning-box" style={{ marginBottom: 10 }}>Data is stale — the scanner hasn’t refreshed recently.</div>}
           <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 8 }}>
-            {items.length} candidate{items.length === 1 ? '' : 's'}{selected.size > 0 ? ` · ${selected.size} selected` : ''} · {res.updated_at ? `updated ${new Date(res.updated_at).toLocaleString()}` : 'never run yet'}
+            {items.length} candidate{items.length === 1 ? '' : 's'}{selectedIds.length > 0 ? ` · ${selectedIds.length} selected` : ''} · {res.updated_at ? `updated ${new Date(res.updated_at).toLocaleString()}` : 'never run yet'}
           </div>
           {items.length === 0
             ? <div className="empty-state">No profitable hauls match the filters (or the scanner hasn’t run — needs Jita history data first).</div>
@@ -210,13 +213,19 @@ function PortfolioPanel({ selectedIds, courier, onClear }) {
   const [budget, setBudget] = useState('')
   const [charId, setCharId] = useState('')
   const [risk, setRisk] = useState('med')
+  const [sellDays, setSellDays] = useState(7)
+  const [maxPct, setMaxPct] = useState(25)
   const [characters, setCharacters] = useState([])
   const [res, setRes] = useState(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => { get('/characters').then(setCharacters).catch(() => {}) }, [])
+  // a result belongs to the exact selection it was computed for; tagging it with that
+  // key lets it auto-hide when the selection changes (no effect / setState needed).
+  const selKey = selectedIds.join(',')
 
   function reqBody() {
     return {
@@ -225,6 +234,8 @@ function PortfolioPanel({ selectedIds, courier, onClear }) {
       character_id: charId ? Number(charId) : null,
       courier_per_m3: Number(courier) || 0,
       risk_aversion: RISK_LEVELS.find(r => r.key === risk)?.lambda ?? 8,
+      horizon_days: Number(sellDays) || 7,
+      max_weight: Math.min(Math.max((Number(maxPct) || 25) / 100, 0.01), 1),
     }
   }
 
@@ -232,7 +243,7 @@ function PortfolioPanel({ selectedIds, courier, onClear }) {
     if (!selectedIds.length) { setErr('Tick at least one item above.'); return }
     if (!(Number(budget) > 0)) { setErr('Enter a budget.'); return }
     setLoading(true); setErr('')
-    try { setRes(await post('/trade/haul/portfolio', reqBody())) }
+    try { setRes({ key: selKey, data: await post('/trade/haul/portfolio', reqBody()) }) }
     catch (e) { setErr(e.message); setRes(null) }
     finally { setLoading(false) }
   }
@@ -244,9 +255,17 @@ function PortfolioPanel({ selectedIds, courier, onClear }) {
     finally { setPdfLoading(false) }
   }
 
+  function copyBuyList(rows) {
+    const text = rows.map(a => `${a.name}\t${a.qty}`).join('\n')
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 1800)
+    }).catch(() => setErr('Clipboard not available'))
+  }
+
   if (!selectedIds.length) return null
-  const t = res?.result?.totals
-  const allocs = (res?.result?.allocations || []).filter(a => a.qty > 0)
+  const live = (res && res.key === selKey) ? res.data : null   // hide a result from a stale selection
+  const t = live?.result?.totals
+  const allocs = (live?.result?.allocations || []).filter(a => a.qty > 0)
 
   return (
     <div className="card" style={{ marginTop: 18 }}>
@@ -254,10 +273,11 @@ function PortfolioPanel({ selectedIds, courier, onClear }) {
         <h3 style={{ margin: 0, fontSize: 15 }}>Portfolio optimizer · {selectedIds.length} item{selectedIds.length === 1 ? '' : 's'}</h3>
         <button className="tab-btn" style={{ fontSize: 12 }} onClick={onClear}>Clear selection</button>
       </div>
-      <p style={{ color: 'var(--text)', fontSize: 12, marginTop: 0, marginBottom: 12, maxWidth: 820 }}>
-        Markowitz mean-variance allocation: spend the budget to maximize risk-adjusted expected profit
-        (per-item Jita price volatility as risk). Prices use the selected trading character’s sales
-        tax + broker fee and the courier rate set above ({fmtIsk(courier)}/m³).
+      <p style={{ color: 'var(--text)', fontSize: 12, marginTop: 0, marginBottom: 12, maxWidth: 860 }}>
+        Markowitz allocation that you can actually sell: spend the budget to maximize risk-adjusted
+        profit, but cap each item by how much you can realistically offload (a slice of daily volume
+        over your sell-through window) and by a max budget share. Prices use the trading character’s
+        sales tax + broker fee and the courier rate set above ({fmtIsk(courier)}/m³).
       </p>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
@@ -277,13 +297,16 @@ function PortfolioPanel({ selectedIds, courier, onClear }) {
             ))}
           </div>
         </Field>
+        <Field label="Sell-through days"><input type="number" min="1" value={sellDays} onChange={e => setSellDays(e.target.value)} style={{ width: 90 }} title="How many days you expect to take selling a position — caps each item's quantity" /></Field>
+        <Field label="Max / item %"><input type="number" min="1" max="100" value={maxPct} onChange={e => setMaxPct(e.target.value)} style={{ width: 80 }} title="Largest share of the budget any single item may take" /></Field>
         <button className="btn btn-primary" disabled={loading} onClick={optimize}>{loading ? 'Optimizing…' : 'Optimize'}</button>
-        {res && <button className="btn" disabled={pdfLoading} onClick={downloadPdf}>{pdfLoading ? 'Building…' : 'Download PDF'}</button>}
+        {allocs.length > 0 && <button className="btn" onClick={() => copyBuyList(allocs)}>{copied ? 'Copied!' : 'Copy buy list'}</button>}
+        {live && <button className="btn" disabled={pdfLoading} onClick={downloadPdf}>{pdfLoading ? 'Building…' : 'Download PDF'}</button>}
       </div>
 
       {err && <div className="error-box" style={{ marginBottom: 12 }}>{err}</div>}
-      {res?.unmatched?.length > 0 && (
-        <div className="warning-box" style={{ marginBottom: 12 }}>{res.unmatched.length} selected item(s) had no fresh scan price and were skipped.</div>
+      {live?.unmatched?.length > 0 && (
+        <div className="warning-box" style={{ marginBottom: 12 }}>{live.unmatched.length} selected item(s) had no fresh scan price and were skipped.</div>
       )}
 
       {t && (
@@ -298,13 +321,13 @@ function PortfolioPanel({ selectedIds, courier, onClear }) {
             <Stat label="Items bought" value={`${t.n_assets} / ${t.n_considered}`} good={t.n_assets > 0} />
           </div>
 
-          {res.result?.frontier && (
+          {live.result?.frontier && (
             <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
               <div className="card" style={{ flex: '1 1 380px', minWidth: 300 }}>
                 <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 6 }}>
                   Efficient frontier — risk σ vs expected ROI · <span style={{ color: 'var(--success)' }}>●</span> chosen portfolio
                 </div>
-                <FrontierChart frontier={res.result.frontier} />
+                <FrontierChart frontier={live.result.frontier} />
               </div>
               {allocs.length > 0 && (
                 <div className="card" style={{ flex: '1 1 280px', minWidth: 240 }}>

@@ -243,6 +243,93 @@ function ScenarioTreeFig() {
   )
 }
 
+// ── Markowitz: the efficient frontier (σ vs return) with assets + chosen point ──
+function EfficientFrontierFig() {
+  const W = 360, H = 210, padL = 38, padB = 30, padT = 16, padR = 14
+  const x0 = padL, x1 = W - padR, yb = H - padB, yt = padT
+  const sx = s => x0 + (s / 0.9) * (x1 - x0)          // risk σ axis 0..0.9
+  const ry = r => yb - r * (yb - yt)                  // return axis 0..1
+  // minimum-variance frontier as a sideways parabola; t<0 is the inefficient lower branch
+  const sMin = 0.12, curv = 0.52, rMid = 0.5, spread = 0.42
+  const pt = t => [sx(sMin + curv * t * t), ry(rMid + spread * t)]
+  const ts = Array.from({ length: 41 }, (_, i) => -1 + i * 0.05)
+  const eff = ts.filter(t => t >= 0).map(t => pt(t).join(',')).join(' ')
+  const ineff = ts.filter(t => t <= 0).map(t => pt(t).join(',')).join(' ')
+  const [mvx, mvy] = pt(0)
+  // individual assets sit inside/right of the frontier (more risk for the same return)
+  const assets = [[0.34, 0.40], [0.48, 0.63], [0.58, 0.33], [0.32, 0.55], [0.66, 0.72], [0.44, 0.26], [0.54, 0.5]]
+  const [cx, cy] = [sx(0.30), ry(0.46)]
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={svg} role="img" aria-label="Efficient frontier">
+      <line x1={x0} y1={yt} x2={x0} y2={yb} stroke={C.grid} />
+      <line x1={x0} y1={yb} x2={x1} y2={yb} stroke={C.grid} />
+      <polyline points={ineff} fill="none" stroke={C.text} strokeWidth={1.3} strokeDasharray="4 3" opacity={0.6} />
+      <polyline points={eff} fill="none" stroke={C.green} strokeWidth={2} />
+      {assets.map(([s, r], i) => <circle key={i} cx={sx(s)} cy={ry(r)} r={2.6} fill={C.blue2} opacity={0.85} />)}
+      <circle cx={mvx} cy={mvy} r={3.5} fill={C.white} stroke={C.green} strokeWidth={1.4} />
+      <text x={mvx + 6} y={mvy + 3} fill={C.text} fontSize={8}>min-variance</text>
+      <circle cx={cx} cy={cy} r={4} fill={C.amber} stroke={C.white} strokeWidth={1.2} />
+      <text x={cx + 7} y={cy + 3} fill={C.amber} fontSize={8}>liquidity-capped</text>
+      <text x={x1} y={yt + 4} fill={C.green} fontSize={8} textAnchor="end">efficient frontier</text>
+      <text x={W / 2} y={H - 7} fill={C.text} fontSize={9} textAnchor="middle">risk σ →</text>
+      <text x={x0 + 2} y={yt - 4} fill={C.text} fontSize={8}>expected return ↑</text>
+    </svg>
+  )
+}
+
+// ── Markowitz: diversification — portfolio σ falls toward a systematic-risk floor ──
+function DiversificationFig() {
+  const W = 360, H = 180, padL = 34, padB = 28, padT = 14, padR = 14
+  const x0 = padL, x1 = W - padR, yb = H - padB, yt = padT
+  const Nmax = 30, floor = 0.34, s1 = 1.0
+  const sig = n => floor + (s1 - floor) / Math.sqrt(n)
+  const x = n => x0 + ((n - 1) / (Nmax - 1)) * (x1 - x0)
+  const y = v => yb - v * (yb - yt)
+  const line = Array.from({ length: Nmax }, (_, i) => `${x(i + 1)},${y(sig(i + 1))}`).join(' ')
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={svg} role="img" aria-label="Diversification">
+      <line x1={x0} y1={yt} x2={x0} y2={yb} stroke={C.grid} />
+      <line x1={x0} y1={yb} x2={x1} y2={yb} stroke={C.grid} />
+      <line x1={x0} y1={y(floor)} x2={x1} y2={y(floor)} stroke={C.amber} strokeWidth={1.2} strokeDasharray="5 3" />
+      <text x={x1} y={y(floor) - 4} fill={C.amber} fontSize={8} textAnchor="end">systematic risk floor</text>
+      <polyline points={line} fill="none" stroke={C.green} strokeWidth={2} />
+      <text x={x(2)} y={y(sig(2)) - 6} fill={C.text} fontSize={8}>σ ≈ σ̄/√N</text>
+      <text x={W / 2} y={H - 6} fill={C.text} fontSize={9} textAnchor="middle">number of assets N →</text>
+      <text x={x0 + 2} y={yt - 3} fill={C.text} fontSize={8}>portfolio σ</text>
+    </svg>
+  )
+}
+
+// ── Markowitz: water-filling — weight ∝ (μᵢ − ν) above the cutoff ν (zeros below) ──
+function WaterfillFig() {
+  const W = 360, H = 195, padL = 22, padB = 32, padT = 18, padR = 12
+  const mu = [0.92, 0.74, 0.62, 0.52, 0.43, 0.30, 0.18]
+  const nu = 0.4
+  const n = mu.length, x0 = padL, x1 = W - padR, yb = H - padB, yt = padT
+  const bw = (x1 - x0) / n
+  const y = v => yb - v * (yb - yt)
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={svg} role="img" aria-label="Water-filling allocation">
+      <line x1={x0} y1={yb} x2={x1} y2={yb} stroke={C.grid} />
+      {mu.map((m, i) => {
+        const x = x0 + i * bw + 3, w = bw - 6
+        const above = m > nu
+        return (
+          <g key={i}>
+            <rect x={x} y={y(m)} width={w} height={yb - y(m)} fill="none" stroke={C.grid} rx={1} />
+            {above && <rect x={x} y={y(m)} width={w} height={y(nu) - y(m)} fill={C.green} opacity={0.85} rx={1} />}
+            <text x={x + w / 2} y={yb + 11} fill={C.text} fontSize={7.5} textAnchor="middle">{above ? `w${i + 1}` : '0'}</text>
+          </g>
+        )
+      })}
+      <line x1={x0} y1={y(nu)} x2={x1} y2={y(nu)} stroke={C.blue2} strokeWidth={1.4} strokeDasharray="5 3" />
+      <text x={x1} y={y(nu) - 4} fill={C.blue2} fontSize={8} textAnchor="end">ν (cutoff)</text>
+      <text x={x0} y={yt - 4} fill={C.text} fontSize={8}>μᵢ (expected return)</text>
+      <text x={W / 2} y={H - 6} fill={C.text} fontSize={9} textAnchor="middle">weight ∝ (μᵢ − ν)/σᵢ² above the line</text>
+    </svg>
+  )
+}
+
 // registry used by the Markdown [[fig:KEY]] marker
 // eslint-disable-next-line react-refresh/only-export-components
 export const FIGURES = {
@@ -254,4 +341,7 @@ export const FIGURES = {
   tornado: TornadoFig,
   scenarioShift: ScenarioShiftFig,
   scenarioTree: ScenarioTreeFig,
+  efficientFrontier: EfficientFrontierFig,
+  diversification: DiversificationFig,
+  waterfill: WaterfillFig,
 }
