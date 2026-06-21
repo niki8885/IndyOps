@@ -31,3 +31,10 @@ gfortran $FLAGS \
     "$d/build/compat.o" \
     -o "$d/bin/scenario-sim"
 echo "built $d/bin/scenario-sim"
+
+# portfolio-opt: Markowitz mean-variance optimiser (reuses json only)
+gfortran $FLAGS \
+    "$d/src/json.f90" "$d/src/portfolio.f90" "$d/app/portfolioopt.f90" \
+    "$d/build/compat.o" \
+    -o "$d/bin/portfolio-opt"
+echo "built $d/bin/portfolio-opt"

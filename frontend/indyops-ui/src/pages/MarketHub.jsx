@@ -6,7 +6,7 @@ import HaulEvaluatorPage from './HaulEvaluatorPage'
 // Optimizer subtab (chart-free, stays in the main bundle) never drags it in.
 const MarketBrowser = lazy(() => import('./MarketPage'))
 
-const SUBTABS = ['Browser', 'Optimizer', 'Haul']
+const SUBTABS = ['Browser', 'Optimizer', 'Jita - C-J']
 
 export default function MarketHub() {
   const [tab, setTab] = useState(0)

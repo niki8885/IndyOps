@@ -89,6 +89,26 @@ TRADE_HAUL_MAX_ITEMS   = int(os.getenv("TRADE_HAUL_MAX_ITEMS", "500"))    # cap 
 TRADE_HAUL_SHIP_M3     = float(os.getenv("TRADE_HAUL_SHIP_M3", "1200"))   # default courier ISK/m³ for ranking
 TRADE_HAUL_TTL_SECONDS = int(os.getenv("TRADE_HAUL_TTL_SECONDS", "3600")) # scanner freshness (query layer)
 
+# The haul scanner's own category gate (separate from the cross-hub allowlist below):
+# 6 Ship, 7 Module, 8 Charge, 18 Drone — NO Fighters (87, niche/illiquid for hauling).
+TRADE_HAUL_CATEGORY_ALLOWLIST = {
+    int(x) for x in os.getenv("TRADE_HAUL_CATEGORY_ALLOWLIST", "6,7,8,18").split(",") if x.strip()
+}
+# Extra SDE invGroups the haul scanner includes regardless of category — combat
+# boosters ("Drugs"): group 303 "Booster" (category 20 Implant, which we don't want
+# wholesale). Override with a CSV env var. Live-SDE verify: eve_groups.group_name='Booster'.
+TRADE_HAUL_DRUG_GROUPS = {
+    int(x) for x in os.getenv("TRADE_HAUL_DRUG_GROUPS", "303").split(",") if x.strip()
+}
+
+# --- Trade portfolio optimizer (Markowitz mean-variance, native Fortran) -----
+# Risk aversion λ in max wᵀμ − (λ/2)·wᵀΣw (diagonal Σ); higher = more risk-averse.
+TRADE_PORTFOLIO_RISK_AVERSION = float(os.getenv("TRADE_PORTFOLIO_RISK_AVERSION", "8.0"))
+# Liquidity horizon (days) for the per-item quantity cap (daily_volume × horizon).
+TRADE_PORTFOLIO_HORIZON_DAYS  = int(os.getenv("TRADE_PORTFOLIO_HORIZON_DAYS", "7"))
+# Fallback return volatility when an item has no Jita price CV in trade_type_stats.
+TRADE_PORTFOLIO_DEFAULT_SIGMA = float(os.getenv("TRADE_PORTFOLIO_DEFAULT_SIGMA", "0.15"))
+
 # Market category_ids that may become trade candidates (SDE invCategories):
 # 6 Ship, 7 Module, 8 Charge, 18 Drone, 87 Fighter. Excludes blueprints (9),
 # skillbooks (16), SKINs (91), etc. Override with a CSV env var.

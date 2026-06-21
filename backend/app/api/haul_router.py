@@ -9,22 +9,31 @@ page compares. Pure economics live in ``services.trade.haul_eval``.
 """
 from __future__ import annotations
 import asyncio
+import io
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.adapters import market
+from app.adapters import portfolio as portfolio_engine
 from app.core import config
-from app.core.database import UserDB, HaulCandidate, get_db
+from app.core.database import (
+    UserDB, HaulCandidate, LinkedCharacter, EsiSkill, EsiStanding, get_db,
+)
 from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
 from app.repositories import eve as eve_repo
+from app.repositories import share_repo
 from app.repositories import trade_repo
+from app.services import portfolio as portfolio_svc
+from app.services import portfolio_report_pdf
+from app.services import skills
 from app.services import trade
 
 router = APIRouter()
@@ -222,6 +231,7 @@ def _freshness(updated_at) -> tuple[Optional[str], bool]:
 def _scan_row(r: HaulCandidate) -> dict:
     return {
         "type_id": r.item_id, "name": r.type_name, "category_id": r.category_id,
+        "group_id": r.group_id, "meta_group_id": r.meta_group_id,
         "jita_buy": r.jita_buy, "jita_sell": r.jita_sell,
         "cj_buy": r.cj_buy, "cj_sell": r.cj_sell,
         "volume_each": r.item_volume_m3, "daily_volume": r.daily_volume,
@@ -230,11 +240,21 @@ def _scan_row(r: HaulCandidate) -> dict:
     }
 
 
+def _parse_meta(meta: Optional[str]) -> Optional[set[int]]:
+    """CSV of meta_group_ids (e.g. "2,4") → set, or None for no filter."""
+    if not meta:
+        return None
+    out = {int(x) for x in meta.split(",") if x.strip().isdigit()}
+    return out or None
+
+
 @router.get("/haul/scan")
 async def haul_scan(
     min_margin: float = Query(0.0, description="ROI fraction floor, e.g. 0.05"),
     method: Optional[str] = Query(None, description="filter to one best_method"),
-    category_id: Optional[int] = Query(None, description="6 Ship · 7 Module · 8 Charge · 18 Drone · 87 Fighter"),
+    category_id: Optional[int] = Query(None, description="6 Ship · 7 Module · 8 Charge · 18 Drone"),
+    group: Optional[str] = Query(None, description="'drugs' → boosters (group filter, not category)"),
+    meta: Optional[str] = Query(None, description="CSV of meta groups to keep: 1 T1 · 2 T2 · 4 Faction"),
     rank_by: str = Query("profit", pattern="^(profit|roi)$"),
     limit: int = Query(100, ge=1, le=500),
     current_user: UserDB = Depends(get_current_user),
@@ -242,8 +262,10 @@ async def haul_scan(
 ):
     """Auto-discovered, precomputed profitable Jita → C-J hauls (the haul-scan worker
     keeps it fresh). ESI-free read — ranked by per-unit profit or ROI."""
+    group_ids = list(config.TRADE_HAUL_DRUG_GROUPS) if group == "drugs" else None
     rows = trade_repo.query_haul_candidates(
         db, min_margin=min_margin, method=method, category_id=category_id,
+        group_ids=group_ids, meta_groups=_parse_meta(meta),
         rank_by=rank_by, limit=limit)
     iso, stale = _freshness(trade_repo.latest_updated_at(db, HaulCandidate))
     return {
@@ -253,3 +275,130 @@ async def haul_scan(
         "items": [_scan_row(r) for r in rows],
         "count": len(rows),
     }
+
+
+# ── portfolio optimizer (Markowitz over selected scanner items) ───────────────
+
+class PortfolioRequest(BaseModel):
+    type_ids: list[int] = []                # selected haul candidates (type_ids)
+    budget: float = 0.0                     # target ISK to deploy
+    character_id: Optional[int] = None      # LinkedCharacter.id (trading char → taxes/fees)
+    courier_per_m3: float = 1200.0          # Jita → C-J courier rate
+    risk_aversion: Optional[float] = None   # Markowitz λ (default from config)
+    horizon_days: Optional[int] = None      # liquidity-cap horizon (default from config)
+    share_base: Optional[str] = None        # client origin, for the PDF QR/share link
+
+
+def _market_fees(db: Session, user_id: int, character_id: Optional[int]) -> dict:
+    """Resolve a trading character → {sales_tax_pct, broker_fee_pct} (percentages),
+    mirroring manufacturing_router._industry_profile. None / unknown → config defaults."""
+    default = {
+        "character_id": None, "character_name": None,
+        "sales_tax_pct": config.TRADE_SALES_TAX * 100.0,
+        "broker_fee_pct": config.TRADE_BROKER_FEE * 100.0,
+    }
+    if character_id is None:
+        return default
+    char = (db.query(LinkedCharacter)
+            .filter(LinkedCharacter.id == character_id, LinkedCharacter.user_id == user_id)
+            .first())
+    if not char:
+        return default
+    levels = {s.skill_id: (s.trained_level or 0)
+              for s in db.query(EsiSkill).filter(EsiSkill.character_id == char.character_id).all()}
+    st = db.query(EsiStanding).filter(EsiStanding.character_id == char.character_id).all()
+    best_faction = max((s.standing or 0.0 for s in st if s.from_type == "faction"), default=0.0)
+    best_corp = max((s.standing or 0.0 for s in st if s.from_type == "npc_corp"), default=0.0)
+    return {
+        "character_id": char.character_id, "character_name": char.character_name,
+        "sales_tax_pct": skills.sales_tax_pct(levels),
+        "broker_fee_pct": skills.broker_fee_pct(levels, best_faction, best_corp),
+    }
+
+
+def _compute_portfolio(db: Session, user: UserDB, body: PortfolioRequest) -> dict:
+    """Price each selected candidate with the trader's fees + courier rate, run the
+    Markowitz optimizer, and size integer buys to the ISK budget."""
+    fees = _market_fees(db, user.id, body.character_id)
+    broker, tax = fees["broker_fee_pct"] / 100.0, fees["sales_tax_pct"] / 100.0
+    rate = max(body.courier_per_m3 or 0.0, 0.0)
+    lam = body.risk_aversion if body.risk_aversion is not None else config.TRADE_PORTFOLIO_RISK_AVERSION
+    horizon = body.horizon_days or config.TRADE_PORTFOLIO_HORIZON_DAYS
+
+    type_ids = [int(t) for t in (body.type_ids or [])]
+    rows = (trade_repo.query_haul_candidates(db, type_ids=type_ids, limit=max(len(type_ids), 1))
+            if type_ids else [])
+    stats = trade_repo.load_type_stats(db, JITA_REGION, [r.item_id for r in rows])
+
+    assets: list[dict] = []
+    for r in rows:
+        vol_m3 = r.item_volume_m3 or 0.0
+        best = trade.best_haul_method(
+            jita_buy=r.jita_buy, jita_sell=r.jita_sell, cj_buy=r.cj_buy, cj_sell=r.cj_sell,
+            qty=1, broker_fee=broker, sales_tax=tax, shipping_per_unit=vol_m3 * rate)
+        if not best or best["capital"] <= 0:
+            continue
+        cv = (stats.get(r.item_id) or {}).get("volatility_cv")
+        sigma = cv if (cv and cv > 0) else config.TRADE_PORTFOLIO_DEFAULT_SIGMA
+        assets.append({
+            "type_id": r.item_id, "name": r.type_name, "category_id": r.category_id,
+            "unit_cost": best["capital"], "unit_profit": best["profit"], "roi": best["roi"],
+            "sigma": sigma, "unit_vol_m3": vol_m3, "daily_volume": r.daily_volume,
+            "best_method": best["method"],
+        })
+
+    priced_ids = {a["type_id"] for a in assets}
+    unmatched = [t for t in type_ids if t not in priced_ids]
+
+    if assets:
+        mu_v = [a["roi"] for a in assets]
+        sig_v = [a["sigma"] for a in assets]
+        weights, metrics, engine = portfolio_engine.optimize_weights(mu_v, sig_v, lam)
+        result = portfolio_svc.build_portfolio(assets, weights, body.budget, horizon_days=horizon)
+        result["totals"]["stddev"] = metrics["stddev"]
+        result["totals"]["exp_return"] = metrics["exp_return"]
+        result["frontier"] = {
+            "points": portfolio_svc.efficient_frontier(mu_v, sig_v),
+            "chosen": {"risk_aversion": lam, "stddev": metrics["stddev"], "exp_return": metrics["exp_return"]},
+            "assets": [{"name": a["name"], "stddev": a["sigma"], "exp_return": a["roi"]} for a in assets],
+        }
+    else:
+        engine = "python"
+        result = {"allocations": [], "totals": {
+            "budget": round(max(body.budget or 0.0, 0.0), 2), "capital_used": 0.0, "leftover": 0.0,
+            "expected_profit": 0.0, "portfolio_roi": 0.0, "total_volume_m3": 0.0,
+            "stddev": 0.0, "exp_return": 0.0, "n_assets": 0, "n_considered": 0}}
+
+    meta = {
+        "character_id": fees["character_id"], "character_name": fees["character_name"],
+        "sales_tax_pct": round(fees["sales_tax_pct"], 4), "broker_fee_pct": round(fees["broker_fee_pct"], 4),
+        "courier_per_m3": rate, "budget": round(max(body.budget or 0.0, 0.0), 2),
+        "risk_aversion": lam, "horizon_days": horizon, "engine": engine,
+    }
+    return {"meta": meta, "result": result, "unmatched": unmatched}
+
+
+@router.post("/haul/portfolio")
+def haul_portfolio(body: PortfolioRequest, current_user: UserDB = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Markowitz mean-variance allocation of an ISK budget across selected Jita → C-J
+    haul candidates, priced with the trading character's taxes + courier rate."""
+    return {"route": "Jita → C-J6MT", **_compute_portfolio(db, current_user, body)}
+
+
+@router.post("/haul/portfolio/pdf")
+def haul_portfolio_pdf(body: PortfolioRequest, current_user: UserDB = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """The same optimized portfolio as a branded PDF report (production-style letterhead
+    + share code/QR)."""
+    data = _compute_portfolio(db, current_user, body)
+    code = share_repo.store_share(db, "trade_portfolio", body.model_dump(exclude={"share_base"}))
+    base = (body.share_base or "").rstrip("/")
+    share_url = f"{base}/market?portfolio={code}" if base else code
+    report = {
+        "meta": {**data["meta"], "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
+        "result": data["result"], "share_code": code, "share_url": share_url,
+    }
+    pdf = portfolio_report_pdf.render_portfolio_pdf(report)
+    headers = {"Content-Disposition": f'attachment; filename="haul-portfolio-{code}.pdf"'}
+    return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf", headers=headers)
