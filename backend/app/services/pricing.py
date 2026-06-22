@@ -22,32 +22,27 @@ def _too_low(price: Optional[float], adjusted: Optional[float], ratio: float) ->
             and adjusted > 0 and ratio > 0 and price < ratio * adjusted)
 
 
-def resolve_price(
-        buy_candidates: list[tuple[Optional[float], object]],
-        sell_candidates: list[tuple[Optional[float], object]],
+def resolve_sided(
+        primary: list[tuple[Optional[float], object]],
+        other: list[tuple[Optional[float], object]],
         adjusted: Optional[float],
         ratio: float = DEFAULT_RATIO,
-        basis: str = "buy",
+        primary_name: str = "buy",
+        other_name: str = "sell",
 ) -> tuple[Optional[float], object, Optional[dict]]:
-    """Pick a realistic acquire price for one item, with graceful fallback.
+    """Pick a realistic acquire price from already-chosen candidate sides.
 
-    Candidates are ``(price, label)`` pairs from each market (the ``label`` — a
-    region id or market name — is opaque here and just travels back as the source).
-    Priority, honouring the user's rule "another region, else sell, else adjusted":
+    ``primary`` holds the ``(price, label)`` the caller decided to use for each
+    market (e.g. each region's chosen Buy/Sell side); ``other`` holds the opposite
+    side per market, used only as the scam-price fallback. Priority:
 
-      1. cheapest **realistic** price on the chosen ``basis`` side across all regions,
-      2. else cheapest realistic price on the **other** side (buy→sell / sell→buy),
+      1. cheapest **realistic** price among the ``primary`` candidates,
+      2. else cheapest realistic price among the ``other`` (fallback) candidates,
       3. else the ESI ``adjusted`` price, 4. else ``None``.
 
-    A ``flag`` is returned only when an *unrealistic* primary value was actually
-    dropped, so the UI can show what was ignored.
-
-    Returns ``(price, label, flag | None)`` where ``flag = {original, used, reason}``.
+    Returns ``(price, label, flag | None)`` where ``flag = {original, used, reason}``
+    is set only when an *unrealistic* primary value was actually dropped.
     """
-    primary = buy_candidates if basis == "buy" else sell_candidates
-    other = sell_candidates if basis == "buy" else buy_candidates
-    other_name = "sell" if basis == "buy" else "buy"
-
     def realistic(cands):
         return [(p, lbl) for p, lbl in cands if p is not None and not _too_low(p, adjusted, ratio)]
 
@@ -64,7 +59,7 @@ def resolve_price(
         if dropped is None:        # primary was just missing, not scammy → no flag
             return None
         return {"original": round(dropped, 2), "used": round(used, 2),
-                "reason": f"{basis} {dropped:,.2f} below {ratio:.0%} of adjusted "
+                "reason": f"{primary_name} {dropped:,.2f} below {ratio:.0%} of adjusted "
                           f"{(adjusted or 0):,.2f} — using {via} {used:,.2f}"}
 
     ro = realistic(other)
@@ -74,6 +69,51 @@ def resolve_price(
     if adjusted and adjusted > 0:
         return adjusted, "adjusted", flag_for(adjusted, "adjusted")
     return None, None, None
+
+
+def resolve_price(
+        buy_candidates: list[tuple[Optional[float], object]],
+        sell_candidates: list[tuple[Optional[float], object]],
+        adjusted: Optional[float],
+        ratio: float = DEFAULT_RATIO,
+        basis: str = "buy",
+) -> tuple[Optional[float], object, Optional[dict]]:
+    """Pick a realistic acquire price for one item, with graceful fallback.
+
+    Candidates are ``(price, label)`` pairs from each market (the ``label`` — a
+    region id or market name — is opaque here and just travels back as the source).
+    A single ``basis`` ("buy"/"sell") is applied uniformly across every market; the
+    opposite side is the scam-price fallback. For per-market sides use
+    :func:`resolve_sided`. Priority "another region, else other side, else adjusted":
+
+      1. cheapest **realistic** price on the chosen ``basis`` side across all regions,
+      2. else cheapest realistic price on the **other** side (buy→sell / sell→buy),
+      3. else the ESI ``adjusted`` price, 4. else ``None``.
+
+    Returns ``(price, label, flag | None)`` where ``flag = {original, used, reason}``.
+    """
+    primary = buy_candidates if basis == "buy" else sell_candidates
+    other = sell_candidates if basis == "buy" else buy_candidates
+    other_name = "sell" if basis == "buy" else "buy"
+    return resolve_sided(primary, other, adjusted, ratio, basis, other_name)
+
+
+def rule_side(group_name: Optional[str], rules) -> Optional[str]:
+    """The Buy/Sell side a custom group rule forces for an item, or ``None``.
+
+    ``rules`` is a list of ``{"group": <group_name>, "side": "buy"|"sell"}``. The
+    first rule whose ``group`` matches the item's ``group_name`` wins; matching is
+    exact on the EVE group name (e.g. "Mineral"). Empty/blank rules are ignored, so
+    "no rules" leaves the per-region side untouched.
+    """
+    if not group_name or not rules:
+        return None
+    for r in rules:
+        g = r.get("group") if isinstance(r, dict) else getattr(r, "group", None)
+        s = r.get("side") if isinstance(r, dict) else getattr(r, "side", None)
+        if g == group_name and s in ("buy", "sell"):
+            return s
+    return None
 
 
 def flag_unrealistic(

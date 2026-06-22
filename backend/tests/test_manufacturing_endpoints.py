@@ -152,6 +152,41 @@ def test_blueprint_info_404(app_db, eve_db):
         run(mr.get_blueprint_info(product_type_id=999999, current_user=USER))
 
 
+def test_blueprint_info_tags_material_group(app_db, eve_db):
+    # Each material now carries its EVE group so the Calculator's rule dropdown can use it.
+    _seed_blueprint(eve_db)
+    out = run(mr.get_blueprint_info(product_type_id=2000, current_user=USER))
+    assert all(m["group_name"] == "Mineral" for m in out.materials)
+
+
+# ── /resolve-prices ────────────────────────────────────────────────────────────
+
+def test_resolve_prices_default_basis(app_db, eve_db):
+    # Mock aggregates: buy 5.0 / sell 7.0 for every type → buy basis picks 5.0.
+    _seed_blueprint(eve_db)
+    body = mr.ResolvePricesRequest(type_ids=[34, 35], price_basis="buy")
+    res = run(mr.resolve_prices(body=body, current_user=USER))
+    assert res["prices"]["34"] == pytest.approx(5.0)
+    assert res["groups"]["34"] == "Mineral"
+    assert res["sources"]["34"] == 10000002          # the default region id
+
+
+def test_resolve_prices_group_rule_flips_side(app_db, eve_db):
+    # A Mineral→Sell rule forces the sell side (7.0) for minerals despite buy basis.
+    _seed_blueprint(eve_db)
+    body = mr.ResolvePricesRequest(
+        type_ids=[34, 35], price_basis="buy",
+        price_rules=[mr.PriceRule(group="Mineral", side="sell")])
+    res = run(mr.resolve_prices(body=body, current_user=USER))
+    assert res["prices"]["34"] == pytest.approx(7.0)
+    assert res["prices"]["35"] == pytest.approx(7.0)
+
+
+def test_resolve_prices_empty_type_ids(app_db, eve_db):
+    res = run(mr.resolve_prices(body=mr.ResolvePricesRequest(type_ids=[]), current_user=USER))
+    assert res == {"prices": {}, "sources": {}, "flags": {}, "groups": {}}
+
+
 # ── /calculate ───────────────────────────────────────────────────────────────
 
 def test_calculate_full_result(app_db, eve_db):

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { get, post, downloadPost } from '../api/client'
 import { fmtIsk, fmtNum } from './personal/common'
+import { resolveMethod } from '../lib/haulPricing'
 
 // method key → short label for the picker (full label comes back from the API)
 const METHODS = [
@@ -30,21 +31,10 @@ const RISK_LEVELS = [
 ]
 const DEFAULT_COURIER = 1200
 
-// Recompute a scanner row's profit/ROI for a new courier rate, purely from the
-// stored fields (capital incl. shipping = profit/roi; strip scan-rate shipping, add new).
-function recomputed(i, rate) {
-  const roi = Number(i.roi) || 0
-  const profit = Number(i.profit_per_unit) || 0
-  const transport = Number(i.transport_per_unit) || 0
-  const vol = Number(i.volume_each) || 0
-  if (roi <= 0) return { profit_disp: profit, roi_disp: roi }
-  const gross = profit + transport                       // profit before shipping
-  const capital = profit / roi                           // capital incl. scan-rate shipping
-  const newTransport = vol * (Number(rate) || 0)
-  const newProfit = gross - newTransport
-  const newCapital = capital - transport + newTransport  // acquire cost + new shipping
-  return { profit_disp: newProfit, roi_disp: newCapital > 0 ? newProfit / newCapital : 0 }
-}
+// Scanner method picker: "Best" auto-selects the most profitable of the four, else the
+// chosen method is priced explicitly (recomputed client-side from the stored prices).
+const SCAN_METHODS = [{ key: 'best', label: 'Best' }, ...METHODS]
+const scanMethodLabel = key => key === 'best' ? 'Best' : methodLabel(key)
 
 export default function HaulEvaluatorPage() {
   const [mode, setMode] = useState('manual')
@@ -73,6 +63,9 @@ function HaulScanner() {
   const [rankBy, setRankBy] = useState('profit')
   const [courier, setCourier] = useState(DEFAULT_COURIER)
   const [meta, setMeta] = useState({ t1: false, t2: true, faction: true })
+  const [method, setMethod] = useState('best')
+  const [buyVolOn, setBuyVolOn] = useState(false)   // optional anti-stagnation filter
+  const [minBuyVol, setMinBuyVol] = useState(100)
   const [selected, setSelected] = useState(() => new Set())
   const [res, setRes] = useState(null)
   const [err, setErr] = useState('')
@@ -81,7 +74,7 @@ function HaulScanner() {
   async function load(catArg = cat, metaArg = meta) {
     setLoading(true); setErr('')
     try {
-      const q = new URLSearchParams({ rank_by: rankBy, min_margin: '0', limit: '200' })
+      const q = new URLSearchParams({ rank_by: rankBy, min_margin: '0', limit: '500' })
       if (catArg === 'drugs') q.set('group', 'drugs')
       else if (catArg !== '') q.set('category_id', String(catArg))
       const metaCsv = META_FLAGS.filter(f => metaArg[f.key]).map(f => f.meta).join(',')
@@ -96,11 +89,16 @@ function HaulScanner() {
   function setCategory(v) { const nv = v === '' ? '' : (v === 'drugs' ? 'drugs' : Number(v)); setCat(nv); load(nv, meta) }
   function toggleMeta(k) { const nm = { ...meta, [k]: !meta[k] }; setMeta(nm); load(cat, nm) }
 
-  // Min ROI + courier + rank are applied client-side (instant, no refetch).
+  // Method, min ROI, courier, rank, and the Jita buy-depth filter are applied
+  // client-side (instant, no refetch). Profit/ROI are recomputed for the chosen
+  // method at the current courier rate using the scan's broker/tax.
   const rate = Number(courier) || 0
+  const broker = res?.broker_fee ?? 0.03
+  const tax = res?.sales_tax ?? 0.045
   const items = (res?.items || [])
-    .map(i => ({ ...i, ...recomputed(i, rate) }))
-    .filter(i => i.roi_disp * 100 >= (Number(minMargin) || 0))
+    .map(i => ({ ...i, ...resolveMethod(i, method, rate, broker, tax, rankBy) }))
+    .filter(i => i.roi_disp != null && i.roi_disp * 100 >= (Number(minMargin) || 0))
+    .filter(i => !buyVolOn || (i.jita_buy_volume ?? 0) >= (Number(minBuyVol) || 0))
     .sort((a, b) => rankBy === 'roi' ? b.roi_disp - a.roi_disp : b.profit_disp - a.profit_disp)
 
   const visibleIds = items.map(i => i.type_id)
@@ -120,13 +118,18 @@ function HaulScanner() {
   return (
     <div>
       <p style={{ color: 'var(--text)', fontSize: 13, marginBottom: 14, maxWidth: 820 }}>
-        Auto-discovered profitable hauls — the most liquid Jita items (≥100 traded/day; ships, modules,
-        charges, drones, drugs) priced against C-J6MT and refreshed in the background. Tick items and
-        build an optimized buy portfolio for a target budget below; adjust the courier rate to re-price
-        instantly.
+        Auto-discovered profitable hauls — the most liquid Jita items (ships, modules, charges, drones,
+        drugs) priced against C-J6MT and refreshed in the background. Pick a buy/sell <b>method</b> (or
+        let it choose the best), filter by <b>Jita buy depth</b> to skip stale items, tick rows and build
+        an optimized buy portfolio below. Courier rate and method re-price instantly.
       </p>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+        <Field label="Method">
+          <select value={method} onChange={e => setMethod(e.target.value)} title="Which order book to buy/sell against on each leg">
+            {SCAN_METHODS.map(m => <option key={m.key} value={m.key} title={m.hint}>{m.label}</option>)}
+          </select>
+        </Field>
         <Field label="Min ROI %"><input type="number" min="0" step="1" value={minMargin} onChange={e => setMinMargin(e.target.value)} style={{ width: 80 }} /></Field>
         <Field label="Category">
           <select value={cat} onChange={e => setCategory(e.target.value)}>
@@ -148,6 +151,17 @@ function HaulScanner() {
             <option value="profit">Profit / unit</option>
             <option value="roi">ROI</option>
           </select>
+        </Field>
+        <Field label="Jita buy depth">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button onClick={() => setBuyVolOn(v => !v)} className={`tab-btn ${buyVolOn ? 'active' : ''}`}
+                    style={{ fontSize: 12, padding: '4px 10px' }}
+                    title="Only show items with at least this many units in standing Jita buy orders — avoids stagnant, hard-to-move items">
+              {buyVolOn ? 'On' : 'Off'}
+            </button>
+            <input type="number" min="0" value={minBuyVol} onChange={e => setMinBuyVol(e.target.value)}
+                   disabled={!buyVolOn} style={{ width: 90 }} title="Minimum Jita buy-order units" />
+          </div>
         </Field>
         <button className="btn btn-primary" disabled={loading} onClick={() => load()}>{loading ? 'Loading…' : 'Refresh'}</button>
       </div>
@@ -174,6 +188,7 @@ function HaulScanner() {
                       <th style={{ textAlign: 'right' }}>C-J buy</th>
                       <th style={{ textAlign: 'right' }}>C-J sell</th>
                       <th style={{ textAlign: 'right' }}>Vol/day</th>
+                      <th style={{ textAlign: 'right' }} title="Units in standing Jita buy orders — demand depth">Jita buy vol</th>
                       <th>Method</th>
                       <th style={{ textAlign: 'right' }}>Profit/unit</th>
                       <th style={{ textAlign: 'right' }}>ROI</th>
@@ -190,7 +205,8 @@ function HaulScanner() {
                         <td style={{ textAlign: 'right', color: 'var(--text)' }}>{i.cj_buy != null ? fmtIsk(i.cj_buy) : '—'}</td>
                         <td style={{ textAlign: 'right', color: 'var(--text)' }}>{i.cj_sell != null ? fmtIsk(i.cj_sell) : '—'}</td>
                         <td style={{ textAlign: 'right', color: 'var(--text)' }}>{fmtNum(i.daily_volume)}</td>
-                        <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{methodLabel(i.best_method)}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--text)' }}>{i.jita_buy_volume != null ? fmtNum(i.jita_buy_volume) : '—'}</td>
+                        <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{scanMethodLabel(i.method_disp)}</td>
                         <td style={{ textAlign: 'right', color: i.profit_disp > 0 ? 'var(--success)' : 'var(--danger)' }}>{fmtIsk(i.profit_disp)}</td>
                         <td style={{ textAlign: 'right', color: i.roi_disp > 0 ? 'var(--success)' : 'var(--danger)' }}>{(i.roi_disp * 100).toFixed(1)}%</td>
                       </tr>

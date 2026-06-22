@@ -80,6 +80,84 @@ def test_region_two_sided_parses_both_sides(monkeypatch):
     assert out[99] == {"buy": None, "sell": None}     # missing → None both sides
 
 
+def _two_region_data():
+    # region 1 / region 2, both sides per type. Trit(34) cheap on buy in r1; Comp(3000)
+    # cheaper on sell in r2.
+    return {
+        1: {34: {"buy": 5.0, "sell": 9.0}, 3000: {"buy": 5200.0, "sell": 5300.0}},
+        2: {34: {"buy": 6.0, "sell": 7.0}, 3000: {"buy": 5100.0, "sell": 5000.0}},
+    }
+
+
+def test_resolve_acquire_per_region_side_takes_min():
+    # r1 uses Buy, r2 uses Sell → candidates 5.0 (r1 buy) vs 7.0 (r2 sell) → min 5.0.
+    prices, sources, flags = mr._resolve_acquire_prices(
+        [34], [1, 2], _two_region_data(), {}, {34: 10.0}, 0.0,
+        basis="buy", region_sides={1: "buy", 2: "sell"}, cj_side=None,
+        rules=[], group_of={34: "Mineral"}, overrides={})
+    assert prices[34] == pytest.approx(5.0) and sources[34] == 1 and flags == {}
+
+
+def test_resolve_acquire_other_region_side_can_win():
+    # Both regions on Sell: r1 sell 9.0 vs r2 sell 7.0 → r2 wins.
+    prices, sources, _ = mr._resolve_acquire_prices(
+        [34], [1, 2], _two_region_data(), {}, {34: 10.0}, 0.0,
+        basis="sell", region_sides={}, cj_side=None,           # empty map → basis applies
+        rules=[], group_of={34: "Mineral"}, overrides={})
+    assert prices[34] == pytest.approx(7.0) and sources[34] == 2
+
+
+def test_resolve_acquire_group_rule_overrides_side():
+    # Default side is Sell everywhere, but a Mineral→Buy rule forces the buy side for
+    # Trit (group "Mineral"): cheapest buy is r1 @ 5.0, not the sell prices (9/7).
+    prices, sources, _ = mr._resolve_acquire_prices(
+        [34], [1, 2], _two_region_data(), {}, {34: 10.0}, 0.0,
+        basis="sell", region_sides={1: "sell", 2: "sell"}, cj_side=None,
+        rules=[{"group": "Mineral", "side": "buy"}], group_of={34: "Mineral"}, overrides={})
+    assert prices[34] == pytest.approx(5.0) and sources[34] == 1
+
+
+def test_resolve_acquire_rule_misses_other_groups():
+    # The Mineral rule must not touch Comp (group "Component"): it stays on the region
+    # default Sell → cheapest sell is r2 @ 5000.
+    prices, sources, _ = mr._resolve_acquire_prices(
+        [3000], [1, 2], _two_region_data(), {}, {3000: 6000.0}, 0.0,
+        basis="sell", region_sides={1: "sell", 2: "sell"}, cj_side=None,
+        rules=[{"group": "Mineral", "side": "buy"}],
+        group_of={3000: "Component"}, overrides={})
+    assert prices[3000] == pytest.approx(5000.0) and sources[3000] == 2
+
+
+def test_resolve_acquire_cj_side_participates():
+    cj = {34: {"buy": 3.0, "sell": 4.0}}
+    # C-J on Buy contributes 3.0 — cheaper than either region's buy (5/6).
+    prices, sources, _ = mr._resolve_acquire_prices(
+        [34], [1, 2], _two_region_data(), cj, {34: 10.0}, 0.0,
+        basis="buy", region_sides={1: "buy", 2: "buy"}, cj_side="buy",
+        rules=[], group_of={34: "Mineral"}, overrides={})
+    assert prices[34] == pytest.approx(3.0) and sources[34] == "C-J6MT"
+
+
+def test_resolve_acquire_scam_guard_falls_to_other_side():
+    # r1 buy is a scam (0.1 < 30% of adjusted 10); the per-region opposite side (sell)
+    # rescues it and a flag records the drop.
+    data = {1: {34: {"buy": 0.1, "sell": 8.0}}}
+    prices, sources, flags = mr._resolve_acquire_prices(
+        [34], [1], data, {}, {34: 10.0}, 0.3,
+        basis="buy", region_sides={1: "buy"}, cj_side=None,
+        rules=[], group_of={34: "Mineral"}, overrides={})
+    assert prices[34] == pytest.approx(8.0) and sources[34] == 1
+    assert flags[34]["original"] == pytest.approx(0.1) and flags[34]["used"] == pytest.approx(8.0)
+
+
+def test_resolve_acquire_override_wins():
+    prices, sources, _ = mr._resolve_acquire_prices(
+        [34], [1, 2], _two_region_data(), {}, {34: 10.0}, 0.0,
+        basis="buy", region_sides={1: "buy", 2: "sell"}, cj_side=None,
+        rules=[], group_of={34: "Mineral"}, overrides={34: 1.23})
+    assert prices[34] == pytest.approx(1.23) and sources[34] == "override"
+
+
 def test_chain_assignment_summarises_plan_by_facility():
     # The assignment summary now comes straight from the core's per-job facility
     # choice — every job is in-house at its place, nothing bounced.

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { post } from '../../api/client'
+import MoneyInput from '../../components/MoneyInput'
 import { fmtIsk, fmtNum } from '../personal/common'
 import { idBody, Label, Selectors } from './researchCommon'
 
@@ -61,7 +62,7 @@ export default function InventionTab({ facilities, characters }) {
         </div>
         <div style={{ width: 150 }}>
           <Label>Ref. BPC price <span style={{ color: 'var(--border2)' }}>(contract)</span></Label>
-          <input type="number" min="0" value={refPrice} onChange={e => setRefPrice(e.target.value)} placeholder="optional" />
+          <MoneyInput value={refPrice} onChange={e => setRefPrice(e.target.value)} placeholder="optional" />
         </div>
         <button className="btn btn-primary" disabled={!type || loading} onClick={() => run()}>
           {loading ? 'Calculating…' : 'Calculate'}

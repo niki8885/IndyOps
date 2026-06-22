@@ -35,7 +35,7 @@ from app.services.manufacturing import SCC_SURCHARGE, CalcInput, Material, run_c
 from app.services import blueprints as bp_svc
 from app.services import production_report_pdf
 from app.services.scheduling import stage_schedule
-from app.services.pricing import flag_unrealistic, resolve_price
+from app.services.pricing import flag_unrealistic, resolve_sided, rule_side
 from app.services import skills as skills_svc
 
 router = APIRouter()
@@ -244,6 +244,11 @@ async def get_blueprint_info(
         bp_type_id = bp.blueprint_type_id
         base_time = eve_repo.base_time(eve_db, bp_type_id, bp.activity_id)
         materials = eve_repo.materials(eve_db, bp_type_id, bp.activity_id)
+        # Tag each material with its EVE group (e.g. "Mineral") so the Calculator's
+        # custom price-rule dropdown can populate without an extra round-trip.
+        mat_groups = eve_repo.type_groups(eve_db, [m["type_id"] for m in materials])
+        for m in materials:
+            m["group_name"] = (mat_groups.get(m["type_id"]) or {}).get("group_name")
         names = eve_repo.type_names(eve_db, [bp_type_id, product_type_id])
 
         return BlueprintInfoOut(
@@ -503,6 +508,30 @@ async def production_report(body: ProductionReportRequest,
 
 # Recursive make-vs-buy chain + slot assignment
 
+class PriceRule(BaseModel):
+    """A custom per-item-group pricing override. ``group`` is an EVE item group name
+    (e.g. "Mineral"); items in that group are priced on ``side`` regardless of each
+    region's default side. Empty rule list = no overrides (per-region side wins)."""
+    group: str
+    side: str = "buy"              # 'buy' | 'sell'
+
+
+class ResolvePricesRequest(BaseModel):
+    """Resolve per-type acquire prices across the selected markets — the Calculator's
+    material fill uses this to mirror the Chain's multi-region + per-region side +
+    custom-rule pricing. Same knobs as ``ChainCalcRequest``'s pricing block."""
+    type_ids: List[int]
+    region_id: int = 10000002
+    region_ids: List[int] = []
+    region_sides: dict[int, str] = {}
+    include_cj: bool = False
+    cj_side: Optional[str] = None
+    price_basis: str = "buy"
+    price_rules: List[PriceRule] = []
+    flag_unrealistic: bool = True
+    unrealistic_ratio: float = 0.3
+
+
 class ChainStructure(BaseModel):
     """One of the user's facilities for multi-location building. ``place_id`` is the
     Facility id, so the backend can load its rigs for per-node ME/TE/cost."""
@@ -521,7 +550,14 @@ class ChainCalcRequest(BaseModel):
     region_id: int = 10000002
     region_ids: List[int] = []     # multi-region: take min price across all; falls back to region_id
     include_cj: bool = False       # also fetch C-J6MT prices and take min (slow: 1 scrape/type)
-    price_basis: str = "buy"
+    price_basis: str = "buy"       # default side for any region not in region_sides (and old clients)
+    # Per-region Buy/Sell side: ``{region_id: 'buy'|'sell'}``. A region not listed
+    # uses ``price_basis``. ``cj_side`` is the side for the optional C-J6MT market.
+    region_sides: dict[int, str] = {}
+    cj_side: Optional[str] = None
+    # Custom group rules: items whose EVE group matches are forced to the rule's side
+    # across every region (overrides region_sides). Empty = no overrides.
+    price_rules: List[PriceRule] = []
     facility_id: Optional[int] = None
     place_id: int = 0
     place_name: str = ""
@@ -624,6 +660,78 @@ def _region_two_sided(region_id: int, type_ids: list[int]) -> dict[int, dict]:
             "sell": _fnum(se.get("percentile") or se.get("min")),
         }
     return out
+
+
+async def _cj_two_sided(type_ids: list[int]) -> dict[int, dict]:
+    """Per-type ``{'buy','sell'}`` from the C-J6MT scraper (one slow call per type),
+    fanned out across a thread pool. Types with no C-J price are omitted."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = await asyncio.gather(
+            *[loop.run_in_executor(ex, market.gnf_local, tid) for tid in type_ids]
+        )
+    out: dict[int, dict] = {}
+    for tid, p in zip(type_ids, results):
+        if p:
+            out[tid] = {"buy": _fnum(p.get("buy")), "sell": _fnum(p.get("sell"))}
+    return out
+
+
+def _resolve_acquire_prices(
+        type_ids: list[int],
+        eff_region_ids: list[int],
+        region_data: dict[int, dict],
+        cj_data: dict[int, dict],
+        adj: dict,
+        ratio: float,
+        *,
+        basis: str,
+        region_sides: dict[int, str],
+        cj_side: Optional[str],
+        rules: list,
+        group_of: dict[int, Optional[str]],
+        overrides: dict[int, float],
+) -> tuple[dict[int, Optional[float]], dict[int, object], dict[int, dict]]:
+    """Per-type cheapest *realistic* acquire price across the selected markets, each
+    market contributing the Buy/Sell side the user chose (a matching group rule wins
+    over the region's side). The opposite side / other regions / ESI adjusted price
+    are the scam-price fallback. Shared by the chain calc and the Calculator fill.
+
+    Returns ``(prices, sources, flags)`` keyed by type_id.
+    """
+    def _opp(side: str) -> str:
+        return "sell" if side == "buy" else "buy"
+
+    prices: dict[int, Optional[float]] = {}
+    sources: dict[int, object] = {}
+    flags: dict[int, dict] = {}
+    for tid in type_ids:
+        if tid in overrides:
+            prices[tid] = overrides[tid]
+            sources[tid] = "override"
+            continue
+        forced = rule_side(group_of.get(tid), rules)
+        primary: list[tuple[Optional[float], object]] = []
+        other: list[tuple[Optional[float], object]] = []
+        for rid in eff_region_ids:
+            side = forced or region_sides.get(rid) or basis
+            two = region_data[rid].get(tid, {})
+            primary.append((two.get(side), rid))
+            other.append((two.get(_opp(side)), rid))
+        if tid in cj_data:
+            side = forced or cj_side or basis
+            two = cj_data[tid]
+            primary.append((two.get(side), "C-J6MT"))
+            other.append((two.get(_opp(side)), "C-J6MT"))
+        price, src, flag = resolve_sided(primary, other, adj.get(tid), ratio)
+        prices[tid] = price
+        if src is not None:
+            sources[tid] = src
+        if flag:
+            flags[tid] = flag
+    return prices, sources, flags
 
 
 def _job_dict(j: PlannedJob) -> dict:
@@ -1029,6 +1137,54 @@ def _profile_out(p) -> Optional[dict]:
     }
 
 
+# Cap on how many types one fill can price — the Calculator's material list is short,
+# but guard against an oversized request flooding Fuzzwork.
+MAX_RESOLVE_TYPES = 500
+
+
+@router.post("/resolve-prices")
+async def resolve_prices(
+        body: ResolvePricesRequest,
+        current_user: UserDB = Depends(get_current_user),
+):
+    """Resolve per-type acquire prices across the selected regions, each on the user's
+    chosen Buy/Sell side, with custom group rules and the scam-price guard applied —
+    the same logic the recursive chain uses. Powers the Calculator's "⚡ Fill"."""
+    type_ids = list(dict.fromkeys(int(t) for t in body.type_ids))[:MAX_RESOLVE_TYPES]
+    if not type_ids:
+        return {"prices": {}, "sources": {}, "flags": {}, "groups": {}}
+    eff_region_ids = body.region_ids if body.region_ids else [body.region_id]
+
+    try:
+        adj = market.esi_adjusted_prices()
+    except Exception:
+        adj = {}
+
+    region_data = {rid: _region_two_sided(rid, type_ids) for rid in eff_region_ids}
+    cj_data = await _cj_two_sided(type_ids) if body.include_cj else {}
+
+    eve_db = EveSessionLocal()
+    try:
+        groups = eve_repo.type_groups(eve_db, type_ids)
+    finally:
+        eve_db.close()
+    group_of = {tid: (groups.get(tid) or {}).get("group_name") for tid in type_ids}
+
+    ratio = body.unrealistic_ratio if body.flag_unrealistic else 0.0
+    rules = [{"group": r.group, "side": r.side} for r in body.price_rules]
+    prices, sources, flags = _resolve_acquire_prices(
+        type_ids, eff_region_ids, region_data, cj_data, adj, ratio,
+        basis=body.price_basis, region_sides=body.region_sides, cj_side=body.cj_side,
+        rules=rules, group_of=group_of, overrides={})
+
+    return {
+        "prices": {str(t): prices.get(t) for t in type_ids},
+        "sources": {str(t): sources.get(t) for t in type_ids},
+        "flags": {str(t): flags[t] for t in flags},
+        "groups": {str(t): group_of.get(t) for t in type_ids},
+    }
+
+
 @router.post("/calculate-chain", responses={**ERR_400, **ERR_404})
 async def calculate_chain(
         body: ChainCalcRequest,
@@ -1068,43 +1224,20 @@ async def calculate_chain(
 
     # Both market sides from every selected region (one fetch each), plus optional C-J.
     region_data = {rid: _region_two_sided(rid, type_ids) for rid in eff_region_ids}
-    cj_data: dict[int, dict] = {}
-    if body.include_cj:
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            cj_results = await asyncio.gather(
-                *[loop.run_in_executor(ex, market.gnf_local, tid) for tid in type_ids]
-            )
-        for tid, p in zip(type_ids, cj_results):
-            if p:
-                cj_data[tid] = {"buy": _fnum(p.get("buy")), "sell": _fnum(p.get("sell"))}
+    cj_data = await _cj_two_sided(type_ids) if body.include_cj else {}
 
     overrides = {int(k): float(v) for k, v in body.price_overrides.items()}
     ratio = body.unrealistic_ratio if body.flag_unrealistic else 0.0
 
-    # Per type: cheapest *realistic* price — another region or the sell side beats a
-    # scam buy order before we ever fall back to the ESI adjusted price.
-    buy_prices: dict[int, Optional[float]] = {}
-    price_source: dict[int, object] = {}     # type_id -> region_id / "C-J6MT" / "adjusted" / "override"
-    price_flags: dict[int, dict] = {}
-    for tid in type_ids:
-        if tid in overrides:
-            buy_prices[tid] = overrides[tid]
-            price_source[tid] = "override"
-            continue
-        buy_c = [(region_data[rid][tid]["buy"], rid) for rid in eff_region_ids]
-        sell_c = [(region_data[rid][tid]["sell"], rid) for rid in eff_region_ids]
-        if tid in cj_data:
-            buy_c.append((cj_data[tid]["buy"], "C-J6MT"))
-            sell_c.append((cj_data[tid]["sell"], "C-J6MT"))
-        price, src, flag = resolve_price(buy_c, sell_c, adj.get(tid), ratio, body.price_basis)
-        buy_prices[tid] = price
-        if src is not None:
-            price_source[tid] = src
-        if flag:
-            price_flags[tid] = flag
+    # Per type: cheapest *realistic* price across the selected markets, each on the
+    # user's chosen Buy/Sell side (a group rule overrides the region default); another
+    # region or the other side beats a scam order before falling back to ESI adjusted.
+    group_name_of = {tid: tree.get(tid, {}).get("group_name") for tid in type_ids}
+    rules = [{"group": r.group, "side": r.side} for r in body.price_rules]
+    buy_prices, price_source, price_flags = _resolve_acquire_prices(
+        type_ids, eff_region_ids, region_data, cj_data, adj, ratio,
+        basis=body.price_basis, region_sides=body.region_sides, cj_side=body.cj_side,
+        rules=rules, group_of=group_name_of, overrides=overrides)
 
     facilities = _build_facilities(body, db, current_user.id)
     # Character selection: producer drives job-time skills; seller drives sim fees.
@@ -1194,6 +1327,12 @@ async def calculate_chain(
         "engine": engine,
         "multi_location": len(facilities) > 1,
         "price_basis": body.price_basis,
+        # Distinct EVE item groups among the buyable materials — feeds the custom
+        # group-rule dropdown so the user can target e.g. "Mineral".
+        "material_groups": sorted({
+            g for tid, g in group_name_of.items()
+            if g and tid != body.product_type_id
+        }),
         "price_source": {str(t): src for t, src in price_source.items()},
         "price_flags": {str(t): fl for t, fl in price_flags.items()},
         "force_buy_skipped": forced_skipped,
