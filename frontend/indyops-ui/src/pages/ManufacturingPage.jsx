@@ -4,6 +4,8 @@ import SimulationPanel from '../components/SimulationPanel'
 import ScenarioPanel from '../components/ScenarioPanel'
 import ShareBar from '../components/ShareBar'
 import TypeSearch from '../components/TypeSearch'
+import MoneyInput from '../components/MoneyInput'
+import MarketSourcePanel from '../components/MarketSourcePanel'
 import { codeFromInput } from '../utils/shareCode'
 
 // Plotly (~4MB) only loads when the chain graph actually renders — keeps it out
@@ -284,9 +286,19 @@ function CalculatorTab({ sharedJob }) {
   const [indyForm, setIndyForm] = useState({ project_id: '', status: 'Planning', target: '', target_other: '', place: '', blueprints: '', runs_per_bp: '', code: '', note: '', jita_sell: '', jita_buy: '' })
   const [buyMsg, setBuyMsg] = useState('')
 
-  // market-price source controls
-  const [matMarket, setMatMarket] = useState('Jita')
-  const [matMethod, setMatMethod] = useState('Sell')
+  // material-price source: multi-region with a per-region Buy/Sell side + custom group
+  // rules (mirrors the Chain tab). 'cj' keys the optional C-J6MT side.
+  const [matRegions, setMatRegions] = useState(new Set([10000002]))
+  const [matRegionSide, setMatRegionSide] = useState({ 10000002: 'sell' })
+  const [matIncludeCJ, setMatIncludeCJ] = useState(false)
+  const [matRules, setMatRules] = useState([])
+  const setMatSide = (key, side) => setMatRegionSide(m => ({ ...m, [key]: side }))
+  const toggleMatRegion = (rid) => setMatRegions(prev => {
+    const next = new Set(prev)
+    if (next.has(rid)) { if (next.size > 1) next.delete(rid) }
+    else next.add(rid)
+    return next
+  })
   const [matPriceLoading, setMatPriceLoading] = useState(false)
   const [outMarket, setOutMarket] = useState('Jita')
   const [outMethod, setOutMethod] = useState('Sell')
@@ -493,12 +505,24 @@ function CalculatorTab({ sharedJob }) {
     if (!bpInfo) return
     setMatPriceLoading(true); setError('')
     try {
-      const prices = await fetchMarketPrices(bpInfo.materials.map(m => m.type_id), matMarket)
+      const region_sides = {}
+      for (const rid of matRegions) region_sides[rid] = matRegionSide[rid] || 'sell'
+      const res = await post('/manufacturing/resolve-prices', {
+        type_ids: bpInfo.materials.map(m => m.type_id),
+        region_ids: [...matRegions],
+        region_sides,
+        include_cj: matIncludeCJ,
+        cj_side: matIncludeCJ ? (matRegionSide.cj || 'sell') : null,
+        price_rules: matRules.filter(r => r.group),
+        flag_unrealistic: true,
+        unrealistic_ratio: 0.3,
+      })
+      const prices = res.prices || {}
       setMatPrices(prev => {
         const next = { ...prev }
         bpInfo.materials.forEach(m => {
           const p = prices[m.type_id]
-          if (p && p[matMethod] != null) next[m.type_id] = p[matMethod].toFixed(2)
+          if (p != null) next[m.type_id] = Number(p).toFixed(2)
         })
         return next
       })
@@ -789,7 +813,7 @@ function CalculatorTab({ sharedJob }) {
               <NumField label="TE (0–20)" value={params.te} onChange={setP('te')} min={0} max={20} />
             </>
           )}
-          <NumField label="BPC Cost / window" value={params.bpc_cost} onChange={setP('bpc_cost')} step={1000} />
+          <NumField label="BPC Cost / window" value={params.bpc_cost} onChange={setP('bpc_cost')} step={1000} money />
           <div>
             <CLabel>Facility</CLabel>
             <select value={params.facility_id} onChange={setP('facility_id')}>
@@ -825,7 +849,7 @@ function CalculatorTab({ sharedJob }) {
           <NumField label="Structure Bonus %" value={params.structure_bonus_pct} onChange={setP('structure_bonus_pct')} step={0.1} />
           <div>
             <CLabel>Sell Price / unit</CLabel>
-            <input type="number" value={params.output_price} onChange={setP('output_price')} step={100} />
+            <MoneyInput value={params.output_price} onChange={setP('output_price')} />
             <PriceSourceRow
               market={outMarket} setMarket={setOutMarket}
               method={outMethod} setMethod={setOutMethod}
@@ -834,7 +858,7 @@ function CalculatorTab({ sharedJob }) {
             />
           </div>
           <NumField label="Broker Fee %" value={params.broker_fee_pct} onChange={setP('broker_fee_pct')} step={0.1} />
-          <NumField label="Est. Item Value (opt.)" value={params.estimated_item_value} onChange={setP('estimated_item_value')} step={1000000} placeholder="auto" />
+          <NumField label="Est. Item Value (opt.)" value={params.estimated_item_value} onChange={setP('estimated_item_value')} step={1000000} placeholder="auto" money />
         </div>
       </div>
 
@@ -912,15 +936,30 @@ function CalculatorTab({ sharedJob }) {
       {/* ── Materials ── */}
       {bpInfo && bpInfo.materials.length > 0 && (
         <div className="card" style={{ padding: 0 }}>
-          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Input Materials — unit costs (ISK)</span>
-            <div style={{ marginLeft: 'auto' }}>
-              <PriceSourceRow
-                market={matMarket} setMarket={setMatMarket}
-                method={matMethod} setMethod={setMatMethod}
-                onFill={fillMaterialPrices} loading={matPriceLoading}
-              />
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: 'var(--text-white)', fontWeight: 500 }}>Input Materials — unit costs (ISK)</span>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={fillMaterialPrices}
+                disabled={matPriceLoading} style={{ marginLeft: 'auto', padding: '2px 10px', fontSize: 11 }}>
+                {matPriceLoading ? '⚡…' : '⚡ Fill from market'}
+              </button>
             </div>
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ fontSize: 11, color: 'var(--text)', cursor: 'pointer' }}>
+                Buy-price markets — {matRegions.size} region{matRegions.size === 1 ? '' : 's'}
+                {matIncludeCJ ? ' + C-J' : ''}{matRules.length ? `, ${matRules.length} rule${matRules.length === 1 ? '' : 's'}` : ''}
+              </summary>
+              <div style={{ maxWidth: 460 }}>
+                <MarketSourcePanel
+                  regions={REGIONS}
+                  selectedRegions={matRegions} toggleRegion={toggleMatRegion}
+                  regionSide={matRegionSide} setSide={setMatSide}
+                  includeCJ={matIncludeCJ} setIncludeCJ={setMatIncludeCJ}
+                  rules={matRules} setRules={setMatRules}
+                  groupOptions={[...new Set(bpInfo.materials.map(m => m.group_name).filter(Boolean))]}
+                />
+              </div>
+            </details>
           </div>
           {/* warehouse controls */}
           <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'var(--surface2)' }}>
@@ -1212,11 +1251,11 @@ function CalculatorTab({ sharedJob }) {
 
             <div>
               <CLabel>Initial Contract / PAK <Hint>(materials + BPC) ÷ windows</Hint></CLabel>
-              <input type="number" value={jobForm.initial_contract_price} onChange={setJ('initial_contract_price')} placeholder="0" />
+              <MoneyInput value={jobForm.initial_contract_price} onChange={setJ('initial_contract_price')} placeholder="0" />
             </div>
             <div>
               <CLabel>Return Contract / PAK <Hint>you set this</Hint></CLabel>
-              <input type="number" value={jobForm.return_contract_price} onChange={setJ('return_contract_price')} placeholder="0" />
+              <MoneyInput value={jobForm.return_contract_price} onChange={setJ('return_contract_price')} placeholder="0" />
             </div>
             <div>
               <CLabel>PAK Reward / PAK <Hint>Return − Initial − Job</Hint></CLabel>
@@ -1233,10 +1272,10 @@ function CalculatorTab({ sharedJob }) {
               <span style={{ color: 'var(--accent)' }}>Market prices</span>
               {pakPriceLoading ? <span>fetching Jita + C-J…</span> : <span>auto-filled (editable)</span>}
             </div>
-            <CInput label="Jita SELL" type="number" value={jobForm.jita_sell} onChange={setJ('jita_sell')} />
-            <CInput label="Jita BUY" type="number" value={jobForm.jita_buy} onChange={setJ('jita_buy')} />
-            <CInput label="C-J SELL" type="number" value={jobForm.cj_sell} onChange={setJ('cj_sell')} />
-            <CInput label="C-J BUY" type="number" value={jobForm.cj_buy} onChange={setJ('cj_buy')} />
+            <CInput label="Jita SELL" money value={jobForm.jita_sell} onChange={setJ('jita_sell')} />
+            <CInput label="Jita BUY" money value={jobForm.jita_buy} onChange={setJ('jita_buy')} />
+            <CInput label="C-J SELL" money value={jobForm.cj_sell} onChange={setJ('cj_sell')} />
+            <CInput label="C-J BUY" money value={jobForm.cj_buy} onChange={setJ('cj_buy')} />
             <CInput label="Code" value={jobForm.code} onChange={setJ('code')} placeholder="gud63" />
             <div style={{ gridColumn: '1 / -1' }}>
               <CLabel>Contract Code</CLabel>
@@ -1312,8 +1351,8 @@ function CalculatorTab({ sharedJob }) {
                 </button>
               </div>
             </div>
-            <CInput label="Jita SELL" type="number" value={indyForm.jita_sell} onChange={setI('jita_sell')} />
-            <CInput label="Jita BUY" type="number" value={indyForm.jita_buy} onChange={setI('jita_buy')} />
+            <CInput label="Jita SELL" money value={indyForm.jita_sell} onChange={setI('jita_sell')} />
+            <CInput label="Jita BUY" money value={indyForm.jita_buy} onChange={setI('jita_buy')} />
             <div style={{ gridColumn: '1 / -1' }}>
               <CLabel>Note</CLabel>
               <textarea value={indyForm.note} onChange={setI('note')} rows={2} />
@@ -1361,6 +1400,11 @@ function ChainTab({ sharedJob }) {
   // ── (1) Buy-price region multi-select ──
   const [selectedRegions, setSelectedRegions] = useState(new Set([10000002]))
   const [includeCJ, setIncludeCJ] = useState(false)
+  // Per-market Buy/Sell side, keyed by region id (and 'cj' for C-J6MT). A market with
+  // no entry falls back to params.price_basis. Custom group rules override the side.
+  const [regionSide, setRegionSide] = useState({ 10000002: 'buy' })
+  const [priceRules, setPriceRules] = useState([])   // [{ group, side }] — empty by default
+  const setSide = (key, side) => setRegionSide(m => ({ ...m, [key]: side }))
 
   // ── (2) Sell market for profit calculation ──
   const [sellMarket, setSellMarket] = useState('Jita')
@@ -1523,12 +1567,18 @@ function ChainTab({ sharedJob }) {
       ? { ...meTe, [product.type_id]: [Number(params.final_me) || 0, Number(params.final_te) || 0] }
       : meTe
     const activeStructures = facilityMode === 'multi' ? multiStructures : structures
+    // Per-region Buy/Sell side (default 'buy' for any unset market); custom group rules.
+    const region_sides = {}
+    for (const rid of selectedRegions) region_sides[rid] = regionSide[rid] || 'buy'
     return {
       product_type_id: product.type_id,
       qty: Number(params.qty) || 1,
       region_ids: [...selectedRegions],
       region_id: [...selectedRegions][0] || 10000002,
       price_basis: params.price_basis,
+      region_sides,
+      cj_side: includeCJ ? (regionSide.cj || 'buy') : null,
+      price_rules: priceRules.filter(r => r.group),
       include_cj: includeCJ,
       use_owned_blueprints: useBP,
       blueprint_selection: bpSel,
@@ -1576,6 +1626,13 @@ function ChainTab({ sharedJob }) {
     setProduct({ type_id: b.product_type_id, name: '' })
     if (b.qty != null) setParams(p => ({ ...p, qty: b.qty }))
     if (Array.isArray(b.region_ids) && b.region_ids.length) setSelectedRegions(new Set(b.region_ids))
+    if (b.region_sides && typeof b.region_sides === 'object') {
+      const m = { ...b.region_sides }
+      if (b.cj_side) m.cj = b.cj_side
+      setRegionSide(m)
+    }
+    if (b.include_cj != null) setIncludeCJ(!!b.include_cj)
+    if (Array.isArray(b.price_rules)) setPriceRules(b.price_rules)
     setLoading(true)
     // reuse_code keeps the SAME code on reopen instead of minting a new one
     post('/manufacturing/calculate-chain', { ...b, share_base: window.location.origin, reuse_code: decoded.code })
@@ -1762,31 +1819,17 @@ function ChainTab({ sharedJob }) {
           </div>
           <NumField label="Quantity" value={params.qty} onChange={setP('qty')} min={1} />
 
-          {/* ── (1) Buy-price regions ── */}
+          {/* ── (1) Buy-price markets: per-region Buy/Sell side + custom group rules ── */}
           <div style={{ gridColumn: '1 / -1' }}>
-            <CLabel>Buy-price regions <Hint>min price across all selected</Hint></CLabel>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 5 }}>
-              {REGIONS.map(r => (
-                <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer',
-                  color: selectedRegions.has(r.id) ? 'var(--text-white)' : 'var(--text)' }}>
-                  <input type="checkbox" checked={selectedRegions.has(r.id)} onChange={() => toggleRegion(r.id)} />
-                  {r.name}
-                </label>
-              ))}
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer',
-                color: includeCJ ? '#c8a951' : 'var(--text)' }}>
-                <input type="checkbox" checked={includeCJ} onChange={e => setIncludeCJ(e.target.checked)} />
-                C-J6MT <span style={{ fontSize: 10, color: 'var(--border2)' }}>(slow)</span>
-              </label>
-            </div>
-          </div>
-
-          <div>
-            <CLabel>Price basis</CLabel>
-            <select value={params.price_basis} onChange={setP('price_basis')}>
-              <option value="buy">Buy orders (place buy)</option>
-              <option value="sell">Sell orders (instant)</option>
-            </select>
+            <CLabel>Buy-price markets <Hint>min price across all selected; Buy/Sell side per market</Hint></CLabel>
+            <MarketSourcePanel
+              regions={REGIONS}
+              selectedRegions={selectedRegions} toggleRegion={toggleRegion}
+              regionSide={regionSide} setSide={setSide}
+              includeCJ={includeCJ} setIncludeCJ={setIncludeCJ}
+              rules={priceRules} setRules={setPriceRules}
+              groupOptions={result?.material_groups || []}
+            />
           </div>
 
           <div>
@@ -1819,7 +1862,7 @@ function ChainTab({ sharedJob }) {
                 className={`btn btn-sm ${sellMethod === 'Custom' ? 'btn-primary' : 'btn-ghost'}`}
                 style={{ padding: '2px 8px', fontSize: 11 }} title="Enter your own sell price per unit">Custom</button>
               {sellMethod === 'Custom' && (
-                <input type="number" step="0.01" min="0" value={customSell} onChange={e => setCustomSell(e.target.value)}
+                <MoneyInput value={customSell} onChange={e => setCustomSell(e.target.value)}
                   placeholder="price/unit" style={{ width: 110, padding: '2px 4px', fontSize: 11 }} />
               )}
               <span style={{ fontSize: 11, color: 'var(--text)', marginLeft: 4 }} title="Broker fee taken off the sell side">Broker</span>
@@ -3254,11 +3297,13 @@ function PctStat({ label, value }) {
   )
 }
 
-function NumField({ label, value, onChange, min, max, step = 1, placeholder }) {
+function NumField({ label, value, onChange, min, max, step = 1, placeholder, money }) {
   return (
     <div>
       <CLabel>{label}</CLabel>
-      <input type="number" value={value} onChange={onChange} min={min} max={max} step={step} placeholder={placeholder} />
+      {money
+        ? <MoneyInput value={value} onChange={onChange} placeholder={placeholder} />
+        : <input type="number" value={value} onChange={onChange} min={min} max={max} step={step} placeholder={placeholder} />}
     </div>
   )
 }
@@ -3308,11 +3353,13 @@ function PriceSourceRow({ market, setMarket, method, setMethod, onFill, loading,
   )
 }
 
-function CInput({ label, value, onChange, type = 'text', placeholder }) {
+function CInput({ label, value, onChange, type = 'text', placeholder, money }) {
   return (
     <div>
       <CLabel>{label}</CLabel>
-      <input type={type} value={value} onChange={onChange} placeholder={placeholder} />
+      {money
+        ? <MoneyInput value={value} onChange={onChange} placeholder={placeholder} />
+        : <input type={type} value={value} onChange={onChange} placeholder={placeholder} />}
     </div>
   )
 }

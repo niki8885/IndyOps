@@ -653,6 +653,7 @@ class HaulCandidate(Base):
     cj_sell = Column(Float, nullable=True)                 # C-J lowest sell order
     item_volume_m3 = Column(Float, nullable=True)
     daily_volume = Column(Float, nullable=True)            # Jita daily traded units
+    jita_buy_volume = Column(Float, nullable=True)         # units in standing Jita BUY orders (demand depth)
     best_method = Column(String(12), nullable=True)        # e.g. "sell_buy"
     profit_per_unit = Column(Float, nullable=True)
     margin_pct = Column(Float, nullable=True)              # ROI fraction of the best method

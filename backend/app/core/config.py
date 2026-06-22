@@ -84,8 +84,8 @@ TRADE_TTL_SECONDS          = int(os.getenv("TRADE_TTL_SECONDS", "900"))         
 # --- Jita → C-J6MT haul scanner (auto-discovery) ----------------------------
 # Separate from the cross-hub optimizer: a focused, bounded scan of the most
 # liquid Jita items priced against C-J (the C-J scrape is slow, so keep it small).
-TRADE_HAUL_MIN_VOLUME  = int(os.getenv("TRADE_HAUL_MIN_VOLUME", "100"))   # Jita daily-volume floor
-TRADE_HAUL_MAX_ITEMS   = int(os.getenv("TRADE_HAUL_MAX_ITEMS", "500"))    # cap (bounds the C-J scrape)
+TRADE_HAUL_MIN_VOLUME  = int(os.getenv("TRADE_HAUL_MIN_VOLUME", "50"))    # Jita daily-volume floor
+TRADE_HAUL_MAX_ITEMS   = int(os.getenv("TRADE_HAUL_MAX_ITEMS", "1000"))   # cap (bounds the C-J scrape)
 TRADE_HAUL_SHIP_M3     = float(os.getenv("TRADE_HAUL_SHIP_M3", "1200"))   # default courier ISK/m³ for ranking
 TRADE_HAUL_TTL_SECONDS = int(os.getenv("TRADE_HAUL_TTL_SECONDS", "3600")) # scanner freshness (query layer)
 

@@ -296,14 +296,19 @@ def _f(v) -> float | None:
 
 
 def _jita_prices(type_ids: list[int]) -> dict[int, dict]:
-    """Per-type Jita ``{'buy','sell'}`` from one Fuzzwork aggregate fetch (percentile→best)."""
+    """Per-type Jita ``{'buy','sell','buy_volume'}`` from one Fuzzwork aggregate fetch.
+
+    ``buy``/``sell`` are the percentile→best prices; ``buy_volume`` is the total units
+    sitting in standing Jita buy orders (the aggregate's buy ``volume``) — a demand-depth
+    proxy the scanner stores so the UI can filter out items that would stagnate."""
     agg = market.fuzzwork_aggregates_or_empty(JITA_REGION, type_ids)
     out: dict[int, dict] = {}
     for tid in type_ids:
         s = agg.get(str(tid)) or {}
         b, se = s.get("buy") or {}, s.get("sell") or {}
         out[tid] = {"buy": _f(b.get("percentile") or b.get("max")),
-                    "sell": _f(se.get("percentile") or se.get("min"))}
+                    "sell": _f(se.get("percentile") or se.get("min")),
+                    "buy_volume": _f(b.get("volume"))}
     return out
 
 
@@ -366,6 +371,7 @@ def run_haul_scan_update() -> dict:
                 "jita_buy": j.get("buy"), "jita_sell": j.get("sell"),
                 "cj_buy": c.get("buy"), "cj_sell": c.get("sell"),
                 "item_volume_m3": vol_m3, "daily_volume": dvol.get(tid),
+                "jita_buy_volume": j.get("buy_volume"),
                 "best_method": best["method"], "profit_per_unit": best["profit"],
                 "margin_pct": best["roi"], "transport_per_unit": round(ship, 2),
                 "updated_at": now,

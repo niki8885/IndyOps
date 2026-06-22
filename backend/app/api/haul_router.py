@@ -235,6 +235,7 @@ def _scan_row(r: HaulCandidate) -> dict:
         "jita_buy": r.jita_buy, "jita_sell": r.jita_sell,
         "cj_buy": r.cj_buy, "cj_sell": r.cj_sell,
         "volume_each": r.item_volume_m3, "daily_volume": r.daily_volume,
+        "jita_buy_volume": r.jita_buy_volume,
         "best_method": r.best_method, "profit_per_unit": r.profit_per_unit,
         "roi": r.margin_pct, "transport_per_unit": r.transport_per_unit,
     }
@@ -256,12 +257,13 @@ async def haul_scan(
     group: Optional[str] = Query(None, description="'drugs' → boosters (group filter, not category)"),
     meta: Optional[str] = Query(None, description="CSV of meta groups to keep: 1 T1 · 2 T2 · 4 Faction"),
     rank_by: str = Query("profit", pattern="^(profit|roi)$"),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=1000),
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Auto-discovered, precomputed profitable Jita → C-J hauls (the haul-scan worker
-    keeps it fresh). ESI-free read — ranked by per-unit profit or ROI."""
+    keeps it fresh). ESI-free read — ranked by per-unit profit or ROI. ``broker_fee`` /
+    ``sales_tax`` (fractions, the worker's defaults) let the client re-price any method."""
     group_ids = list(config.TRADE_HAUL_DRUG_GROUPS) if group == "drugs" else None
     rows = trade_repo.query_haul_candidates(
         db, min_margin=min_margin, method=method, category_id=category_id,
@@ -271,6 +273,7 @@ async def haul_scan(
     return {
         "route": "Jita → C-J6MT", "rank_by": rank_by,
         "updated_at": iso, "stale": stale,
+        "broker_fee": config.TRADE_BROKER_FEE, "sales_tax": config.TRADE_SALES_TAX,
         "methods": [{"key": k, "label": v[2]} for k, v in METHODS.items()],
         "items": [_scan_row(r) for r in rows],
         "count": len(rows),
