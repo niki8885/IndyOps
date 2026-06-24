@@ -14,7 +14,7 @@ from app.core import config
 from app.core.database import (
     get_db, SessionLocal, UserDB,
     LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob,
-    EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger, EsiBlueprintCopy,
+    EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger, EsiBlueprintCopy, EsiMarketOrder,
     CharacterWealthSnapshot, CharacterSettings, MiningTaxWriteoff, InventoryItem, ProductionJob,
 )
 from app.core.database_eve import EveSessionLocal, EveType, EveStation, EveSolarSystem, EveTypeMaterial
@@ -281,7 +281,7 @@ async def delete_character(
     char = _owned_char(db, char_id, current_user)
     cid = char.character_id
     for model in (EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract, EsiIndustryJob,
-                  EsiStanding, EsiImplant, EsiMiningLedger, EsiBlueprintCopy,
+                  EsiStanding, EsiImplant, EsiMiningLedger, EsiBlueprintCopy, EsiMarketOrder,
                   CharacterWealthSnapshot, CharacterSettings, MiningTaxWriteoff):
         db.query(model).filter(model.character_id == cid).delete(synchronize_session=False)
     db.delete(char)

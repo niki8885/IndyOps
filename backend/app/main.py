@@ -17,6 +17,7 @@ from app.api.eve_router import router as eve_router
 from app.api.analysis_router import router as analysis_router
 from app.api.market_router import router as market_router
 from app.api.tracking_router import router as tracking_router
+from app.api.account_router import router as account_router
 from app.api.simulation_router import router as simulation_router
 from app.api.characters_router import router as characters_router
 from app.api.ore_router import router as ore_router
@@ -57,6 +58,7 @@ app.include_router(eve_router, prefix="/api/v1/eve", tags=["EVE SDE"])
 app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])
 app.include_router(market_router, prefix="/api/v1/market", tags=["Market Browser"])
 app.include_router(tracking_router, prefix="/api/v1/tracking", tags=["Tracking"])
+app.include_router(account_router, prefix="/api/v1/account", tags=["Tracking"])
 app.include_router(simulation_router, prefix="/api/v1/simulation", tags=["Simulation"])
 app.include_router(characters_router, prefix="/api/v1/characters", tags=["Personal File"])
 app.include_router(ore_router, prefix="/api/v1/ore", tags=["Ore Acquisition"])

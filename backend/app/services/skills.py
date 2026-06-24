@@ -158,6 +158,24 @@ def job_slot_usage(jobs, skills: Mapping[int, int]) -> dict:
     return {cat: {"used": used[cat], "max": maxes[cat]} for cat in _SLOT_CATEGORIES}
 
 
+# ── market order slots (max concurrent buy + sell orders) ────────────────────
+SKILL_TRADE = 3443        # +4 orders / level
+SKILL_RETAIL = 3444       # +8 orders / level
+SKILL_WHOLESALE = 16596   # +16 orders / level
+SKILL_TYCOON = 18580      # +32 orders / level
+_BASE_ORDER_SLOTS = 5     # everyone starts with 5 open-order slots
+
+
+def market_order_capacity(skills: Mapping[int, int]) -> int:
+    """Max simultaneous market orders a character can have open: 5 base, +4 per Trade
+    level, +8 Retail, +16 Wholesale, +32 Tycoon. All four at V → 305 (EVE's cap)."""
+    return (_BASE_ORDER_SLOTS
+            + 4 * _lvl(skills, SKILL_TRADE)
+            + 8 * _lvl(skills, SKILL_RETAIL)
+            + 16 * _lvl(skills, SKILL_WHOLESALE)
+            + 32 * _lvl(skills, SKILL_TYCOON))
+
+
 def reprocessing_skill_mult(reprocessing_lvl: int, efficiency_lvl: int,
                             ore_specific_lvl: int = 0) -> float:
     """Multiplicative skill bonus to reprocessing yield, stacked like EVE:

@@ -12,6 +12,7 @@ import OrganisationsHub from './pages/OrganisationsHub'
 import PersonalFilePage from './pages/PersonalFilePage'
 import MarketHub from './pages/MarketHub'
 import AgendaPage from './pages/AgendaPage'
+import TrackingPage from './pages/TrackingPage'
 
 // Analysis pulls in Plotly (~4MB) — load it on demand so it can never block the
 // rest of the app and stays out of the main bundle. (The Market Browser is lazy
@@ -31,6 +32,7 @@ export default function App() {
             <Route element={<Layout />}>
               <Route index element={<Navigate to="/agenda" replace />} />
               <Route path="/agenda"        element={<AgendaPage />} />
+              <Route path="/tracking"      element={<TrackingPage />} />
               <Route path="/manufacturing" element={<ManufacturingPage />} />
               <Route path="/ore"           element={<OreAcquisitionPage />} />
               <Route path="/inventory"     element={<InventoryPage />} />

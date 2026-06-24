@@ -1054,6 +1054,52 @@ class EsiStanding(Base):
     standing = Column(Float, nullable=True)
 
 
+class EsiMarketOrder(Base):
+    """A character's *active* market orders (buy + sell), replaced each sync.
+
+    ESI /orders returns only currently-open orders, so this is a full snapshot
+    (delete-then-insert like jobs/blueprints). ``region_id`` comes straight from ESI;
+    ``location_id`` is the station or Upwell structure the order sits in."""
+    __tablename__ = "esi_market_orders"
+    __table_args__ = (UniqueConstraint("character_id", "order_id", name="uq_esi_market_order"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    order_id = Column(BigInteger, nullable=False)
+    type_id = Column(Integer, nullable=True, index=True)
+    region_id = Column(Integer, nullable=True)
+    location_id = Column(BigInteger, nullable=True)
+    is_buy_order = Column(Boolean, nullable=True)
+    price = Column(Float, nullable=True)
+    volume_total = Column(BigInteger, nullable=True)
+    volume_remain = Column(BigInteger, nullable=True)
+    min_volume = Column(BigInteger, nullable=True)
+    range = Column(String(20), nullable=True)
+    duration = Column(Integer, nullable=True)
+    escrow = Column(Float, nullable=True)            # buy orders only
+    issued = Column(DateTime, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+
+
+class BankLedgerEntry(Base):
+    """A credit to a user's in-app balance from an in-game ISK donation to the bank
+    corporation (wallet-journal ``player_donation``). Append-only and idempotent on
+    the journal ``ref_id``. Amount kept in integer Penny (1 ISK = 100 Penny) so
+    balances sum exactly (see ``services/currency.py``)."""
+    __tablename__ = "bank_ledger_entries"
+    __table_args__ = (UniqueConstraint("ref_id", name="uq_bank_ledger_ref"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    character_id = Column(Integer, nullable=True, index=True)   # the donor character
+    ref_id = Column(BigInteger, nullable=False)                 # ESI wallet-journal entry id
+    amount_penny = Column(BigInteger, nullable=False)           # positive credit, 1 ISK = 100 Penny
+    amount_isk = Column(Float, nullable=True)
+    date = Column(DateTime, nullable=True)
+    description = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=True)
+
+
 def get_db():
     db = SessionLocal()
     try:
