@@ -8,10 +8,9 @@ is driven by the ``scope`` argument (``all`` | ``char:<id>`` | ``group:<name>``)
 Competitive pricing (Price Status / Difference) and the manual resync both hit ESI,
 so they're button-triggered and rate-limited per user (see ``services/ratelimit``).
 """
-import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func
