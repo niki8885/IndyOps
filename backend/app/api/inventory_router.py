@@ -9,6 +9,7 @@ from sqlalchemy import or_
 from app.core.database_eve import EveSessionLocal, EveType
 from app.core.security import get_current_user
 from app.api.responses import ERR_400, ERR_404
+from app.services.loot import parse_lines as _parse_bulk_text
 
 router = APIRouter()
 
@@ -139,52 +140,6 @@ def _resolve_eve_type(eve_db: Session, name: str) -> EveType | None:
         EveType.type_name.ilike(name.strip())
     ).first()
     return result
-
-
-def _try_int(s: str):
-    try:
-        return int(float(s.replace(",", "").replace(" ", "")))
-    except ValueError:
-        return None
-
-
-def _parse_bulk_text(text: str) -> list[tuple[str, int, list[str]]]:
-    """
-    Parse tab-separated lines. Auto-detects two formats:
-      Name\\tQty  — e.g. "Megacyte\\t8"
-      Qty\\tName  — e.g. "8\\tMegacyte"
-    """
-    rows = []
-    for lineno, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if not line:
-            continue
-        parts = line.split("\t")
-        if len(parts) < 2:
-            rows.append(("", 0, [f"Line {lineno}: expected Name<tab>Qty or Qty<tab>Name, got: {repr(line)}"]))
-            continue
-
-        col0, col1 = parts[0].strip(), parts[1].strip()
-        qty0, qty1 = _try_int(col0), _try_int(col1)
-
-        if qty0 is not None and qty1 is None:
-            # Qty\tName
-            qty, name = qty0, col1
-        elif qty0 is None and qty1 is not None:
-            # Name\tQty
-            name, qty = col0, qty1
-        elif qty0 is not None and qty1 is not None:
-            # both numeric — treat as Qty\tName (EVE multi-buy style)
-            qty, name = qty0, col1
-        else:
-            rows.append(("", 0, [f"Line {lineno}: could not find quantity in: {repr(line)}"]))
-            continue
-
-        if qty <= 0:
-            rows.append(("", 0, [f"Line {lineno}: quantity must be positive"]))
-            continue
-        rows.append((name, qty, []))
-    return rows
 
 
 def _check_project(db: Session, project_id: int, user: UserDB) -> Projects:

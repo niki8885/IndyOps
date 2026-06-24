@@ -22,6 +22,7 @@ from app.core.database import (
     EsiBlueprintCopy,
     EsiMarketOrder,
     BankLedgerEntry,
+    EsiWalletEntry,
     CharacterWealthSnapshot,
 )
 from app.core.timeutil import utcnow
@@ -37,6 +38,15 @@ _IMPLANTS_SCOPE = "esi-clones.read_implants.v1"
 _MINING_SCOPE = "esi-industry.read_character_mining.v1"
 _BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
 _MARKET_ORDERS_SCOPE = "esi-markets.read_character_orders.v1"
+
+# Wallet-journal ref_types captured into EsiWalletEntry for the Tracking income
+# ledgers: mission rewards (main + time bonus) and ratting income (bounty + ESS).
+_INCOME_REF_TYPES = {
+    "agent_mission_reward",
+    "agent_mission_time_bonus_reward",
+    "bounty_prizes",
+    "ess_escrow_transfer",
+}
 
 # Bank corporation id (donations to it credit the in-app Aureus/Penny balance).
 # Resolved once from the configured name via ESI and cached for the process.
@@ -499,6 +509,15 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         _replace(db, EsiMarketOrder, cid, rows)
         return len(rows)
 
+    # The wallet journal feeds both the bank-donation credit and the income ledger;
+    # fetch it once per character and memoize so we don't paginate it twice.
+    _journal: dict = {}
+
+    def _get_journal():
+        if "rows" not in _journal:
+            _journal["rows"] = esi.fetch_wallet_journal(cid, token)
+        return _journal["rows"]
+
     def _bank():
         # Credit the user's Aureus/Penny balance from ISK donated to the bank corp.
         # Idempotent on the journal entry id; only outgoing donations (amount<0) count.
@@ -507,7 +526,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
             return 0
         now = utcnow()
         rows = []
-        for e in esi.fetch_wallet_journal(cid, token):
+        for e in _get_journal():
             if e.get("ref_type") != "player_donation":
                 continue
             if e.get("second_party_id") != bank_corp:
@@ -529,6 +548,31 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         _upsert(db, BankLedgerEntry, rows, ["ref_id"], [])  # do-nothing on conflict
         return len(rows)
 
+    def _income():
+        # Capture mission/bounty/ESS income from the wallet journal into the income
+        # ledger (Tracking → Mission / Ratting). Append-only, idempotent per ref_id.
+        now = utcnow()
+        rows = []
+        for e in _get_journal():
+            if e.get("ref_type") not in _INCOME_REF_TYPES:
+                continue
+            rows.append({
+                "user_id": char.user_id,
+                "character_id": cid,
+                "ref_id": e.get("id"),
+                "ref_type": e.get("ref_type"),
+                "amount": e.get("amount"),
+                "balance": e.get("balance"),
+                "date": esi.parse_dt(e.get("date")),
+                "first_party_id": e.get("first_party_id"),
+                "second_party_id": e.get("second_party_id"),
+                "description": (e.get("reason") or e.get("description") or "")[:255] or None,
+                "created_at": now,
+            })
+        rows = [r for r in rows if r["ref_id"]]
+        _upsert(db, EsiWalletEntry, rows, ["character_id", "ref_id"], [])  # do-nothing on conflict
+        return len(rows)
+
     step("affiliation", _affiliation)
     step("wallet", _wallet)
     step("skills", _skills)
@@ -542,6 +586,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("blueprints", _blueprints)
     step("market_orders", _orders)
     step("bank_donations", _bank)
+    step("wallet_income", _income)   # mission/bounty/ESS income (shares the journal fetch)
     step("structures", _structures)  # after blueprints: resolves their location ids too
     step("wealth", _wealth)
 
