@@ -244,7 +244,7 @@ contains
         end do
         do j = 1, k + 1; fv(j) = objective(simplex(:, j), k);
         end do
-        do it = 1, iter
+        do it = 1, iters
             lo = 1; hi = 1
             do j = 2, k + 1
                 if (fv(j) < fv(lo)) lo = j
