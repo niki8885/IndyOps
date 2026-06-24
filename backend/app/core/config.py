@@ -50,6 +50,9 @@ ESI_SCOPES = [
     # owned blueprints (BPOs/BPCs with ME/TE/runs) → Personal File Blueprints tab +
     # chain "what do I own / what's missing" report. New scope → characters re-link once.
     "esi-characters.read_blueprints.v1",
+    # active market orders (buy/sell) → Tracking → Orders + the account dashboard.
+    # New scope → characters must re-link once; orders stay empty until granted.
+    "esi-markets.read_character_orders.v1",
 ]
 
 ESI_USER_AGENT = os.getenv(
@@ -125,3 +128,11 @@ TRADE_PORTFOLIO_MIN_SIGMA     = float(os.getenv("TRADE_PORTFOLIO_MIN_SIGMA", "0.
 TRADE_CATEGORY_ALLOWLIST = {
     int(x) for x in os.getenv("TRADE_CATEGORY_ALLOWLIST", "6,7,8,18,87").split(",") if x.strip()
 }
+
+# --- Bank currency (Aureus / Penny) -----------------------------------------
+# Players fund their in-app balance by donating ISK in-game to this corporation
+# (wallet-journal ref_type 'player_donation'). Conversion: 1 ISK = 1 Aureus,
+# 0.01 ISK = 1 Penny (100 Penny = 1 Aureus). If BANK_CORP_ID isn't set it's
+# resolved once from the name via ESI /universe/ids/ and cached for the run.
+BANK_CORP_NAME = os.getenv("BANK_CORP_NAME", "Miners and Merchants Bank")
+BANK_CORP_ID = int(os.getenv("BANK_CORP_ID", "0")) or None

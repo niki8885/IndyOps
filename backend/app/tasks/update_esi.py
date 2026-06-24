@@ -6,6 +6,7 @@ import requests
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.adapters import esi
+from app.core import config
 from app.core.database import (
     SessionLocal,
     LinkedCharacter,
@@ -19,10 +20,12 @@ from app.core.database import (
     EsiImplant,
     EsiMiningLedger,
     EsiBlueprintCopy,
+    EsiMarketOrder,
+    BankLedgerEntry,
     CharacterWealthSnapshot,
 )
 from app.core.timeutil import utcnow
-from app.services import asset_location
+from app.services import asset_location, currency
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,30 @@ _ONLINE_SCOPE = "esi-location.read_online.v1"
 _IMPLANTS_SCOPE = "esi-clones.read_implants.v1"
 _MINING_SCOPE = "esi-industry.read_character_mining.v1"
 _BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
+_MARKET_ORDERS_SCOPE = "esi-markets.read_character_orders.v1"
+
+# Bank corporation id (donations to it credit the in-app Aureus/Penny balance).
+# Resolved once from the configured name via ESI and cached for the process.
+_bank_corp_cache: dict = {"id": None}
+
+
+def _bank_corp_id():
+    """The bank corporation id — from config, else resolved by name (cached).
+    Returns None (without caching) on a transient resolve failure, so a later sync
+    retries."""
+    if config.BANK_CORP_ID:
+        return config.BANK_CORP_ID
+    if _bank_corp_cache["id"]:
+        return _bank_corp_cache["id"]
+    try:
+        corps = (esi.resolve_ids([config.BANK_CORP_NAME]) or {}).get("corporations") or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("bank corp '%s' resolve failed: %s", config.BANK_CORP_NAME, exc)
+        return None
+    cid = corps[0].get("id") if corps else None
+    if cid:
+        _bank_corp_cache["id"] = cid
+    return cid
 _STRUCTURE_NAME_TTL = datetime.timedelta(days=7)     # names rarely change
 _STRUCTURE_RETRY_TTL = datetime.timedelta(hours=6)   # back off after a 403/404
 
@@ -199,6 +226,26 @@ def _map_job(cid, j):
         "station_id": j.get("station_id"),
         "cost": j.get("cost"),
         "probability": j.get("probability"),
+    }
+
+
+def _map_market_order(cid, o, now):
+    return {
+        "character_id": cid,
+        "order_id": o.get("order_id"),
+        "type_id": o.get("type_id"),
+        "region_id": o.get("region_id"),
+        "location_id": o.get("location_id"),
+        "is_buy_order": bool(o.get("is_buy_order")),
+        "price": o.get("price"),
+        "volume_total": o.get("volume_total"),
+        "volume_remain": o.get("volume_remain"),
+        "min_volume": o.get("min_volume"),
+        "range": o.get("range"),
+        "duration": o.get("duration"),
+        "escrow": o.get("escrow"),
+        "issued": esi.parse_dt(o.get("issued")),
+        "synced_at": now,
     }
 
 
@@ -441,6 +488,47 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         _replace(db, EsiBlueprintCopy, cid, rows)
         return len(rows)
 
+    def _orders():
+        # needs the read_character_orders scope — no-op until the character re-links.
+        # Active orders are a full snapshot, so replace the character's set.
+        if not _has_scope(char, _MARKET_ORDERS_SCOPE):
+            return 0
+        now = utcnow()
+        rows = [_map_market_order(cid, o, now) for o in esi.fetch_market_orders(cid, token)]
+        rows = [r for r in rows if r["order_id"]]
+        _replace(db, EsiMarketOrder, cid, rows)
+        return len(rows)
+
+    def _bank():
+        # Credit the user's Aureus/Penny balance from ISK donated to the bank corp.
+        # Idempotent on the journal entry id; only outgoing donations (amount<0) count.
+        bank_corp = _bank_corp_id()
+        if not bank_corp:
+            return 0
+        now = utcnow()
+        rows = []
+        for e in esi.fetch_wallet_journal(cid, token):
+            if e.get("ref_type") != "player_donation":
+                continue
+            if e.get("second_party_id") != bank_corp:
+                continue
+            amount = e.get("amount") or 0
+            if amount >= 0:
+                continue  # money leaving the donor's wallet is negative
+            rows.append({
+                "user_id": char.user_id,
+                "character_id": cid,
+                "ref_id": e.get("id"),
+                "amount_penny": currency.isk_to_penny(abs(amount)),
+                "amount_isk": abs(amount),
+                "date": esi.parse_dt(e.get("date")),
+                "description": (e.get("reason") or e.get("description") or "")[:255] or None,
+                "created_at": now,
+            })
+        rows = [r for r in rows if r["ref_id"]]
+        _upsert(db, BankLedgerEntry, rows, ["ref_id"], [])  # do-nothing on conflict
+        return len(rows)
+
     step("affiliation", _affiliation)
     step("wallet", _wallet)
     step("skills", _skills)
@@ -452,6 +540,8 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("industry_jobs", _jobs)
     step("standings", _standings)
     step("blueprints", _blueprints)
+    step("market_orders", _orders)
+    step("bank_donations", _bank)
     step("structures", _structures)  # after blueprints: resolves their location ids too
     step("wealth", _wealth)
 

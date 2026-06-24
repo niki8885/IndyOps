@@ -6,6 +6,7 @@ import { get, post } from '../api/client'
 
 const NAV = [
   { to: '/agenda',        label: 'Agenda'         },
+  { to: '/tracking',      label: 'Tracking'       },
   { to: '/manufacturing', label: 'Manufacturing'  },
   { to: '/ore',           label: 'Ore & Refining' },
   { to: '/inventory',     label: 'Inventory'      },

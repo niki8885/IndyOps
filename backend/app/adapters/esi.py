@@ -323,3 +323,35 @@ def fetch_blueprints(character_id: int, token: str) -> list:
     quantity, runs, material_efficiency, time_efficiency}]``. ``runs == -1`` and
     ``quantity == -1`` mark a BPO (original); ``quantity == -2`` marks a BPC (copy)."""
     return _esi_get(f"/characters/{character_id}/blueprints/", token, paginate=True)
+
+
+def fetch_market_orders(character_id: int, token: str) -> list:
+    """Character's currently-open market orders (buy + sell). Active only — closed
+    orders are not returned. Each carries: order_id, type_id, region_id, location_id,
+    range, is_buy_order, price, volume_total, volume_remain, min_volume, duration,
+    issued, escrow."""
+    return _esi_get(f"/characters/{character_id}/orders/", token)
+
+
+def fetch_wallet_journal(character_id: int, token: str) -> list:
+    """Wallet journal (income/expense events incl. ``player_donation``). Paginated.
+    Each entry carries: id, ref_type, amount, balance, date, first_party_id,
+    second_party_id, reason/description."""
+    return _esi_get(f"/characters/{character_id}/wallet/journal/", token, paginate=True)
+
+
+def resolve_ids(names: list) -> dict:
+    """Bulk-resolve names → ids by category via /universe/ids/ (public, no auth).
+    Returns the raw payload keyed by category, e.g.
+    ``{"corporations": [{"id": ..., "name": ...}], ...}``."""
+    names = [n for n in names if n]
+    if not names:
+        return {}
+    resp = _session.post(
+        f"{config.ESI_BASE_URL}/universe/ids/",
+        params={"datasource": "tranquility"},
+        json=names,
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()

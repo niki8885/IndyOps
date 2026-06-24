@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import (
     Base, LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract,
     EsiIndustryJob, EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger,
-    EsiBlueprintCopy, CharacterWealthSnapshot,
+    EsiBlueprintCopy, EsiMarketOrder, BankLedgerEntry, CharacterWealthSnapshot,
 )
 from app.tasks import update_esi as ue
 
@@ -32,7 +32,7 @@ CID = 90000001
 _ESI_TABLES = [
     LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract,
     EsiIndustryJob, EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger,
-    EsiBlueprintCopy, CharacterWealthSnapshot,
+    EsiBlueprintCopy, EsiMarketOrder, BankLedgerEntry, CharacterWealthSnapshot,
 ]
 
 # every scope the task gates on, so the optional endpoints all run
@@ -58,12 +58,14 @@ def db():
 
 @pytest.fixture(autouse=True)
 def _reset_price_cache():
-    # the module-level price cache leaks across tests otherwise
+    # the module-level price + bank-corp caches leak across tests otherwise
     ue._price_cache["prices"] = None
     ue._price_cache["ts"] = None
+    ue._bank_corp_cache["id"] = None
     yield
     ue._price_cache["prices"] = None
     ue._price_cache["ts"] = None
+    ue._bank_corp_cache["id"] = None
 
 
 def _seed_char(db, scopes=_ALL_SCOPES, **kw):
@@ -100,6 +102,9 @@ def _patch_all_esi(monkeypatch, **overrides):
         "fetch_industry_jobs": lambda cid, tok: [],
         "fetch_standings": lambda cid, tok: [],
         "fetch_market_prices": lambda: [],
+        "fetch_market_orders": lambda cid, tok: [],
+        "fetch_wallet_journal": lambda cid, tok: [],
+        "resolve_ids": lambda names: {},   # bank corp can't be resolved → bank step no-ops
     }
     defaults.update(overrides)
     for name, fn in defaults.items():
@@ -326,6 +331,10 @@ def test_sync_character_success(monkeypatch, db):
     assert counts["industry_jobs"] == 1
     assert counts["standings"] == 1
     assert counts["wealth"] == 1
+    # market orders are scope-gated (not granted here) and the bank corp can't be
+    # resolved in the test, so both new steps no-op without erroring
+    assert counts["market_orders"] == 0
+    assert counts["bank_donations"] == 0
 
     # persisted rows
     assert db.query(EsiWalletTransaction).count() == 1
@@ -352,6 +361,51 @@ def test_sync_character_success(monkeypatch, db):
     assert wealth.liquid == pytest.approx(1_000_000.0)
     assert wealth.total == pytest.approx(1_000_600.0)
     assert char.assets_value == pytest.approx(600.0)
+
+
+# ── sync_character — market orders + bank donations ───────────────────────────
+
+def test_sync_character_market_orders(monkeypatch, db):
+    char = _seed_char(db, scopes=ue._MARKET_ORDERS_SCOPE)
+    _patch_token(monkeypatch)
+    _patch_all_esi(monkeypatch, fetch_market_orders=lambda cid, tok: [
+        {"order_id": 1, "type_id": 34, "region_id": 10000002, "location_id": 60003760,
+         "is_buy_order": False, "price": 5.5, "volume_total": 100, "volume_remain": 40,
+         "min_volume": 1, "range": "region", "duration": 90, "issued": "2026-06-20T12:00:00Z"},
+    ])
+    summary = ue.sync_character(db, char)
+    assert summary["counts"]["market_orders"] == 1
+    o = db.query(EsiMarketOrder).one()
+    assert o.order_id == 1 and o.is_buy_order is False and o.price == pytest.approx(5.5)
+    assert o.volume_remain == 40 and o.region_id == 10000002
+
+
+def test_sync_character_bank_donation_credits_and_is_idempotent(monkeypatch, db):
+    char = _seed_char(db, scopes="")
+    _patch_token(monkeypatch)
+    _patch_all_esi(
+        monkeypatch,
+        resolve_ids=lambda names: {"corporations": [{"id": 98000001, "name": "Miners and Merchants Bank"}]},
+        fetch_wallet_journal=lambda cid, tok: [
+            {"id": 777, "ref_type": "player_donation", "second_party_id": 98000001,
+             "amount": -1000.11, "date": "2026-06-24T15:19:00Z", "reason": "deposit"},
+            {"id": 778, "ref_type": "player_donation", "second_party_id": 12345,   # different corp
+             "amount": -500.0, "date": "2026-06-24T15:20:00Z"},
+            {"id": 779, "ref_type": "bounty_prizes", "second_party_id": 98000001,  # not a donation
+             "amount": -10.0, "date": "2026-06-24T15:21:00Z"},
+            {"id": 780, "ref_type": "player_donation", "second_party_id": 98000001,  # incoming, not a deposit
+             "amount": 99.0, "date": "2026-06-24T15:22:00Z"},
+        ],
+    )
+    summary = ue.sync_character(db, char)
+    assert summary["counts"]["bank_donations"] == 1
+    entry = db.query(BankLedgerEntry).one()
+    assert entry.ref_id == 777 and entry.amount_penny == 100011   # 1,000.11 ISK
+    assert entry.user_id == 1 and entry.character_id == CID
+
+    # a second sync must not double-credit the same journal entry
+    ue.sync_character(db, char)
+    assert db.query(BankLedgerEntry).count() == 1
 
 
 # ── sync_character — scope gating ─────────────────────────────────────────────
