@@ -28,3 +28,21 @@ export function timeUntil(iso) {
   if (h > 0) return `${h}h ${m}m`
   return `${m}m`
 }
+
+// Short calendar date from an ISO timestamp (e.g. "2026-06-24").
+export function fmtDate(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '—' : d.toISOString().slice(0, 10)
+}
+
+// Human duration from a number of seconds (e.g. "3d 4h", "12h 5m", "45m").
+export function fmtDuration(seconds) {
+  if (seconds == null) return '—'
+  const s = Math.floor(seconds)
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m`
+  return `${s}s`
+}

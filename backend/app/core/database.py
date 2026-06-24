@@ -1100,6 +1100,92 @@ class BankLedgerEntry(Base):
     created_at = Column(DateTime, nullable=True)
 
 
+class EsiWalletEntry(Base):
+    """Income wallet-journal entries we care about for the Tracking income ledgers
+    (Mission rewards + Ratting bounty/ESS). Captured during the ESI sync from the
+    wallet journal — only the ``ref_type``s in ``update_esi._INCOME_REF_TYPES`` are
+    stored, so the table stays bounded. Append-only / idempotent on the journal
+    ``ref_id`` (per character). ESI keeps ~30 days of journal, so history accumulates
+    forward from the first sync."""
+    __tablename__ = "esi_wallet_entries"
+    __table_args__ = (UniqueConstraint("character_id", "ref_id", name="uq_esi_wallet_entry"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    ref_id = Column(BigInteger, nullable=False)              # ESI wallet-journal entry id
+    ref_type = Column(String(40), nullable=True, index=True)  # agent_mission_reward, bounty_prizes, …
+    amount = Column(Float, nullable=True)                    # ISK (positive = income)
+    balance = Column(Float, nullable=True)                   # wallet balance after the entry
+    date = Column(DateTime, nullable=True, index=True)
+    first_party_id = Column(Integer, nullable=True)          # agent (missions) / NPC (bounties)
+    second_party_id = Column(Integer, nullable=True)
+    description = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=True)
+
+
+class ContractAnnotation(Base):
+    """A user's private tags + note for one contract (Deliverly courier tracker).
+
+    ``EsiContract`` is ESI-synced and shared, so user annotations live here, keyed by
+    (user_id, contract_id). ``tags`` is a comma-separated free-text list."""
+    __tablename__ = "contract_annotations"
+    __table_args__ = (UniqueConstraint("user_id", "contract_id", name="uq_contract_annotation"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    contract_id = Column(BigInteger, nullable=False, index=True)
+    tags = Column(String(255), nullable=True)
+    note = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class CourierRouteCache(Base):
+    """Cached gate-jump count between a courier contract's start/end location, so the
+    ESI /route call is made at most once per route (routes are static). Keyed by the
+    (start_location_id, end_location_id) pair."""
+    __tablename__ = "courier_route_cache"
+    __table_args__ = (UniqueConstraint("start_location_id", "end_location_id", name="uq_courier_route"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    start_location_id = Column(BigInteger, nullable=False)
+    end_location_id = Column(BigInteger, nullable=False)
+    start_system_id = Column(Integer, nullable=True)
+    end_system_id = Column(Integer, nullable=True)
+    jumps = Column(Integer, nullable=True)
+    computed_at = Column(DateTime, nullable=True)
+
+
+class LootAppraisal(Base):
+    """A saved, ISK-valued loot paste tied to the Ratting income tracker. ``value_isk``
+    is a snapshot taken at parse time; ``items_json`` keeps the parsed line items."""
+    __tablename__ = "loot_appraisals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    character_id = Column(Integer, nullable=True)
+    date = Column(DateTime, nullable=True, index=True)
+    title = Column(String(120), nullable=True)
+    tags = Column(String(255), nullable=True)
+    raw_text = Column(Text, nullable=True)
+    pricing = Column(String(20), nullable=True)             # jita_sell | jita_buy
+    value_isk = Column(Float, nullable=True)
+    items_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+
+
+class EsiNameCache(Base):
+    """Cache of resolved EVE ids → name/category (via /universe/names/), used for
+    mission agent names and contract counterparties so name lookups don't hit ESI on
+    every page load."""
+    __tablename__ = "esi_name_cache"
+
+    id = Column(BigInteger, primary_key=True)   # the EVE id
+    name = Column(String(255), nullable=True)
+    category = Column(String(40), nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
 def get_db():
     db = SessionLocal()
     try:

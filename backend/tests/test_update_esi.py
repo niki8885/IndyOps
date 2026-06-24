@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import (
     Base, LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract,
     EsiIndustryJob, EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger,
-    EsiBlueprintCopy, EsiMarketOrder, BankLedgerEntry, CharacterWealthSnapshot,
+    EsiBlueprintCopy, EsiMarketOrder, BankLedgerEntry, EsiWalletEntry, CharacterWealthSnapshot,
 )
 from app.tasks import update_esi as ue
 
@@ -32,7 +32,7 @@ CID = 90000001
 _ESI_TABLES = [
     LinkedCharacter, EsiWalletTransaction, EsiSkill, EsiAsset, EsiContract,
     EsiIndustryJob, EsiStanding, EsiStructure, EsiImplant, EsiMiningLedger,
-    EsiBlueprintCopy, EsiMarketOrder, BankLedgerEntry, CharacterWealthSnapshot,
+    EsiBlueprintCopy, EsiMarketOrder, BankLedgerEntry, EsiWalletEntry, CharacterWealthSnapshot,
 ]
 
 # every scope the task gates on, so the optional endpoints all run
@@ -406,6 +406,38 @@ def test_sync_character_bank_donation_credits_and_is_idempotent(monkeypatch, db)
     # a second sync must not double-credit the same journal entry
     ue.sync_character(db, char)
     assert db.query(BankLedgerEntry).count() == 1
+
+
+def test_sync_character_captures_income_and_is_idempotent(monkeypatch, db):
+    char = _seed_char(db, scopes="")
+    _patch_token(monkeypatch)
+    _patch_all_esi(
+        monkeypatch,
+        fetch_wallet_journal=lambda cid, tok: [
+            {"id": 1, "ref_type": "agent_mission_reward", "amount": 500000.0,
+             "first_party_id": 3019582, "date": "2026-06-24T15:19:00Z"},
+            {"id": 2, "ref_type": "agent_mission_time_bonus_reward", "amount": 250000.0,
+             "first_party_id": 3019582, "date": "2026-06-24T15:19:05Z"},
+            {"id": 3, "ref_type": "bounty_prizes", "amount": 1_200_000.0,
+             "date": "2026-06-24T16:00:00Z"},
+            {"id": 4, "ref_type": "ess_escrow_transfer", "amount": 800_000.0,
+             "date": "2026-06-24T16:30:00Z"},
+            {"id": 5, "ref_type": "market_transaction", "amount": -42.0,   # ignored ref_type
+             "date": "2026-06-24T17:00:00Z"},
+        ],
+    )
+    summary = ue.sync_character(db, char)
+    assert summary["counts"]["wallet_income"] == 4   # the 5th (market_transaction) is ignored
+
+    rows = db.query(EsiWalletEntry).all()
+    assert {r.ref_type for r in rows} == set(ue._INCOME_REF_TYPES)
+    mission = next(r for r in rows if r.ref_type == "agent_mission_reward")
+    assert mission.amount == pytest.approx(500000.0) and mission.first_party_id == 3019582
+    assert mission.user_id == 1 and mission.character_id == CID
+
+    # a second sync must not duplicate the same journal entries
+    ue.sync_character(db, char)
+    assert db.query(EsiWalletEntry).count() == 4
 
 
 # ── sync_character — scope gating ─────────────────────────────────────────────
