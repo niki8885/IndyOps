@@ -55,28 +55,36 @@ COPY backend/migrations/ migrations/
 COPY --from=chain-builder /out/chain-engine /usr/local/bin/chain-engine
 ENV CHAIN_ENGINE_BIN=/usr/local/bin/chain-engine
 
-# Native analytics engine (indicators / risk / Monte-Carlo). Same fallback
+# Native analytics engine (indicators / risk / Monte-Carlo).
 # contract: the adapter prefers it via ANALYTICS_ENGINE_BIN, else pure Python.
 COPY --from=analytics-builder /build/analytics-engine/bin/analytics-engine /usr/local/bin/analytics-engine
 ENV ANALYTICS_ENGINE_BIN=/usr/local/bin/analytics-engine
 
-# Native Monte-Carlo profit simulator (IO-22), built from the same Fortran project.
+# Native Monte-Carlo profit simulator.
 COPY --from=analytics-builder /build/analytics-engine/bin/profit-sim /usr/local/bin/profit-sim
 ENV PROFIT_SIM_BIN=/usr/local/bin/profit-sim
 
-# Native Scenario Simulation engine (IO-23), built from the same Fortran project.
+# Native Scenario Simulation engine.
 COPY --from=analytics-builder /build/analytics-engine/bin/scenario-sim /usr/local/bin/scenario-sim
 ENV SCENARIO_SIM_BIN=/usr/local/bin/scenario-sim
 
-# Native Markowitz portfolio optimiser (trade haul planner), same Fortran project.
+# Native Markowitz portfolio optimiser (trade haul planner).
 COPY --from=analytics-builder /build/analytics-engine/bin/portfolio-opt /usr/local/bin/portfolio-opt
 ENV PORTFOLIO_OPT_BIN=/usr/local/bin/portfolio-opt
+
+# Native demand-metrics engine.
+COPY --from=analytics-builder /build/analytics-engine/bin/demand-engine /usr/local/bin/demand-engine
+ENV DEMAND_ENGINE_BIN=/usr/local/bin/demand-engine
+
+# Native forecast engine (SARIMA/Holt-Winters/Croston/ARIMA panel).
+COPY --from=analytics-builder /build/analytics-engine/bin/forecast-engine /usr/local/bin/forecast-engine
+ENV FORECAST_ENGINE_BIN=/usr/local/bin/forecast-engine
 
 # Native risk-scoring / strategy-ranking engine (Haskell). Falls back to Python.
 COPY --from=risk-builder /out/risk-engine /usr/local/bin/risk-engine
 ENV RISK_ENGINE_BIN=/usr/local/bin/risk-engine
 
-# Native invention optimizer (IO-12, Haskell). Falls back to Python.
+# Native invention optimizer. Falls back to Python.
 COPY --from=invention-builder /out/invention-optimizer /usr/local/bin/invention-optimizer
 ENV INVENTION_OPTIMIZER_BIN=/usr/local/bin/invention-optimizer
 

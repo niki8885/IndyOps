@@ -13,12 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.adapters import market
+from app.adapters import demand_engine, forecast_engine, market
 from app.api.responses import ERR_404
 from app.core.database import get_db, UserDB
 from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
-from app.repositories import cache_repo, eve_market
+from app.repositories import cache_repo, eve_market, forecast_repo
 from app.services import market_browser
 
 router = APIRouter()
@@ -129,6 +129,71 @@ async def history(
         rows, type_id, label, eve_market.region_name(eve_db, region_id), win)
     payload["region_id"] = region_id
     cache_repo.set_cached(db, "market", cache_key, win, payload)
+    return payload
+
+
+@router.get("/demand")
+async def demand(
+        region_id: int = Query(...),
+        type_id: int = Query(...),
+        current_user: UserDB = Depends(get_current_user),
+        eve_db: Session = Depends(_get_eve_db),
+):
+    """Demand analytics: throughput, trend, seasonality + live order-book pressure.
+
+    Not DB-cached — the order-book half must stay live; the underlying ESI
+    history/orders fetches are already memoised in the market adapter.
+    """
+    rows = market.esi_region_history_full(region_id, type_id)
+    info = eve_market.type_info(eve_db, type_id)
+    label = info["type_name"] if info else str(type_id)
+    region_name = eve_market.region_name(eve_db, region_id)
+    if not rows:
+        return {"type_id": type_id, "label": label, "region_id": region_id,
+                "region_name": region_name, "empty": True}
+
+    book = market_browser.build_orderbook(market.esi_region_orders(region_id, type_id))
+    payload, engine = demand_engine.compute(rows, type_id, label, region_name, book)
+    payload["region_id"] = region_id
+    payload["engine"] = engine
+    return payload
+
+
+_FORECAST_TTL = 12 * 3600   # precompute runs every 6h; serve cached within 12h
+
+
+@router.get("/forecast")
+async def forecast(
+        region_id: int = Query(...),
+        type_id: int = Query(...),
+        horizon: int = Query(30, ge=1, le=90),
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+        eve_db: Session = Depends(_get_eve_db),
+):
+    """Volume + price forecast with P10/P50/P90 bands, backtest metrics and a signal.
+
+    Serves the precomputed ``market_forecasts`` row when fresh (the worker warms the
+    liquid universe at the default horizon); otherwise computes on demand via the
+    native forecast-engine (SARIMA/Holt-Winters/Croston panel) with a Python fallback.
+    """
+    cached = forecast_repo.get_forecast(db, region_id, type_id, horizon, max_age_seconds=_FORECAST_TTL)
+    if cached is not None:
+        cached["region_id"] = region_id
+        cached["engine"] = "cached"
+        return cached
+
+    info = eve_market.type_info(eve_db, type_id)
+    label = info["type_name"] if info else str(type_id)
+    region_name = eve_market.region_name(eve_db, region_id)
+    rows = market.esi_region_history_full(region_id, type_id)
+    if not rows or len(rows) < 30:
+        return {"type_id": type_id, "label": label, "region_id": region_id,
+                "region_name": region_name, "empty": True}
+
+    payload, engine = forecast_engine.compute(rows, type_id, label, region_name, horizon)
+    payload["region_id"] = region_id
+    payload["engine"] = engine
     return payload
 
 

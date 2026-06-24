@@ -15,7 +15,7 @@ const HUBS = [
   { region_id: 10000042, region_name: 'Metropolis' },
 ]
 
-const TABS = ['Orders', 'Order Book', 'History', 'Group Analysis', 'Prediction']
+const TABS = ['Orders', 'Order Book', 'History', 'Group Analysis', 'Demand', 'Prediction']
 
 export default function MarketPage() {
   const [region, setRegion] = useState(HUBS[0])     // default Jita / The Forge
@@ -98,7 +98,8 @@ export default function MarketPage() {
               {tab === 1 && <OrderBookTab regionId={region.region_id} typeId={item.type_id} />}
               {tab === 2 && <HistoryTab regionId={region.region_id} typeId={item.type_id} />}
               {tab === 3 && <GroupTab regionId={region.region_id} typeId={item.type_id} itemName={item.name} />}
-              {tab === 4 && <PredictionTab itemName={item.name} />}
+              {tab === 4 && <DemandTab regionId={region.region_id} typeId={item.type_id} itemName={item.name} />}
+              {tab === 5 && <PredictionTab regionId={region.region_id} typeId={item.type_id} />}
             </>
           )}
         </div>
@@ -534,34 +535,315 @@ function CorrBar({ v }) {
   )
 }
 
-/* ════════════════════════════ 5 · PREDICTION (stub) ════════════════════════════ */
+/* ════════════════════════════ 5 · DEMAND ════════════════════════════ */
 
-function PredictionTab({ itemName }) {
+function DemandTab({ regionId, typeId }) {
+  const [d, setD] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+
+  async function load() {
+    setLoading(true); setErr('')
+    try { setD(await get(`/market/demand?region_id=${regionId}&type_id=${typeId}`)) }
+    catch (e) { setErr(e.message); setD(null) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [regionId, typeId])
+
+  if (loading) return <div className="empty-state">Computing demand…</div>
+  if (err) return <div className="error-box">{err}</div>
+  if (!d || d.empty) return <div className="empty-state">No ESI history for this item in this region.</div>
+  if (!Plot) return <div className="error-box">Charting library failed to load. Hard-refresh (Ctrl+F5).</div>
+
+  const ts = d.timestamps || []
+  const s = d.series || {}
+  const st = d.stats || {}
+  const trendCol = st.trend_slope == null ? C.text : st.trend_slope >= 0 ? C.green : C.red
+  const momCol = st.momentum == null ? C.text : st.momentum >= 1 ? C.green : C.red
+
   return (
     <div>
-      <div className="warning-box">
-        🔮 Price-prediction model for <b>{itemName}</b> is in development.
+      <StatGrid stats={[
+        { label: 'ADV 7d', value: fmtNum(st.adv7), color: C.accent },
+        { label: 'ADV 30d', value: fmtNum(st.adv30) },
+        { label: 'ADV 90d', value: fmtNum(st.adv90) },
+        { label: 'Median 30d', value: fmtNum(st.median30) },
+        { label: 'ISK / day', value: fmtIsk(st.isk_per_day), color: C.blue },
+        { label: 'Momentum 7/30', value: st.momentum == null ? '—' : st.momentum.toFixed(2) + '×', color: momCol },
+        { label: 'Trend / day', value: st.trend_slope == null ? '—' : `${st.trend_slope >= 0 ? '+' : ''}${(st.trend_slope * 100).toFixed(1)}%`, color: trendCol },
+        { label: '30d Δ', value: st.trend_pct_30 == null ? '—' : `${st.trend_pct_30 >= 0 ? '+' : ''}${(st.trend_pct_30 * 100).toFixed(0)}%`, color: st.trend_pct_30 >= 0 ? C.green : C.red },
+        { label: 'Active days', value: st.active_days_ratio == null ? '—' : (st.active_days_ratio * 100).toFixed(0) + '%' },
+        { label: 'Volume CV', value: st.volume_cv == null ? '—' : st.volume_cv.toFixed(2) },
+        { label: 'Avg orders', value: fmtNum(st.avg_order_count) },
+        { label: 'Days', value: st.points },
+      ]} />
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '4px 0 10px' }}>
+        <button className="btn btn-ghost btn-sm" onClick={load}>⟳ Refresh</button>
       </div>
-      <div className="card" style={{ padding: 24 }}>
-        <div style={{ fontSize: 13, color: 'var(--text-bright)', lineHeight: 1.8 }}>
-          Planned forecasting stack (forthcoming):
-          <ul style={{ margin: '10px 0 0 18px', color: 'var(--text)' }}>
-            <li><b style={{ color: 'var(--text-white)' }}>Statistical baseline</b> — SARIMA / Holt-Winters on the daily price &amp; volume series.</li>
-            <li><b style={{ color: 'var(--text-white)' }}>ML model</b> — gradient-boosted / LSTM forecaster using indicators (RSI, MACD, volatility) and cross-commodity features.</li>
-            <li><b style={{ color: 'var(--text-white)' }}>Confidence bands</b> — backtested prediction intervals with directional accuracy &amp; error (MAPE / RMSE).</li>
-            <li><b style={{ color: 'var(--text-white)' }}>Signal</b> — buy / hold / sell suggestion with horizon selection (7 / 30 / 90 days).</li>
-          </ul>
-        </div>
-        <div style={{ marginTop: 20, opacity: 0.5, pointerEvents: 'none' }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn btn-primary btn-sm" disabled>Forecast 30 days</button>
-            <select disabled style={{ width: 160 }}><option>SARIMA</option></select>
-            <span style={{ fontSize: 12, color: 'var(--text)' }}>(disabled)</span>
-          </div>
-        </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Panel title="Demand score (heuristic)"><DemandScore score={d.score || {}} /></Panel>
+        <Panel title="Order-book pressure (live)"><BookPressure book={d.book || {}} /></Panel>
+      </div>
+
+      <Panel title="Daily volume · 7d MA · trend">
+        <Plot
+          data={[
+            { x: ts, y: s.volume, type: 'bar', name: 'Volume', marker: { color: 'rgba(58,155,214,0.45)' } },
+            { x: ts, y: s.volume_ma7, name: '7d MA', mode: 'lines', line: { color: C.white, width: 1.6 } },
+            { x: ts, y: s.trend_line, name: 'Trend', mode: 'lines', line: { color: C.accent, width: 1.3, dash: 'dash' } },
+          ]}
+          layout={baseLayout({ height: 320, yaxis: { gridcolor: C.grid, tickformat: '.3s' } })}
+          config={cfg} style={{ width: '100%' }} useResizeHandler
+        />
+      </Panel>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Panel title="ISK turnover / day">
+          <Plot data={[{ x: ts, y: s.isk_turnover, type: 'bar', name: 'ISK', marker: { color: 'rgba(200,169,81,0.5)' } }]}
+            layout={baseLayout({ height: 240, showlegend: false, yaxis: { gridcolor: C.grid, tickformat: '.3s' } })}
+            config={cfg} style={{ width: '100%' }} useResizeHandler />
+        </Panel>
+        <Panel title={`Volume by weekday${d.weekend_lift != null ? ` · weekend ${d.weekend_lift.toFixed(2)}×` : ''}`}>
+          <Plot data={[{ x: WEEKDAYS, y: d.weekday_volume, type: 'bar', marker: { color: WEEKDAYS.map((_, i) => i >= 5 ? 'rgba(224,82,82,0.55)' : 'rgba(76,175,125,0.5)') } }]}
+            layout={baseLayout({ height: 240, showlegend: false, yaxis: { gridcolor: C.grid, tickformat: '.3s' } })}
+            config={cfg} style={{ width: '100%' }} useResizeHandler />
+        </Panel>
       </div>
     </div>
   )
+}
+
+function DemandScore({ score }) {
+  const total = score.total
+  const col = total == null ? C.text : total >= 66 ? C.green : total >= 33 ? C.accent : C.red
+  const comps = [
+    { label: 'Liquidity (ISK/day)', v: score.liquidity },
+    { label: 'Consistency (active days)', v: score.consistency },
+    { label: 'Trend', v: score.trend },
+  ]
+  return (
+    <div style={{ padding: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 14 }}>
+        <span style={{ fontSize: 34, fontWeight: 700, color: col }}>{total == null ? '—' : total.toFixed(0)}</span>
+        <span style={{ fontSize: 12, color: 'var(--text)' }}>/ 100</span>
+      </div>
+      {comps.map((c, i) => (
+        <div key={i} style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+            <span style={{ color: 'var(--text)' }}>{c.label}</span>
+            <span style={{ color: 'var(--text-white)' }}>{c.v == null ? '—' : (c.v * 100).toFixed(0)}</span>
+          </div>
+          <div style={{ height: 6, background: 'var(--surface3)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${Math.min(100, (c.v || 0) * 100)}%`, height: '100%', background: C.accent }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function BookPressure({ book }) {
+  const bid = book.bid_depth || 0
+  const ask = book.ask_depth || 0
+  const bidPct = (bid + ask) ? bid / (bid + ask) * 100 : 50
+  const imbCol = book.imbalance == null ? C.text : book.imbalance >= 0 ? C.green : C.red
+  return (
+    <div style={{ padding: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
+        <span style={{ color: C.green }}>Bid {fmtNum(bid)}</span>
+        <span style={{ color: imbCol, fontWeight: 600 }}>imbalance {book.imbalance == null ? '—' : `${book.imbalance >= 0 ? '+' : ''}${(book.imbalance * 100).toFixed(0)}%`}</span>
+        <span style={{ color: C.red }}>Ask {fmtNum(ask)}</span>
+      </div>
+      <div style={{ display: 'flex', height: 10, borderRadius: 4, overflow: 'hidden', marginBottom: 16 }}>
+        <div style={{ width: `${bidPct}%`, background: C.green }} />
+        <div style={{ width: `${100 - bidPct}%`, background: C.red }} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Mini label="Demand coverage" value={book.demand_coverage_days == null ? '—' : book.demand_coverage_days.toFixed(1) + ' d'} hint="bid depth ÷ ADV30" />
+        <Mini label="Supply coverage" value={book.supply_coverage_days == null ? '—' : book.supply_coverage_days.toFixed(1) + ' d'} hint="ask depth ÷ ADV30" />
+        <Mini label="Standing bid" value={fmtIsk(book.bid_isk)} hint="ISK on buy side" />
+        <Mini label="Spread" value={book.spread_pct == null ? '—' : book.spread_pct.toFixed(2) + '%'} hint={fmtIsk(book.spread)} />
+      </div>
+    </div>
+  )
+}
+
+function Mini({ label, value, hint }) {
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px' }}>
+      <div style={{ fontSize: 10, color: 'var(--text)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 600, color: C.white, marginTop: 2 }}>{value}</div>
+      {hint && <div style={{ fontSize: 10, color: 'var(--border2)', marginTop: 2 }}>{hint}</div>}
+    </div>
+  )
+}
+
+/* ════════════════════════════ 6 · PREDICTION (stub) ════════════════════════════ */
+
+const fmtMetric = x => x == null ? '—' : x.toFixed(3)
+const pctOrDash = x => x == null ? '—' : (x * 100).toFixed(1) + '%'
+const maseCol = x => x == null ? C.text : x < 1 ? C.green : x < 1.5 ? C.accent : C.red
+const niceModel = m => (m || '—').replace(/_/g, ' ')
+
+function PredictionTab({ regionId, typeId }) {
+  const [data, setData] = useState(null)
+  const [horizon, setHorizon] = useState(30)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+
+  async function load() {
+    setLoading(true); setErr('')
+    try { setData(await get(`/market/forecast?region_id=${regionId}&type_id=${typeId}&horizon=${horizon}`)) }
+    catch (e) { setErr(e.message); setData(null) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [regionId, typeId, horizon])
+
+  if (loading) return <div className="empty-state">Forecasting…</div>
+  if (err) return <div className="error-box">{err}</div>
+  if (!data || data.empty) return <div className="empty-state">Not enough ESI price history to forecast this item here.</div>
+  if (!Plot) return <div className="error-box">Charting library failed to load. Hard-refresh (Ctrl+F5).</div>
+
+  const hist = data.history || {}
+  const fut = data.future || []
+  const v = data.volume, p = data.price
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, marginBottom: 4 }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: 'var(--text)' }}>Horizon</span>
+            {[7, 30, 90].map(hz => (
+              <button key={hz} onClick={() => setHorizon(hz)}
+                className={`btn btn-sm ${horizon === hz ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ padding: '2px 12px', fontSize: 12 }}>{hz}d</button>
+            ))}
+            <span style={{ flex: 1 }} />
+            <button className="btn btn-ghost btn-sm" onClick={load}>⟳</button>
+            <span className="badge" style={{ background: 'var(--surface3)', color: data.engine === 'fortran' ? C.green : C.text }}>
+              {data.engine === 'fortran' ? 'native engine' : 'python fallback'}
+            </span>
+          </div>
+          <StatGrid stats={[
+            { label: 'Volume model', value: niceModel(v.model), color: C.blue },
+            { label: 'Vol MASE', value: fmtMetric(v.backtest.mase), color: maseCol(v.backtest.mase) },
+            { label: 'Vol MAPE', value: pctOrDash(v.backtest.mape) },
+            { label: 'Price model', value: niceModel(p.model), color: C.accent },
+            { label: 'Price MASE', value: fmtMetric(p.backtest.mase), color: maseCol(p.backtest.mase) },
+            { label: 'Days used', value: data.points },
+          ]} />
+        </div>
+        <SignalCard sig={data.signal || {}} turnover={data.isk_turnover} />
+      </div>
+
+      <Panel title={`Volume forecast · ${horizon}d (P10–P90 band)`}>
+        <ForecastChart histX={hist.timestamps} histY={hist.volume} futX={fut} fc={v} fmt=".3s" color={C.blue} />
+      </Panel>
+      <Panel title={`Price forecast · ${horizon}d (P10–P90 band)`}>
+        <ForecastChart histX={hist.timestamps} histY={hist.price} futX={fut} fc={p} fmt=".3s" color={C.accent} />
+      </Panel>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Panel title="Backtest accuracy (walk-forward)">
+          <BacktestTable volume={v} price={p} />
+          <div style={{ fontSize: 11, color: 'var(--border2)', marginTop: 8 }}>
+            MASE &lt; 1 beats the seasonal-naive benchmark. Dir = directional accuracy.
+          </div>
+        </Panel>
+        <Panel title="Model panel (MASE — chosen highlighted)">
+          <CandidateTable volume={v} price={p} />
+        </Panel>
+      </div>
+    </div>
+  )
+}
+
+function SignalCard({ sig, turnover }) {
+  const a = sig.action || 'hold'
+  const col = a === 'produce' ? C.green : a === 'avoid' ? C.red : C.accent
+  const tp = (turnover?.p50 || []).filter(x => x != null)
+  const avgTurn = tp.length ? tp.reduce((s, x) => s + x, 0) / tp.length : null
+  return (
+    <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <RailLabel>Signal</RailLabel>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <span style={{ fontSize: 24, fontWeight: 700, color: col, textTransform: 'uppercase' }}>{a}</span>
+        <span style={{ fontSize: 12, color: 'var(--text)' }}>score {sig.score == null ? '—' : sig.score.toFixed(0)}/100</span>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text)', minHeight: 16 }}>{sig.reason || ''}</div>
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: 12, color: 'var(--text)' }}>
+        Avg forecast turnover <b style={{ color: C.white }}>{fmtIsk(avgTurn)}</b> / day
+      </div>
+    </div>
+  )
+}
+
+function ForecastChart({ histX, histY, futX, fc, fmt, color }) {
+  if (!histX?.length || !futX?.length) return <Empty msg="No data to chart" />
+  const lastX = histX[histX.length - 1], lastY = histY[histY.length - 1]
+  const x = [lastX, ...futX]
+  return (
+    <Plot
+      data={[
+        { x, y: [lastY, ...fc.p90], name: 'P90', mode: 'lines', line: { color: C.grid, width: 0.8 }, hoverinfo: 'skip' },
+        { x, y: [lastY, ...fc.p10], name: 'P10–P90', mode: 'lines', line: { color: C.grid, width: 0.8 }, fill: 'tonexty', fillcolor: 'rgba(200,169,81,0.12)', hoverinfo: 'skip' },
+        { x: histX, y: histY, name: 'Actual', mode: 'lines', line: { color: C.white, width: 1.6 } },
+        { x, y: [lastY, ...fc.p50], name: `Forecast (${niceModel(fc.model)})`, mode: 'lines', line: { color, width: 1.6, dash: 'dash' } },
+      ]}
+      layout={baseLayout({
+        height: 300, yaxis: { gridcolor: C.grid, tickformat: fmt },
+        shapes: [{ type: 'line', x0: lastX, x1: lastX, yref: 'paper', y0: 0, y1: 1, line: { color: C.grid, width: 1, dash: 'dot' } }],
+      })}
+      config={cfg} style={{ width: '100%' }} useResizeHandler
+    />
+  )
+}
+
+function BacktestTable({ volume, price }) {
+  const row = (label, t) => (
+    <tr>
+      <td style={{ color: 'var(--text-white)' }}>{label}</td>
+      <td style={{ color: 'var(--text)' }}>{niceModel(t.model)}</td>
+      <td style={{ textAlign: 'right', color: maseCol(t.backtest.mase), fontWeight: 600 }}>{fmtMetric(t.backtest.mase)}</td>
+      <td style={{ textAlign: 'right' }}>{pctOrDash(t.backtest.mape)}</td>
+      <td style={{ textAlign: 'right' }}>{pctOrDash(t.backtest.smape)}</td>
+      <td style={{ textAlign: 'right' }}>{pctOrDash(t.backtest.dir_acc)}</td>
+    </tr>
+  )
+  return (
+    <table>
+      <thead><tr>
+        <th>Target</th><th>Model</th>
+        <th style={{ textAlign: 'right' }}>MASE</th><th style={{ textAlign: 'right' }}>MAPE</th>
+        <th style={{ textAlign: 'right' }}>sMAPE</th><th style={{ textAlign: 'right' }}>Dir</th>
+      </tr></thead>
+      <tbody>{row('Volume', volume)}{row('Price', price)}</tbody>
+    </table>
+  )
+}
+
+function CandidateTable({ volume, price }) {
+  const block = (label, t) => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 5 }}>{label}</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {(t.candidates || []).map(c => (
+          <span key={c.model} style={{
+            fontSize: 11, padding: '3px 9px', borderRadius: 4,
+            background: c.model === t.model ? 'var(--surface3)' : 'var(--surface)',
+            border: `1px solid ${c.model === t.model ? C.accent : 'var(--border)'}`,
+            color: c.model === t.model ? C.accent : 'var(--text)',
+          }}>
+            {niceModel(c.model)} · {c.mase == null ? '—' : c.mase.toFixed(2)}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+  return <div>{block('Volume', volume)}{block('Price', price)}</div>
 }
 
 /* ════════════════════════════ shared bits ════════════════════════════ */

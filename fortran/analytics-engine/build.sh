@@ -38,3 +38,17 @@ gfortran $FLAGS \
     "$d/build/compat.o" \
     -o "$d/bin/portfolio-opt"
 echo "built $d/bin/portfolio-opt"
+
+# demand-engine: per-item demand metrics
+gfortran $FLAGS \
+    "$d/src/json.f90" "$d/src/sort_stats.f90" "$d/src/demand.f90" \
+    "$d/app/demandcalc.f90" "$d/build/compat.o" \
+    -o "$d/bin/demand-engine"
+echo "built $d/bin/demand-engine"
+
+# forecast-engine: native model panel (snaive/holt/HW/croston/ARIMA/SARIMA)
+gfortran $FLAGS \
+    "$d/src/json.f90" "$d/src/sort_stats.f90" "$d/src/forecast.f90" \
+    "$d/src/forecast_panel.f90" "$d/app/forecastcalc.f90" "$d/build/compat.o" \
+    -o "$d/bin/forecast-engine"
+echo "built $d/bin/forecast-engine"

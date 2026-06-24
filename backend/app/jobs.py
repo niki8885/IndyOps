@@ -21,6 +21,7 @@ from app.tasks.update_sde import run_sde_update
 from app.tasks.update_tracking import run_tracking_update
 from app.tasks.update_esi import sync_all_active
 from app.tasks.update_trade import run_trade_orders_update, run_trade_history_update, run_haul_scan_update
+from app.tasks.update_forecasts import run_forecast_update
 from app.tasks.evaluate_alerts import run_alert_evaluation
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ _DEFAULT_WINDOW = 10   # the API's default; other windows recompute on miss
 _LOCK_KEYS = {
     "sde": 4101, "index": 4102, "tracking": 4103, "esi": 4104,
     "trade_orders": 4105, "trade_history": 4106, "alerts": 4107,
-    "cost_idx": 4108, "haul_scan": 4109,
+    "cost_idx": 4108, "haul_scan": 4109, "forecasts": 4110,
 }
 
 
@@ -134,6 +135,10 @@ def job_haul_scan():
     _run("haul_scan", run_haul_scan_update)
 
 
+def job_forecasts():
+    _run("forecasts", run_forecast_update)
+
+
 def register(scheduler) -> None:
     """Attach the cron jobs to a scheduler (worker process owns it)."""
     scheduler.add_job(job_sde, "cron", hour=3, minute=0, id="sde_update_job", replace_existing=True)
@@ -147,3 +152,5 @@ def register(scheduler) -> None:
     # Haul scanner: every 20 min (offset). C-J is slow but the universe is capped
     # (TRADE_HAUL_MAX_ITEMS), so each run stays short; tune the cadence here.
     scheduler.add_job(job_haul_scan, "cron", minute="8,28,48", id="haul_scan_job", replace_existing=True)
+    # Forecasts: every 6h (offset from trade/cost jobs); bounded universe, native engine.
+    scheduler.add_job(job_forecasts, "cron", hour="*/6", minute=40, id="forecasts_job", replace_existing=True)

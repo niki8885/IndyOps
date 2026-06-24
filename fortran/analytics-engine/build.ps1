@@ -44,3 +44,28 @@ $port = @(
 & gfortran @flags @port "$d\build\compat.o" -o "$d\bin\portfolio-opt.exe"
 if ($LASTEXITCODE -ne 0) { throw "portfolio-opt build failed ($LASTEXITCODE)" }
 Write-Host "built $d\bin\portfolio-opt.exe"
+
+# demand-engine: per-item demand metrics
+$dem = @(
+    "src\json.f90", "src\sort_stats.f90", "src\demand.f90", "app\demandcalc.f90"
+) | ForEach-Object { Join-Path $d $_ }
+& gfortran @flags @dem "$d\build\compat.o" -o "$d\bin\demand-engine.exe"
+if ($LASTEXITCODE -ne 0) { throw "demand-engine build failed ($LASTEXITCODE)" }
+Write-Host "built $d\bin\demand-engine.exe"
+
+# forecast-test: native SARIMA estimation/forecast harness
+$fct = @(
+    "src\json.f90", "src\forecast.f90", "app\forecasttest.f90"
+) | ForEach-Object { Join-Path $d $_ }
+& gfortran @flags @fct "$d\build\compat.o" -o "$d\bin\forecast-test.exe"
+if ($LASTEXITCODE -ne 0) { throw "forecast-test build failed ($LASTEXITCODE)" }
+Write-Host "built $d\bin\forecast-test.exe"
+
+# forecast-engine: native model panel (snaive/holt/HW/croston/ARIMA/SARIMA)
+$fce = @(
+    "src\json.f90", "src\sort_stats.f90", "src\forecast.f90",
+    "src\forecast_panel.f90", "app\forecastcalc.f90"
+) | ForEach-Object { Join-Path $d $_ }
+& gfortran @flags @fce "$d\build\compat.o" -o "$d\bin\forecast-engine.exe"
+if ($LASTEXITCODE -ne 0) { throw "forecast-engine build failed ($LASTEXITCODE)" }
+Write-Host "built $d\bin\forecast-engine.exe"

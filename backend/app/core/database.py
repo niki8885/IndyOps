@@ -633,6 +633,32 @@ class TradeTypeStat(Base):
     )
 
 
+class MarketForecast(Base):
+    """Precomputed volume + price forecast per (region, type, horizon), refreshed by
+    the forecasts worker over the liquid universe and read by /market/forecast so a
+    request is a row read, not a recompute. The full forecast payload is stored as
+    JSON; a few summary columns (signal / chosen models / MASE / turnover) are kept
+    queryable for screeners. Current-state upsert. NOT a hypertable."""
+    __tablename__ = "market_forecasts"
+
+    region_id = Column(Integer, primary_key=True)
+    type_id = Column(Integer, primary_key=True)
+    horizon = Column(Integer, primary_key=True)
+    vol_model = Column(String(20), nullable=True)
+    vol_mase = Column(Float, nullable=True)
+    price_model = Column(String(20), nullable=True)
+    price_mase = Column(Float, nullable=True)
+    signal_action = Column(String(12), nullable=True)
+    signal_score = Column(Float, nullable=True)
+    avg_turnover = Column(Float, nullable=True)
+    payload = Column(JSON, nullable=False)
+    computed_at = Column(DateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index("ix_market_forecasts_computed_at", "computed_at"),
+    )
+
+
 class HaulCandidate(Base):
     """A precomputed, auto-discovered Jita → C-J6MT haul candidate.
 
