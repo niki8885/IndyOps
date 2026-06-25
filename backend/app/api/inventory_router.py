@@ -7,14 +7,16 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 from app.core.database import (
     get_db, InventoryItem, Projects, Organisation, OrganisationMember, UserDB,
-    StockMovement, ReprocessingPreset,
+    StockMovement, ReprocessingPreset, LinkedCharacter, EsiAsset,
 )
 from sqlalchemy import or_
 from app.adapters import market
 from app.core.database_eve import EveSessionLocal, EveType
 from app.core.security import get_current_user
 from app.api.responses import ERR_400, ERR_404
+from app.api.characters_router import _station_names, _system_names, _structure_names
 from app.repositories import eve as eve_repo
+from app.services import asset_location
 from app.services.loot import parse_lines as _parse_bulk_text
 from app.services.refining import RefineSetup, RigYield, compute_yield, reprocess
 
@@ -703,6 +705,146 @@ async def reprocessing_stock(current_user: UserDB = Depends(get_current_user),
             out.append({"id": i.id, "type_id": i.eve_type_id, "name": i.name,
                         "quantity": int(i.quantity or 0), "price": i.price, "place": i.place})
     return sorted(out, key=lambda x: x["name"])
+
+
+def _asset_location_name(roots: dict, item_id, names_by_kind: dict, fallback_loc):
+    """Resolve one asset's terminus to ``(location_id, location_name)`` for grouping."""
+    kind, rid = roots.get(item_id, (None, None))
+    if kind == "station":
+        return rid, names_by_kind["station"].get(rid) or f"Station #{rid}"
+    if kind == "system":
+        return rid, names_by_kind["system"].get(rid) or f"System #{rid}"
+    if kind == "structure":
+        return rid, names_by_kind["structure"].get(rid) or f"Structure #{rid}"
+    return (fallback_loc or 0), (f"#{fallback_loc}" if fallback_loc else "Unknown location")
+
+
+@router.get("/reprocessing/assets")
+async def reprocessing_assets(current_user: UserDB = Depends(get_current_user),
+                              db: Session = Depends(get_db), eve_db: Session = Depends(_get_eve_db)):
+    """Ore the user actually holds in-game, read live from synced ESI assets and grouped by
+    the station/structure that holds it. Each asset's location chain is walked to its real
+    terminus (ore nested in a ship/container resolves to the dock), so the Reprocess panel can
+    offer a location picker + per-station ore list without a manual inventory import."""
+    char_ids = [c.character_id for c in
+                db.query(LinkedCharacter).filter(LinkedCharacter.user_id == current_user.id).all()]
+    assets = db.query(EsiAsset).filter(EsiAsset.character_id.in_(char_ids or [-1])).all()
+    if not assets:
+        return {"locations": [], "ore": []}
+
+    type_ids = list({a.type_id for a in assets if a.type_id})
+    yields = eve_repo.reprocessing_yields(eve_db, type_ids)
+    groups = eve_repo.type_groups(eve_db, type_ids)
+    ore_ids = {tid for tid in type_ids
+               if tid in yields and (groups.get(tid) or {}).get("category_id") == _ORE_CATEGORY}
+    if not ore_ids:
+        return {"locations": [], "ore": []}
+
+    names = eve_repo.type_names(eve_db, list(ore_ids))
+    roots, by_kind = asset_location.terminus_ids(assets)
+    names_by_kind = {
+        "station": _station_names(eve_db, by_kind["station"]),
+        "system": _system_names(eve_db, by_kind["system"]),
+        "structure": _structure_names(db, by_kind["structure"]),
+    }
+
+    agg: dict = {}          # (location_id, type_id) -> summed quantity
+    loc_name: dict = {}
+    for a in assets:
+        if a.type_id not in ore_ids:
+            continue
+        loc_id, name = _asset_location_name(roots, a.item_id, names_by_kind, a.location_id)
+        loc_name[loc_id] = name
+        agg[(loc_id, a.type_id)] = agg.get((loc_id, a.type_id), 0) + int(a.quantity or 0)
+
+    sides = _jita_two_sided(list({tid for _, tid in agg}))
+    ore, loc_summary = [], {}
+    for (loc_id, tid), qty in agg.items():
+        price = _basis_price(sides.get(tid) or {}, "sell")
+        ore.append({"type_id": tid, "name": names.get(tid) or str(tid), "quantity": qty,
+                    "location_id": loc_id, "location_name": loc_name.get(loc_id),
+                    "price": round(price, 2) if price else None})
+        ls = loc_summary.setdefault(loc_id, {"id": loc_id, "name": loc_name.get(loc_id),
+                                             "ore_types": 0, "total_qty": 0})
+        ls["ore_types"] += 1
+        ls["total_qty"] += qty
+
+    ore.sort(key=lambda x: ((x["location_name"] or "~"), x["name"]))
+    locations = sorted(loc_summary.values(), key=lambda x: (x["name"] or "~"))
+    return {"locations": locations, "ore": ore}
+
+
+class ReprocessLine(BaseModel):
+    type_id: int
+    quantity: int
+
+
+class ReprocessPreviewIn(BaseModel):
+    preset_id: int
+    lines: List[ReprocessLine] = []
+    basis: str = "sell"               # Jita basis for the mineral + raw-ore valuation
+
+
+@router.post("/reprocessing/preview", responses={**ERR_400, **ERR_404})
+async def reprocess_preview(body: ReprocessPreviewIn, current_user: UserDB = Depends(get_current_user),
+                            db: Session = Depends(get_db), eve_db: Session = Depends(_get_eve_db)):
+    """Refine a selection of ore (type_id × quantity, e.g. picked from a station's live
+    assets) through a saved preset and return the resulting minerals + Jita value — a
+    read-only calculator. Reports the raw-ore Jita value alongside, so the refine premium
+    (``delta``) answers "should I reprocess or sell the ore as-is?". Mutates nothing."""
+    preset = (db.query(ReprocessingPreset)
+              .filter(ReprocessingPreset.id == body.preset_id, ReprocessingPreset.user_id == current_user.id).first())
+    if not preset:
+        raise HTTPException(404, "Preset not found")
+    lines = [l for l in body.lines if l.type_id and l.quantity > 0]
+    if not lines:
+        raise HTTPException(400, "No ore selected")
+
+    rigs = _build_rigs(eve_db, json.loads(preset.rig_type_ids) if preset.rig_type_ids else [])
+    ry = compute_yield(RefineSetup(
+        base_yield=preset.base_yield, reprocessing_lvl=preset.reprocessing_lvl,
+        efficiency_lvl=preset.efficiency_lvl, ore_specific_lvl=preset.ore_specific_lvl,
+        implant_pct=preset.implant_pct, rigs=rigs, security=preset.security, tax_pct=preset.tax_pct))
+
+    type_ids = [l.type_id for l in lines]
+    yields = eve_repo.reprocessing_yields(eve_db, type_ids)
+    ore_names = eve_repo.type_names(eve_db, type_ids)
+    ore_sides = _jita_two_sided(type_ids)
+    minerals: dict = {}
+    raw_ore_value = 0.0
+    skipped: list = []
+    for l in lines:
+        info = yields.get(l.type_id)
+        res = (reprocess(int(l.quantity), info["portion_size"], info["materials"], ry,
+                         input_type_id=l.type_id) if info and info["materials"] else None)
+        if not res or not res.minerals or res.refined_units <= 0:
+            skipped.append(ore_names.get(l.type_id) or str(l.type_id))
+            continue
+        for mn in res.minerals:
+            minerals[mn.type_id] = minerals.get(mn.type_id, 0) + mn.qty
+        raw_ore_value += (_basis_price(ore_sides.get(l.type_id) or {}, body.basis) or 0.0) * res.refined_units
+    if not minerals:
+        raise HTTPException(400, "Nothing reprocessable in the selection (need at least one full batch of ore)")
+
+    mineral_ids = list(minerals)
+    sides = _jita_two_sided(mineral_ids)
+    names = eve_repo.type_names(eve_db, mineral_ids)
+    out, total_value = [], 0.0
+    for tid, qty in minerals.items():
+        unit = _basis_price(sides.get(tid) or {}, body.basis) or 0.0
+        out.append({"type_id": tid, "name": names.get(tid) or str(tid), "quantity": qty,
+                    "unit_cost": round(unit, 2), "value": round(unit * qty, 2)})
+        total_value += unit * qty
+
+    return {
+        "preset": preset.name,
+        "effective_yield": ry.effective_yield,
+        "raw_ore_value": round(raw_ore_value, 2),
+        "total_value": round(total_value, 2),
+        "delta": round(total_value - raw_ore_value, 2),
+        "minerals": sorted(out, key=lambda x: -x["value"]),
+        "skipped": skipped,
+    }
 
 
 class ReprocessIn(BaseModel):

@@ -78,7 +78,25 @@ def test_summarize_trades_totals_series_and_by_item():
     assert s["by_item"][0]["type_id"] == 34    # higher profit first
 
 
+def test_summarize_trades_win_loss_metrics():
+    rows = [
+        {"date": "2026-06-01", "type_id": 34, "name": "A", "units": 1, "total_buy": 100.0,
+         "total_sell": 250.0, "broker_buy": 0.0, "broker_sell": 0.0, "sales_tax": 0.0,
+         "profit": 150.0, "margin": 150.0},
+        {"date": "2026-06-02", "type_id": 35, "name": "B", "units": 1, "total_buy": 100.0,
+         "total_sell": 50.0, "broker_buy": 0.0, "broker_sell": 0.0, "sales_tax": 0.0,
+         "profit": -50.0, "margin": -50.0},
+    ]
+    s = trade_profits.summarize_trades(rows)
+    assert s["win_count"] == 1 and s["loss_count"] == 1
+    assert s["win_rate"] == 50.0
+    assert s["profit_factor"] == 3.0     # gross win 150 / gross loss 50
+    assert s["avg_profit"] == 50.0       # (150 − 50) / 2 trades
+    assert s["profit_per_day"] == 50.0   # 100 total / 2 distinct days
+
+
 def test_summarize_trades_empty():
     s = trade_profits.summarize_trades([])
     assert s["total_profit"] == 0.0 and s["trade_count"] == 0
     assert s["avg_margin"] is None and s["series"] == [] and s["by_item"] == []
+    assert s["win_count"] == 0 and s["win_rate"] is None and s["profit_factor"] is None

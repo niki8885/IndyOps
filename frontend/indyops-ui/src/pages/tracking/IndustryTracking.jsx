@@ -6,11 +6,13 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { get, post } from '../../api/client'
 import { fmtIsk, fmtInt, fmtDate, GREEN, RED, AMBER } from './fmt'
 import {
-  ScopeSelect, DateRange, Stat, StatRow, SyncButton, ScopeWarning, SortableTable, MiniBars,
+  ScopeSelect, DateRange, Stat, StatRow, SyncButton, ScopeWarning, SortableTable,
 } from './common'
+import ProfitChart from './ProfitChart'
 import ReprocessPanel from './ReprocessPanel'
 
 const fmtPct = v => (v == null ? '—' : `${Number(v).toFixed(1)}%`)
+const fmtRatio = v => (v == null ? '—' : Number(v).toFixed(2))
 const profitColor = v => (v >= 0 ? GREEN : RED)
 const fmtTs = ts => (ts ? ts.replace('T', ' ').slice(0, 19) : '—')
 
@@ -119,16 +121,20 @@ export default function IndustryTracking() {
           <Stat label="Total sell" value={fmtIsk(m.total_sell)} />
           <Stat label="Total build" value={fmtIsk(m.total_build)} />
           <Stat label="Broker + tax" value={fmtIsk((m.total_broker || 0) + (m.total_tax || 0))} />
-          <Stat label="Avg margin" value={fmtPct(m.avg_margin)} />
-          <Stat label="Sales / units" value={`${fmtInt(m.trade_count)} / ${fmtInt(m.units)}`} />
+          <Stat label="Avg margin / ROI" value={fmtPct(m.avg_margin)} />
+          <Stat label="Profit / day" value={fmtIsk(m.profit_per_day)} />
+          <Stat label="Win rate" value={fmtPct(m.win_rate)} />
+          <Stat label="Profit factor" value={fmtRatio(m.profit_factor)} />
+          <Stat label="Sales (W / L)" value={`${fmtInt(m.trade_count)} (${fmtInt(m.win_count)} / ${fmtInt(m.loss_count)})`} />
         </StatRow>
       )}
 
-      <MiniBars series={m?.series} valueKey="profit" label="Realized manufacturing profit by day" />
+      <ProfitChart series={m?.series} label="Realized manufacturing profit — daily bars + cumulative line" />
 
       <div className="sec-label" style={{ marginBottom: 8 }}>Manufacturing Profit</div>
       <SortableTable columns={mfgCols} rows={data?.manufacturing || []}
         rowKey={(r, i) => `${r.date}-${r.type_id}-${i}`}
+        rowStyle={r => (r.profit < 0 ? { background: 'rgba(224,82,82,0.06)' } : undefined)}
         empty="No manufactured items sold yet (with a tracked build cost). Build, sell, then Sync from ESI." />
 
       <div className="sec-label" style={{ margin: '22px 0 8px' }}>Completed Industry Jobs</div>
@@ -197,7 +203,7 @@ export default function IndustryTracking() {
         means part of the bundle had no tracked cost basis (margin is overstated).
       </div>
 
-      <ReprocessPanel onReprocessed={load} />
+      <ReprocessPanel />
 
       <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 8 }}>
         Material cost is realized via FIFO from your tracked buys (and earlier builds you consumed). A job is flagged

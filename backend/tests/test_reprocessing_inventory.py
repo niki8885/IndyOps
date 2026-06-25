@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import inventory_router as ir
-from app.core.database import Base, InventoryItem
+from app.core.database import Base, InventoryItem, LinkedCharacter, EsiAsset
 from app.core.database_eve import EveBase, EveType, EveGroup, EveTypeMaterial
 
 USER = SimpleNamespace(id=1)
@@ -124,3 +124,61 @@ def test_reprocessing_stock_lists_only_ore(app_db, eve_db):
     app_db.commit()
     stock = run(ir.reprocessing_stock(current_user=USER, db=app_db, eve_db=eve_db))
     assert [s["type_id"] for s in stock] == [1230]
+
+
+# ── live ESI-asset ore, grouped by station ──────────────────────────────────────
+
+def test_reprocessing_assets_groups_ore_by_location(app_db, eve_db, monkeypatch):
+    _seed_sde(eve_db)
+    _mock_jita(monkeypatch)
+    app_db.add(LinkedCharacter(id=1, user_id=1, character_id=99, character_name="Miner",
+                               is_active=True, status="active"))
+    app_db.add_all([
+        # two ore stacks at the same station → one merged line of 1000
+        EsiAsset(character_id=99, item_id=1, type_id=1230, quantity=600,
+                 location_id=60003760, location_type="station"),
+        EsiAsset(character_id=99, item_id=2, type_id=1230, quantity=400,
+                 location_id=60003760, location_type="station"),
+        # a non-ore asset must be filtered out
+        EsiAsset(character_id=99, item_id=3, type_id=34, quantity=999,
+                 location_id=60003760, location_type="station"),
+    ])
+    app_db.commit()
+
+    out = run(ir.reprocessing_assets(current_user=USER, db=app_db, eve_db=eve_db))
+    assert len(out["locations"]) == 1
+    loc = out["locations"][0]
+    assert loc["id"] == 60003760 and loc["ore_types"] == 1 and loc["total_qty"] == 1000
+    assert [(o["type_id"], o["quantity"]) for o in out["ore"]] == [(1230, 1000)]
+
+
+def test_reprocessing_assets_empty_without_assets(app_db, eve_db):
+    out = run(ir.reprocessing_assets(current_user=USER, db=app_db, eve_db=eve_db))
+    assert out == {"locations": [], "ore": []}
+
+
+# ── read-only reprocess calculator (preview) ─────────────────────────────────────
+
+def test_reprocess_preview_values_minerals_and_premium(app_db, eve_db, monkeypatch):
+    _seed_sde(eve_db)
+    # price both the mineral (Tritanium=34) and the raw ore (Veldspar=1230)
+    monkeypatch.setattr(ir.market, "fuzzwork_aggregates_or_empty",
+                        lambda region, ids: {
+                            "34": {"sell": {"percentile": 5.0}, "buy": {"percentile": 4.0}},
+                            "1230": {"sell": {"percentile": 4.0}, "buy": {"percentile": 3.0}},
+                        })
+    p = run(ir.create_preset(body=ir.PresetIn(name="NPC", base_yield=0.5), current_user=USER, db=app_db))
+
+    out = run(ir.reprocess_preview(
+        body=ir.ReprocessPreviewIn(preset_id=p["id"],
+                                   lines=[ir.ReprocessLine(type_id=1230, quantity=1000)], basis="sell"),
+        current_user=USER, db=app_db, eve_db=eve_db))
+
+    # 1000 Veldspar → 1000 refined units → 2075 Tritanium at 0.5 yield
+    assert out["effective_yield"] == 0.5
+    assert out["minerals"][0]["type_id"] == 34 and out["minerals"][0]["quantity"] == 2075
+    assert out["total_value"] == 10375.0          # 2075 × 5.0 sell
+    assert out["raw_ore_value"] == 4000.0         # 1000 refined units × 4.0 ore sell
+    assert out["delta"] == 6375.0                 # refine premium (mutates nothing)
+    # read-only: no inventory rows were created
+    assert app_db.query(InventoryItem).count() == 0

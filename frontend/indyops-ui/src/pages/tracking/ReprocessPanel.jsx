@@ -1,7 +1,8 @@
-// Reprocess warehouse ore into minerals using a saved preset (base yield / rigs / tax /
-// skills), carrying the ore's cost basis onto the minerals. The resulting "reprocess" lots
-// feed the Industry cost ledger, so building with your own ore no longer reads "missing
-// inputs". Rendered inside the Tracking → Industry tab.
+// Reprocess your in-game ore into minerals. Ore is read live from synced ESI assets and
+// grouped by the station/structure that holds it, so you pick a location, select the ore
+// there, and a saved preset (base yield / rigs / tax / skills) refines it into minerals —
+// showing the refined Jita value vs the raw-ore value (the "refine premium"). Read-only:
+// it values your holdings, it doesn't move anything. Rendered in the Tracking → Industry tab.
 import { useState, useEffect, useCallback } from 'react'
 import { get, post, put, del } from '../../api/client'
 import { fmtIsk, fmtInt, GREEN, RED } from './fmt'
@@ -11,12 +12,14 @@ const BLANK = {
   reprocessing_lvl: 5, efficiency_lvl: 5, ore_specific_lvl: 4, implant_pct: 0, rig_type_ids: [],
 }
 const numStyle = { width: 64, padding: '5px 6px' }
+const rowKey = o => `${o.location_id}:${o.type_id}`
 
-export default function ReprocessPanel({ onReprocessed }) {
+export default function ReprocessPanel() {
   const [presets, setPresets] = useState([])
   const [rigs, setRigs] = useState([])
-  const [stock, setStock] = useState([])
+  const [assets, setAssets] = useState({ locations: [], ore: [] })
   const [presetId, setPresetId] = useState(null)
+  const [locId, setLocId] = useState('')          // '' = not yet chosen, 'all' = every location
   const [sel, setSel] = useState({})
   const [basis, setBasis] = useState('sell')
   const [result, setResult] = useState(null)
@@ -25,26 +28,32 @@ export default function ReprocessPanel({ onReprocessed }) {
   const [err, setErr] = useState('')
 
   const loadPresets = useCallback(() => get('/inventory/reprocessing/presets').then(setPresets).catch(() => {}), [])
-  const loadStock = useCallback(() => get('/inventory/reprocessing/stock').then(setStock).catch(() => {}), [])
+  const loadAssets = useCallback(() => get('/inventory/reprocessing/assets').then(d => setAssets(d || { locations: [], ore: [] })).catch(() => {}), [])
   useEffect(() => {
-    loadPresets(); loadStock()
+    loadPresets(); loadAssets()
     get('/ore/rigs').then(d => setRigs(d.rigs || [])).catch(() => {})
-  }, [loadPresets, loadStock])
+  }, [loadPresets, loadAssets])
 
-  // default to the first preset until the user explicitly picks one (no state-in-effect)
+  const locations = assets.locations || []
+  // default to the first location once assets load (until the user picks one)
+  const activeLoc = locId || (locations[0] ? String(locations[0].id) : 'all')
+  const visibleOre = (assets.ore || []).filter(o => activeLoc === 'all' || String(o.location_id) === activeLoc)
+  const selectedOre = visibleOre.filter(o => sel[rowKey(o)])
+
   const activePresetId = presetId ?? (presets[0]?.id ?? null)
-  const selectedIds = stock.filter(i => sel[i.id]).map(i => i.id)
   const setField = (k, v) => setEditing(e => ({ ...e, [k]: v }))
   const toggleRig = rid => setEditing(e => ({
     ...e, rig_type_ids: e.rig_type_ids.includes(rid) ? e.rig_type_ids.filter(x => x !== rid) : [...e.rig_type_ids, rid],
   }))
 
+  function pickLocation(v) { setLocId(v); setSel({}); setResult(null) }
+
   async function doReprocess() {
     setErr(''); setResult(null); setBusy(true)
     try {
-      const r = await post('/inventory/reprocessing/reprocess', { preset_id: activePresetId, item_ids: selectedIds, basis })
-      setResult(r); setSel({}); loadStock()
-      if (onReprocessed) onReprocessed()
+      const lines = selectedOre.map(o => ({ type_id: o.type_id, quantity: o.quantity }))
+      const r = await post('/inventory/reprocessing/preview', { preset_id: activePresetId, lines, basis })
+      setResult(r)
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
 
@@ -62,11 +71,13 @@ export default function ReprocessPanel({ onReprocessed }) {
     catch (e) { setErr(e.message) }
   }
 
+  const deltaColor = result && result.delta >= 0 ? GREEN : RED
+
   return (
     <div className="card" style={{ marginTop: 22 }}>
-      <div className="sec-label" style={{ marginBottom: 10 }}>Reprocess warehouse ore → minerals</div>
+      <div className="sec-label" style={{ marginBottom: 10 }}>Reprocess ore → minerals (by station)</div>
 
-      {/* preset row */}
+      {/* preset + basis row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <span style={{ fontSize: 12, color: 'var(--text)' }}>Preset</span>
         <select value={activePresetId || ''} onChange={e => setPresetId(Number(e.target.value) || null)} style={{ padding: '6px 8px', minWidth: 160 }}>
@@ -122,33 +133,56 @@ export default function ReprocessPanel({ onReprocessed }) {
         </div>
       )}
 
-      {/* ore picker */}
-      {stock.length === 0 ? (
+      {/* location picker + ore list */}
+      {(assets.ore || []).length === 0 ? (
         <div className="empty-state" style={{ padding: '18px 12px' }}>
-          No ore in your warehouse. Add ore to inventory first — then reprocess it here.
+          No ore in your assets. Link characters with the <code>read_assets</code> scope and <b>Sync from ESI</b> —
+          your ore then shows up here grouped by station.
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table>
-            <thead><tr><th /><th>Ore</th><th style={{ textAlign: 'right' }}>Quantity</th><th style={{ textAlign: 'right' }}>Unit cost</th><th>Place</th></tr></thead>
-            <tbody>
-              {stock.map(i => (
-                <tr key={i.id}>
-                  <td><input type="checkbox" checked={!!sel[i.id]} onChange={() => setSel(s => ({ ...s, [i.id]: !s[i.id] }))} /></td>
-                  <td>{i.name}</td>
-                  <td style={{ textAlign: 'right' }}>{fmtInt(i.quantity)}</td>
-                  <td style={{ textAlign: 'right' }}>{i.price == null ? '—' : fmtIsk(i.price)}</td>
-                  <td>{i.place || '—'}</td>
-                </tr>
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: 'var(--text)' }}>Location</span>
+            <select value={activeLoc} onChange={e => pickLocation(e.target.value)} style={{ padding: '6px 8px', minWidth: 240 }}>
+              <option value="all">All locations ({locations.length})</option>
+              {locations.map(l => (
+                <option key={l.id} value={String(l.id)}>{l.name} — {l.ore_types} ore type(s), {fmtInt(l.total_qty)} units</option>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </select>
+            {visibleOre.length > 0 && (
+              <button className="btn btn-ghost btn-sm"
+                onClick={() => setSel(Object.fromEntries(visibleOre.map(o => [rowKey(o), true])))}>Select all</button>
+            )}
+            {selectedOre.length > 0 && <button className="btn btn-ghost btn-sm" onClick={() => setSel({})}>Clear</button>}
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <table>
+              <thead><tr>
+                <th /><th>Ore</th>
+                {activeLoc === 'all' && <th>Location</th>}
+                <th style={{ textAlign: 'right' }}>Quantity</th>
+                <th style={{ textAlign: 'right' }}>Jita unit</th>
+              </tr></thead>
+              <tbody>
+                {visibleOre.map(o => (
+                  <tr key={rowKey(o)}>
+                    <td><input type="checkbox" checked={!!sel[rowKey(o)]} onChange={() => setSel(s => ({ ...s, [rowKey(o)]: !s[rowKey(o)] }))} /></td>
+                    <td>{o.name}</td>
+                    {activeLoc === 'all' && <td style={{ fontSize: 12, color: 'var(--text)' }}>{o.location_name || '—'}</td>}
+                    <td style={{ textAlign: 'right' }}>{fmtInt(o.quantity)}</td>
+                    <td style={{ textAlign: 'right' }}>{o.price == null ? '—' : fmtIsk(o.price)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
-        <button className="btn btn-sm" onClick={doReprocess} disabled={busy || !activePresetId || !selectedIds.length}>
-          {busy ? 'Reprocessing…' : `Reprocess ${selectedIds.length || ''} lot(s)`}
+        <button className="btn btn-sm" onClick={doReprocess} disabled={busy || !activePresetId || !selectedOre.length}>
+          {busy ? 'Calculating…' : `Reprocess ${selectedOre.length || ''} ore type(s)`}
         </button>
         {err && <span style={{ fontSize: 12, color: RED }}>{err}</span>}
       </div>
@@ -157,13 +191,14 @@ export default function ReprocessPanel({ onReprocessed }) {
       {result && (
         <div className="card" style={{ marginTop: 12, background: 'var(--bg)' }}>
           <div style={{ fontSize: 12, color: 'var(--text-bright)', marginBottom: 8 }}>
-            Refined via <b>{result.preset}</b> at {(result.effective_yield * 100).toFixed(1)}% yield · ore cost {fmtIsk(result.ore_cost)} ·
-            mineral value <span style={{ color: GREEN }}>{fmtIsk(result.total_value)}</span>
+            Refined via <b>{result.preset}</b> at {(result.effective_yield * 100).toFixed(1)}% yield · raw ore {fmtIsk(result.raw_ore_value)} ·
+            refined <span style={{ color: GREEN }}>{fmtIsk(result.total_value)}</span> ·
+            refine premium <span style={{ color: deltaColor }}>{result.delta >= 0 ? '+' : ''}{fmtIsk(result.delta)}</span>
             {result.skipped?.length ? <span style={{ color: 'var(--text)' }}> · skipped (under one batch): {result.skipped.join(', ')}</span> : null}
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table>
-              <thead><tr><th>Mineral</th><th style={{ textAlign: 'right' }}>Quantity</th><th style={{ textAlign: 'right' }}>Unit cost</th><th style={{ textAlign: 'right' }}>Jita value</th></tr></thead>
+              <thead><tr><th>Mineral</th><th style={{ textAlign: 'right' }}>Quantity</th><th style={{ textAlign: 'right' }}>Jita unit</th><th style={{ textAlign: 'right' }}>Jita value</th></tr></thead>
               <tbody>
                 {result.minerals.map(mn => (
                   <tr key={mn.type_id}>
@@ -180,9 +215,9 @@ export default function ReprocessPanel({ onReprocessed }) {
       )}
 
       <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 8 }}>
-        Minerals inherit the ore's cost basis (allocated by Jita value) and are added to your warehouse as
-        <code> source=reprocess</code> lots, so building with your own ore no longer reads "Missing inputs". Only whole
-        ore batches refine; leftovers stay in the lot.
+        Ore is read live from your synced ESI assets and grouped by station/structure. The refine premium compares the
+        refined mineral value against the raw ore value at the chosen Jita basis — positive means refining beats selling
+        the ore as-is. Only whole ore batches refine; leftovers are ignored. This view is read-only.
       </div>
     </div>
   )

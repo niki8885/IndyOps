@@ -948,7 +948,7 @@ def _mining_summary(db: Session, eve_db: Session, chars: list,
     items = [{**it, "value": round(it["value"], 2)} for it in items_by_type.values()]
 
     # per-day ISK: value each day's mined qty at its own character's unit value
-    daily = [{"date": d.isoformat(), "value": (q or 0) * unit_value.get((cid, tid), 0.0),
+    daily = [{"date": d.isoformat(), "value": int(q or 0) * unit_value.get((cid, tid), 0.0),
               "quantity": int(q or 0)} for d, cid, tid, q in grouped]
 
     summary = income.summarize_mining(items, daily)
@@ -1291,3 +1291,49 @@ async def set_job_override(
     row.updated_at = utcnow()
     db.commit()
     return {"job_id": body.job_id, "custom_unit_price": row.custom_unit_price}
+
+
+# ── Tracking summary (unified income/profit across all streams — Agenda) ─────────
+
+@router.get("/tracking-summary", summary="Unified income/profit across every tracking stream (Agenda)")
+async def tracking_summary(
+    days: int = Query(30, ge=1, le=365, description="window size ending today"),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    """One call that runs every Tracking stream (scope=all) over the last ``days`` and
+    returns each stream's headline number plus the account grand total — the data the
+    individual tabs each compute in isolation, unified for the Agenda summary card.
+    Profit streams (Market/Manufacturing/Contracts) report realized profit; the rest
+    report income (Missions/Ratting/Deliveries) or refined value (Mining)."""
+    end_d = utcnow().date()
+    start = (end_d - datetime.timedelta(days=days - 1)).isoformat()
+
+    trade = await get_trade_profits(scope="all", start=start, end=None,
+                                    current_user=current_user, db=db, eve_db=eve_db)
+    industry = await get_industry(scope="all", start=start, end=None,
+                                  current_user=current_user, db=db, eve_db=eve_db)
+    missions = await get_missions(scope="all", start=start, end=None, current_user=current_user, db=db)
+    ratting = await get_ratting(scope="all", start=start, end=None, current_user=current_user, db=db)
+    mining = await get_mining(scope="all", start=start, end=None, basis=None, limit=500,
+                              current_user=current_user, db=db, eve_db=eve_db)
+    deliveries = await get_deliveries(scope="all", status="completed", start=start, end=None,
+                                      current_user=current_user, db=db, eve_db=eve_db)
+
+    streams = [
+        {"key": "trade", "label": "Market (trade)", "kind": "profit", "value": trade["summary"]["total_profit"]},
+        {"key": "manufacturing", "label": "Manufacturing", "kind": "profit", "value": industry["mfg_summary"]["total_profit"]},
+        {"key": "contracts", "label": "Contracts", "kind": "profit", "value": industry["contracts_summary"]["total_profit"]},
+        {"key": "missions", "label": "Missions", "kind": "income", "value": missions["summary"]["total"]},
+        {"key": "ratting", "label": "Ratting", "kind": "income", "value": ratting["summary"]["grand_total"]},
+        {"key": "mining", "label": "Mining (refined)", "kind": "value", "value": mining["summary"]["total_value"]},
+        {"key": "deliveries", "label": "Deliveries", "kind": "income", "value": deliveries["summary"]["reward_total"]},
+    ]
+    grand_total = round(sum(s["value"] or 0 for s in streams), 2)
+    return {
+        "period": {"start": start, "end": end_d.isoformat(), "days": days},
+        "streams": streams,
+        "grand_total": grand_total,
+        "per_day": round(grand_total / days, 2) if days else 0.0,
+    }

@@ -48,6 +48,11 @@ def call_station(db, **overrides):
     return run(tr.list_station_candidates(current_user=USER, db=db, **kw))
 
 
+def call_portfolio(db, **overrides):
+    return run(tr.trade_portfolio(body=tr.TradePortfolioRequest(**overrides),
+                                  current_user=USER, db=db))
+
+
 @pytest.fixture
 def db():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -286,3 +291,49 @@ def test_freshness_tz_aware_recent_is_not_stale():
 def test_freshness_none_is_stale():
     iso, stale = tr._freshness(None)
     assert iso is None and stale is True
+
+
+# --------------------------------------------------------------------------- #
+# /portfolio (Markowitz allocation)
+# --------------------------------------------------------------------------- #
+def test_portfolio_allocates_budget_and_traces_frontier(db):
+    from app.repositories import trade_repo
+    trade_repo.upsert_trade_candidates(db, [
+        _route(34, JITA, AMARR, margin_p=0.20, buy_price=100.0, daily_volume=10000.0),
+        _route(36, AMARR, JITA, margin_p=0.40, buy_price=200.0, daily_volume=10000.0),
+    ])
+    out = call_portfolio(db, budget=1_000_000.0)
+    res, t = out["result"], out["result"]["totals"]
+    assert out["meta"]["n_considered"] == 2
+    assert t["capital_used"] <= 1_000_000.0 + 1.0      # never overspends the budget
+    assert t["n_assets"] >= 1 and t["expected_profit"] > 0
+    assert res["frontier"] is not None and res["frontier"]["points"]
+    a = res["allocations"][0]
+    assert a["qty"] > 0 and "→" in a["best_method"]
+
+
+def test_portfolio_keeps_best_route_per_item(db):
+    from app.repositories import trade_repo
+    trade_repo.upsert_trade_candidates(db, [
+        _route(34, JITA, AMARR, margin_p=0.10, buy_price=100.0),   # profit 10
+        _route(34, JITA, RENS, margin_p=0.30, buy_price=100.0),    # profit 30 ← best
+    ])
+    out = call_portfolio(db, budget=1_000_000.0)
+    assert out["meta"]["n_considered"] == 1                        # deduped to one asset
+    assert out["result"]["allocations"][0]["best_method"] == "Jita → Rens"
+
+
+def test_portfolio_min_volume_filter_drops_illiquid(db):
+    from app.repositories import trade_repo
+    trade_repo.upsert_trade_candidates(db, [
+        _route(34, JITA, AMARR, daily_volume=50.0),
+        _route(36, AMARR, JITA, daily_volume=5000.0),
+    ])
+    out = call_portfolio(db, budget=1_000_000.0, min_volume=1000.0)
+    assert {a["type_id"] for a in out["result"]["allocations"]} == {36}
+
+
+def test_portfolio_empty_pool_is_safe(db):
+    out = call_portfolio(db, budget=1_000_000.0)
+    assert out["result"]["totals"]["n_assets"] == 0
+    assert out["result"]["allocations"] == [] and out["result"]["frontier"] is None

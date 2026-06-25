@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { get, post, del } from '../api/client'
 import AccountDashboard from './tracking/AccountDashboard'
+import TrackingSummary from './tracking/TrackingSummary'
 
 // ── formatting ───────────────────────────────────────────────────────────────
 const GREEN = '#4caf7d', RED = '#e05252'
@@ -49,6 +50,7 @@ export default function AgendaPage() {
     <div>
       <h2 style={{ marginBottom: 14 }}>Agenda</h2>
       <AccountDashboard />
+      <TrackingSummary />
       <Ticker />
       <div style={{ marginTop: 20 }}>
         <NotificationsFeed />
