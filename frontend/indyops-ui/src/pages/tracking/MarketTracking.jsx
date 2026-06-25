@@ -6,10 +6,12 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { get } from '../../api/client'
 import { fmtIsk, fmtInt, fmtDate, GREEN, RED } from './fmt'
 import {
-  ScopeSelect, DateRange, Stat, StatRow, SyncButton, ScopeWarning, SortableTable, MiniBars,
+  ScopeSelect, DateRange, Stat, StatRow, SyncButton, ScopeWarning, SortableTable,
 } from './common'
+import ProfitChart from './ProfitChart'
 
 const fmtPct = v => (v == null ? '—' : `${Number(v).toFixed(1)}%`)
+const fmtRatio = v => (v == null ? '—' : Number(v).toFixed(2))
 const profitColor = v => (v >= 0 ? GREEN : RED)
 
 export default function MarketTracking() {
@@ -83,16 +85,20 @@ export default function MarketTracking() {
           <Stat label="Total buy" value={fmtIsk(s.total_buy)} />
           <Stat label="Broker fees" value={fmtIsk(s.total_broker)} />
           <Stat label="Sales tax" value={fmtIsk(s.total_tax)} />
-          <Stat label="Avg margin" value={fmtPct(s.avg_margin)} />
-          <Stat label="Trades / units" value={`${fmtInt(s.trade_count)} / ${fmtInt(s.units)}`} />
+          <Stat label="Avg margin / ROI" value={fmtPct(s.avg_margin)} />
+          <Stat label="Profit / day" value={fmtIsk(s.profit_per_day)} />
+          <Stat label="Win rate" value={fmtPct(s.win_rate)} />
+          <Stat label="Profit factor" value={fmtRatio(s.profit_factor)} />
+          <Stat label="Trades (W / L)" value={`${fmtInt(s.trade_count)} (${fmtInt(s.win_count)} / ${fmtInt(s.loss_count)})`} />
         </StatRow>
       )}
 
-      <MiniBars series={s?.series} valueKey="profit" label="Realized profit by day" />
+      <ProfitChart series={s?.series} label="Realized profit — daily bars + cumulative line" />
 
       <div className="sec-label" style={{ marginBottom: 8 }}>Trade Profits</div>
       <SortableTable columns={columns} rows={data?.rows || []}
         rowKey={(r, i) => `${r.character_id}-${r.date}-${r.type_id}-${i}`}
+        rowStyle={r => (r.profit < 0 ? { background: 'rgba(224,82,82,0.06)' } : undefined)}
         empty="No matched trades yet. Buy then sell an item, and Sync from ESI (history builds going forward)." />
 
       <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 8 }}>

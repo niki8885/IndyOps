@@ -228,6 +228,13 @@ def summarize_manufacturing(rows: list[dict]) -> dict:
     for s in series.values():
         s["profit"] = round(s["profit"], 2)
         s["sell"] = round(s["sell"], 2)
+
+    # win/loss + risk metrics: a "win" is a realized manufacturing sale with positive profit.
+    wins = [r["profit"] for r in rows if r["profit"] > 0]
+    losses = [r["profit"] for r in rows if r["profit"] < 0]
+    gross_loss = -sum(losses)
+    n_days = len(series)
+
     return {
         "total_build": round(total_build, 2),
         "total_sell": round(total_sell, 2),
@@ -237,6 +244,12 @@ def summarize_manufacturing(rows: list[dict]) -> dict:
         "units": units,
         "trade_count": len(rows),
         "avg_margin": round(total_profit / total_build * 100, 2) if total_build else None,
+        "win_count": len(wins),
+        "loss_count": len(losses),
+        "win_rate": round(len(wins) / len(rows) * 100, 1) if rows else None,
+        "profit_factor": round(sum(wins) / gross_loss, 2) if gross_loss else None,
+        "avg_profit": round(total_profit / len(rows), 2) if rows else None,
+        "profit_per_day": round(total_profit / n_days, 2) if n_days else None,
         "series": sorted(series.values(), key=lambda x: x["date"]),
     }
 

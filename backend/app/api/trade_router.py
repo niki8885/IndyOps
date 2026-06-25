@@ -10,14 +10,17 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.adapters import portfolio as portfolio_engine
 from app.core import config
 from app.core.database import get_db, UserDB, TradeCandidate, StationTradeCandidate
 from app.core.security import get_current_user
 from app.core.trade_data import HUBS, HUB_STATION_IDS, STATION_TO_HUB
 from app.repositories import trade_repo
 from app.services import trade
+from app.services import portfolio as portfolio_svc
 
 router = APIRouter()
 
@@ -127,3 +130,99 @@ async def list_station_candidates(
     updated_at, stale = _freshness(trade_repo.latest_updated_at(db, StationTradeCandidate))
     return {"count": len(out), "updated_at": updated_at, "stale": stale,
             "ttl_seconds": config.TRADE_TTL_SECONDS, "rows": out}
+
+
+# ── portfolio optimizer (Markowitz over cross-hub candidates) ──────────────────
+
+class TradePortfolioRequest(BaseModel):
+    budget: float = 0.0                     # target ISK to deploy
+    buy_hubs: Optional[str] = None          # CSV hub names (same filters as /candidates)
+    sell_hubs: Optional[str] = None
+    strategy: str = "patient"               # patient | instant
+    min_margin: float = 0.0
+    cargo: Optional[float] = None           # cargo m³ ceiling per unit (excludes bulky)
+    min_volume: float = 0.0                 # drop items below this daily traded volume
+    type_ids: list[int] = []                # optional explicit selection (else whole pool)
+    pool_limit: int = 150                   # candidate pool size to optimise over
+    risk_aversion: Optional[float] = None   # Markowitz λ (default from config)
+    horizon_days: Optional[int] = None      # sell-through horizon for the liquidity cap
+    max_weight: Optional[float] = None      # max budget share per item, 0..1
+    participation: Optional[float] = None   # fraction of daily volume capturable, 0..1
+
+
+@router.post("/portfolio")
+async def trade_portfolio(body: TradePortfolioRequest,
+                          current_user: UserDB = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    """Markowitz mean-variance allocation of an ISK budget across the optimizer's
+    cross-hub candidates — the same engine as the Jita → C-J haul portfolio. Picks the
+    best route per item under the current filters, then water-fills the budget into
+    integer buys bounded by liquidity (``participation·daily_volume·horizon``) and
+    diversification (``max_weight``) caps. Deterministic native engine, Python fallback."""
+    lam = body.risk_aversion if body.risk_aversion is not None else config.TRADE_PORTFOLIO_RISK_AVERSION
+    horizon = body.horizon_days or config.TRADE_PORTFOLIO_HORIZON_DAYS
+    participation = (body.participation if body.participation is not None
+                     else config.TRADE_PORTFOLIO_PARTICIPATION)
+    max_weight = body.max_weight if body.max_weight is not None else config.TRADE_PORTFOLIO_MAX_WEIGHT
+    instant = body.strategy == "instant"
+    want = {int(t) for t in (body.type_ids or [])}
+
+    rows = trade_repo.query_candidates(
+        db,
+        buy_stations=_stations_for(body.buy_hubs),
+        sell_stations=_stations_for(body.sell_hubs),
+        max_buy_price=(body.budget or None), max_volume=body.cargo,
+        min_margin=body.min_margin, strategy=body.strategy, limit=max(body.pool_limit, 1),
+    )
+
+    # cross-hub rows repeat an item across hub pairs → keep the most profitable route per item
+    best_by_item: dict[int, dict] = {}
+    for r in rows:
+        if want and r.item_id not in want:
+            continue
+        if body.min_volume and (r.daily_volume or 0.0) < body.min_volume:
+            continue
+        profit = r.profit_isk_instant if instant else r.profit_isk_patient
+        cap = r.buy_price or 0.0
+        if cap <= 0 or (profit or 0.0) <= 0:
+            continue
+        cur = best_by_item.get(r.item_id)
+        if cur is None or profit > cur["unit_profit"]:
+            sigma = max((r.volatility_cv or 0.0) or config.TRADE_PORTFOLIO_DEFAULT_SIGMA,
+                        config.TRADE_PORTFOLIO_MIN_SIGMA)
+            best_by_item[r.item_id] = {
+                "type_id": r.item_id, "name": r.type_name, "category_id": None,
+                "unit_cost": cap, "unit_profit": profit, "roi": profit / cap,
+                "sigma": sigma, "unit_vol_m3": r.item_volume_m3 or 0.0,
+                "daily_volume": r.daily_volume,
+                "best_method": (f"{STATION_TO_HUB.get(r.buy_hub, r.buy_hub)} → "
+                                f"{STATION_TO_HUB.get(r.sell_hub, r.sell_hub)}"),
+            }
+    assets = list(best_by_item.values())
+
+    if assets:
+        mu_v = [a["roi"] for a in assets]
+        sig_v = [a["sigma"] for a in assets]
+        weights, _metrics, engine = portfolio_engine.optimize_weights(mu_v, sig_v, lam)
+        result = portfolio_svc.build_portfolio(
+            assets, weights, body.budget, horizon_days=horizon,
+            participation=participation, max_weight=max_weight)
+        t = result["totals"]
+        result["frontier"] = {
+            "points": portfolio_svc.efficient_frontier(mu_v, sig_v),
+            "chosen": {"risk_aversion": lam, "stddev": t["stddev"], "exp_return": t["exp_return"]},
+            "assets": [{"name": a["name"], "stddev": a["sigma"], "exp_return": a["roi"]} for a in assets],
+        }
+    else:
+        engine = "python"
+        result = {"allocations": [], "frontier": None, "totals": {
+            "budget": round(max(body.budget or 0.0, 0.0), 2), "capital_used": 0.0, "leftover": 0.0,
+            "expected_profit": 0.0, "portfolio_roi": 0.0, "total_volume_m3": 0.0,
+            "stddev": 0.0, "exp_return": 0.0, "n_assets": 0, "n_considered": 0}}
+
+    meta = {
+        "strategy": body.strategy, "budget": round(max(body.budget or 0.0, 0.0), 2),
+        "risk_aversion": lam, "horizon_days": horizon, "participation": participation,
+        "max_weight": max_weight, "engine": engine, "n_considered": len(assets),
+    }
+    return {"meta": meta, "result": result}

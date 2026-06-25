@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { get } from '../api/client'
+import TradePortfolio from './TradePortfolio'
 
 // Self-contained formatters (kept local so this page doesn't pull in Plotly via
 // lib/plot — it has no charts and stays in the main bundle).
@@ -35,6 +36,8 @@ export default function TradeOptimizerPage() {
   const [buyHubs, setBuyHubs] = useState([])
   const [sellHubs, setSellHubs] = useState([])
   const [stationHubs, setStationHubs] = useState([])
+  const [minVol, setMinVol] = useState(0)        // dynamic daily-volume floor (client filter)
+  const [risk, setRisk] = useState(8)            // portfolio risk-aversion λ
 
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -43,6 +46,7 @@ export default function TradeOptimizerPage() {
   useEffect(() => { get('/trade/hubs').then(setHubs).catch(() => setHubs([])) }, [])
 
   const load = useCallback(async () => {
+    if (tab === 2) return                 // the Portfolio tab fetches on its own
     setLoading(true); setErr('')
     try {
       const qs = new URLSearchParams({ limit: '100' })
@@ -74,6 +78,14 @@ export default function TradeOptimizerPage() {
 
   const onKey = e => { if (e.key === 'Enter') load() }
 
+  // dynamic volume filter: live client-side filter of the loaded rows by daily volume
+  const volMax = useMemo(
+    () => Math.max(0, ...((data?.rows) || []).map(r => Number(r.daily_volume) || 0)),
+    [data])
+  const shown = useMemo(
+    () => ((data?.rows) || []).filter(r => (Number(r.daily_volume) || 0) >= minVol),
+    [data, minVol])
+
   return (
     <div>
       <div style={{ color: 'var(--text)', fontSize: 12, marginBottom: 14 }}>
@@ -81,7 +93,7 @@ export default function TradeOptimizerPage() {
       </div>
 
       <div className="tabs">
-        {['Cross-hub routes', 'In-station flips'].map((t, i) => (
+        {['Cross-hub routes', 'In-station flips', 'Portfolio'].map((t, i) => (
           <button key={t} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>
             {t}
           </button>
@@ -106,6 +118,25 @@ export default function TradeOptimizerPage() {
           <RailLabel style={{ marginTop: 16 }}>Min margin %</RailLabel>
           <input type="number" min="0" step="0.1" placeholder="e.g. 5" value={minMargin}
             onChange={e => setMinMargin(e.target.value)} onKeyDown={onKey} />
+
+          {volMax > 0 && (
+            <>
+              <RailLabel style={{ marginTop: 16 }}>
+                Min volume/day — {minVol > 0 ? fmtNum(minVol) : 'any'}
+              </RailLabel>
+              <input type="range" min="0" max={Math.ceil(volMax)} step={Math.max(1, Math.ceil(volMax / 100))}
+                value={Math.min(minVol, Math.ceil(volMax))} onChange={e => setMinVol(Number(e.target.value))}
+                style={{ width: '100%' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text)' }}>
+                <span>any</span><span>{fmtNum(volMax)}/day</span>
+              </div>
+              {tab === 2 && (
+                <div style={{ fontSize: 10, color: 'var(--text)', marginTop: 4 }}>
+                  Applied as the portfolio liquidity floor.
+                </div>
+              )}
+            </>
+          )}
 
           {tab === 0 && (
             <>
@@ -133,24 +164,36 @@ export default function TradeOptimizerPage() {
             </>
           )}
 
-          <button className="btn btn-primary" style={{ width: '100%', marginTop: 18 }}
-            onClick={load} disabled={loading}>
-            {loading ? 'Loading…' : 'Apply filters'}
-          </button>
+          {tab !== 2 && (
+            <button className="btn btn-primary" style={{ width: '100%', marginTop: 18 }}
+              onClick={load} disabled={loading}>
+              {loading ? 'Loading…' : 'Apply filters'}
+            </button>
+          )}
         </div>
 
         {/* ── results ── */}
         <div>
-          {data && <Freshness data={data} />}
-          {err && <div className="error-box">{err}</div>}
-          {loading && !data && <div className="empty-state">Loading candidates…</div>}
-          {!loading && data && data.count === 0 && (
-            <div className="empty-state">
-              No candidates match. The worker may not have populated the tables yet, or loosen the filters.
-            </div>
-          )}
-          {data && data.count > 0 && (
-            tab === 0 ? <CrossTable rows={data.rows} /> : <StationTable rows={data.rows} />
+          {tab === 2 ? (
+            <TradePortfolio budget={budget} buyHubs={buyHubs} sellHubs={sellHubs} strategy={strategy}
+              minMargin={minMargin} cargo={cargo} minVol={minVol} risk={risk} setRisk={setRisk} />
+          ) : (
+            <>
+              {data && <Freshness data={data} shown={shown.length} />}
+              {err && <div className="error-box">{err}</div>}
+              {loading && !data && <div className="empty-state">Loading candidates…</div>}
+              {!loading && data && data.count === 0 && (
+                <div className="empty-state">
+                  No candidates match. The worker may not have populated the tables yet, or loosen the filters.
+                </div>
+              )}
+              {data && data.count > 0 && shown.length === 0 && (
+                <div className="empty-state">No routes above the volume floor — lower the Min volume/day slider.</div>
+              )}
+              {data && shown.length > 0 && (
+                tab === 0 ? <CrossTable rows={shown} /> : <StationTable rows={shown} />
+              )}
+            </>
           )}
         </div>
       </div>
@@ -173,14 +216,16 @@ function HubToggles({ hubs, selected, onToggle }) {
   )
 }
 
-function Freshness({ data }) {
+function Freshness({ data, shown }) {
   const when = data.updated_at ? new Date(data.updated_at).toLocaleString() : 'never'
+  const countLabel = (shown != null && shown !== data.count)
+    ? `${shown} of ${data.count} candidates` : `${data.count} candidate${data.count === 1 ? '' : 's'}`
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, fontSize: 12,
       color: data.stale ? '#c8a951' : 'var(--text)',
     }}>
-      <span>{data.count} candidate{data.count === 1 ? '' : 's'} · data updated {when}</span>
+      <span>{countLabel} · data updated {when}</span>
       {data.stale && <span>⚠ stale (older than {Math.round(data.ttl_seconds / 60)} min) — worker refresh pending</span>}
     </div>
   )
