@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import inventory_router as ir
-from app.core.database import Base, InventoryItem, ReprocessingPreset
+from app.core.database import Base, InventoryItem
 from app.core.database_eve import EveBase, EveType, EveGroup, EveTypeMaterial
 
 USER = SimpleNamespace(id=1)
