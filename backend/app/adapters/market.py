@@ -57,14 +57,35 @@ def esi_cost_indices() -> dict:
     return table
 
 
+def _coerce_agg_floats(agg: dict) -> dict:
+    """Fuzzwork returns the aggregate numbers (max/min/percentile/…) as **strings**.
+    Coerce them to float in place so every consumer can do arithmetic without ``int * str``
+    blowing up (e.g. mining valuation, ore reprocessing, contract-buy allocation)."""
+    if not isinstance(agg, dict):
+        return agg
+    for sides in agg.values():
+        if not isinstance(sides, dict):
+            continue
+        for fields in sides.values():
+            if isinstance(fields, dict):
+                for k, v in fields.items():
+                    if isinstance(v, str):
+                        try:
+                            fields[k] = float(v)
+                        except ValueError:
+                            pass
+    return agg
+
+
 def fuzzwork_aggregates(region: int, type_ids: list[int]) -> dict:
-    """Fuzzwork aggregate data keyed by type_id (str). Raises on HTTP error."""
+    """Fuzzwork aggregate data keyed by type_id (str), numbers coerced to float. Raises on
+    HTTP error."""
     if not type_ids:
         return {}
     ids = ",".join(str(t) for t in type_ids)
     resp = requests.get(_AGG_URL, params={"region": region, "types": ids}, headers=_HEADERS, timeout=_TIMEOUT)
     resp.raise_for_status()
-    return resp.json()
+    return _coerce_agg_floats(resp.json())
 
 
 def fuzzwork_aggregates_or_empty(region: int, type_ids: list[int]) -> dict:

@@ -122,6 +122,24 @@ def test_fuzzwork_aggregates_or_empty_passthrough(monkeypatch):
     assert market.fuzzwork_aggregates_or_empty(10000002, [34]) == {"34": {"buy": {"max": 1.0}}}
 
 
+def test_fuzzwork_aggregates_coerces_string_numbers(monkeypatch):
+    # Fuzzwork returns the aggregate numbers as STRINGS; they must come back as floats so
+    # callers can do arithmetic (mining valuation / reprocessing / contract-buy allocation).
+    monkeypatch.setattr(market.requests, "get", lambda *a, **k: FakeResponse(
+        {"34": {"buy": {"max": "4.50", "percentile": "4.45"},
+                "sell": {"min": "5.50", "percentile": "5.55"}}}))
+    out = market.fuzzwork_aggregates(10000002, [34])
+    assert out["34"]["buy"]["percentile"] == pytest.approx(4.45)
+    assert out["34"]["sell"]["min"] == pytest.approx(5.50)
+    assert isinstance(out["34"]["sell"]["percentile"], float)
+
+
+def test_fuzzwork_aggregates_leaves_non_numeric_strings(monkeypatch):
+    monkeypatch.setattr(market.requests, "get",
+                        lambda *a, **k: FakeResponse({"35": {"buy": {"max": "n/a"}}}))
+    assert market.fuzzwork_aggregates(10000002, [35])["35"]["buy"]["max"] == "n/a"
+
+
 # ── esi_region_history (30-day truncation + None on failure) ──────────────────
 
 def test_esi_region_history_truncates_to_30(monkeypatch):
