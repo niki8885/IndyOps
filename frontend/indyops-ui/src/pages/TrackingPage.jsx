@@ -1,11 +1,13 @@
 import { useState } from 'react'
+import MarketTracking from './tracking/MarketTracking'
+import IndustryTracking from './tracking/IndustryTracking'
 import OrdersTracking from './tracking/OrdersTracking'
 import ContractsTracking from './tracking/ContractsTracking'
 import MissionTracking from './tracking/MissionTracking'
 import RattingTracking from './tracking/RattingTracking'
-import ComingSoon from './tracking/ComingSoon'
+import MiningTracking from './tracking/MiningTracking'
 
-const SUBTABS = ['Market', 'Industry', 'Orders', 'Contracts', 'Mission', 'Ratting']
+const SUBTABS = ['Market', 'Industry', 'Orders', 'Contracts', 'Mission', 'Ratting', 'Mining']
 
 export default function TrackingPage() {
   // Orders is the first fully built sub-tab, so land on it.
@@ -18,12 +20,13 @@ export default function TrackingPage() {
           <button key={t} className={`tab-btn ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
         ))}
       </div>
-      {tab === 0 && <ComingSoon title="Market" />}
-      {tab === 1 && <ComingSoon title="Industry" />}
+      {tab === 0 && <MarketTracking />}
+      {tab === 1 && <IndustryTracking />}
       {tab === 2 && <OrdersTracking />}
       {tab === 3 && <ContractsTracking />}
       {tab === 4 && <MissionTracking />}
       {tab === 5 && <RattingTracking />}
+      {tab === 6 && <MiningTracking />}
     </div>
   )
 }

@@ -305,6 +305,12 @@ def fetch_contracts(character_id: int, token: str) -> list:
     return _esi_get(f"/characters/{character_id}/contracts/", token, paginate=True)
 
 
+def fetch_contract_items(character_id: int, contract_id: int, token: str) -> list:
+    """Items inside one of the character's contracts (immutable once the contract is
+    finished — fetched once and cached)."""
+    return _esi_get(f"/characters/{character_id}/contracts/{contract_id}/items/", token)
+
+
 def fetch_industry_jobs(character_id: int, token: str) -> list:
     return _esi_get(
         f"/characters/{character_id}/industry/jobs/",

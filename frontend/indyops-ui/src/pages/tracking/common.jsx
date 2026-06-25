@@ -87,7 +87,8 @@ export function ScopeWarning({ names }) {
 }
 
 // Generic click-to-sort table. Columns: {key, label, num?, field?, sortVal?, render?}.
-export function SortableTable({ columns, rows, rowKey, empty = 'Nothing here yet.' }) {
+// Optional rowStyle(row) returns a per-row style object (e.g. to tint flagged rows).
+export function SortableTable({ columns, rows, rowKey, empty = 'Nothing here yet.', rowStyle }) {
   const [sort, setSort] = useState({ key: null, dir: 1 })
   const sorted = useMemo(() => {
     if (!sort.key) return rows
@@ -120,7 +121,7 @@ export function SortableTable({ columns, rows, rowKey, empty = 'Nothing here yet
         </thead>
         <tbody>
           {sorted.map((r, i) => (
-            <tr key={rowKey(r, i)}>
+            <tr key={rowKey(r, i)} style={rowStyle ? rowStyle(r) : undefined}>
               {columns.map(c => (
                 <td key={c.key} style={{ textAlign: c.num ? 'right' : 'left', whiteSpace: 'nowrap' }}>
                   {c.render ? c.render(r) : (r[c.field ?? c.key] ?? '—')}

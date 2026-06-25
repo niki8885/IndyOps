@@ -10,6 +10,7 @@ so they're button-triggered and rate-limited per user (see ``services/ratelimit`
 """
 import datetime
 import json
+import math
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -22,23 +23,45 @@ from sqlalchemy.orm import Session
 from app.adapters import market, esi
 from app.core.database import (
     get_db, UserDB, LinkedCharacter, CharacterSettings,
-    EsiMarketOrder, EsiIndustryJob, EsiContract, EsiSkill, EsiStructure, BankLedgerEntry,
-    EsiWalletEntry, ContractAnnotation, CourierRouteCache, LootAppraisal, EsiNameCache,
+    EsiMarketOrder, EsiIndustryJob, EsiContract, EsiContractItem, EsiSkill, EsiStructure,
+    BankLedgerEntry, EsiWalletEntry, EsiWalletTransaction, EsiBlueprintCopy, ContractAnnotation,
+    CourierRouteCache, LootAppraisal, EsiNameCache, EsiMiningLedger, InventoryItem,
+    JobCostOverride,
 )
 from app.core.database_eve import EveSessionLocal, EveStation, EveRegion
 from app.core.security import get_current_user
 from app.core.timeutil import utcnow
 from app.repositories import eve as eve_repo
-from app.services import orders as orders_svc, currency, skills, ratelimit, income, loot
-# Reuse the SDE name resolvers + single-character sync kick from the Personal File router.
+from app.services import (
+    orders as orders_svc, currency, skills, ratelimit, income, loot, trade_profits,
+    industry_ledger,
+)
+# Reuse the SDE name resolvers + single-character sync kick from the Personal File router,
+# plus the mining-ledger valuation stack (refine → Jita) that powers the per-character
+# mining journal — the Tracking → Mining tab is the same report across a scope.
 from app.api.characters_router import (
     _type_names, _station_names, _system_names, _structure_names, _kick_sync,
+    _mining_value, _ledger_entries, _settings_for,
 )
 
 router = APIRouter()
 
 _ORDERS_SCOPE = "esi-markets.read_character_orders.v1"
 _WALLET_SCOPE = "esi-wallet.read_character_wallet.v1"
+_MINING_SCOPE = "esi-industry.read_character_mining.v1"
+_THE_FORGE_REGION = 10000002  # Jita — for allocating a contract-buy price across its items
+# ESI industry-job activity_id → (SDE activity for the BOM lookup, display name, whether the
+# output is a sellable lot that feeds Manufacturing Profit). Manufacturing applies blueprint
+# ME; reactions/invention don't. Copying/research/invention show in the jobs table only.
+_ACT_META = {
+    1:  (1,  "Manufacturing", True),
+    3:  (3,  "TE Research",   False),
+    4:  (4,  "ME Research",   False),
+    5:  (5,  "Copying",       False),
+    8:  (8,  "Invention",     False),
+    9:  (11, "Reactions",     True),
+    11: (11, "Reactions",     True),
+}
 _SYNC_COOLDOWN_S = 60
 _PRICE_COOLDOWN_S = 60
 _LOOT_COOLDOWN_S = 5
@@ -385,6 +408,17 @@ def _parse_date(value: Optional[str], end: bool = False) -> Optional[datetime.da
     except (ValueError, TypeError):
         return None
     return datetime.datetime.combine(d, datetime.time.max if end else datetime.time.min)
+
+
+def _parse_day(value: Optional[str]) -> Optional[datetime.date]:
+    """ISO ``YYYY-MM-DD`` → ``date`` (the mining ledger is keyed by date, not datetime).
+    None if blank/bad."""
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _resolve_names(db: Session, ids) -> dict:
@@ -857,3 +891,403 @@ async def get_loot_tags(
         LootAppraisal.user_id == current_user.id, LootAppraisal.tags.isnot(None)).all()
     tags = sorted({t for (val,) in rows for t in _split_tags(val)}, key=str.lower)
     return {"tags": tags}
+
+
+# ── Mining (mined ore → refined Jita value) ────────────────────────────────────
+
+# EVE released 2003-05-06; a safe lower bound for "all of the accumulated ledger".
+_LEDGER_EPOCH = datetime.date(2003, 5, 6)
+
+
+def _mining_summary(db: Session, eve_db: Session, chars: list,
+                    start_d: datetime.date, end_d: datetime.date,
+                    basis_override: Optional[str], limit: int) -> tuple:
+    """The Tracking → Mining payload: value each character's mined ore (refine → Jita,
+    using *that* character's own reprocessing skills + journal settings), aggregate
+    across the scope by ore type, and attach a per-day ISK series plus the raw ledger
+    (date × ore × system). Returns ``(summary, entries)``."""
+    cids = [c.character_id for c in chars]
+
+    # One grouped pass — date × character × ore type → summed quantity. Drives both the
+    # per-character valuation (own skills) and the per-day series in a single query.
+    grouped = (
+        db.query(EsiMiningLedger.date, EsiMiningLedger.character_id,
+                 EsiMiningLedger.type_id, func.sum(EsiMiningLedger.quantity))
+        .filter(EsiMiningLedger.character_id.in_(cids or [-1]),
+                EsiMiningLedger.date >= start_d, EsiMiningLedger.date <= end_d)
+        .group_by(EsiMiningLedger.date, EsiMiningLedger.character_id, EsiMiningLedger.type_id)
+        .all()
+    )
+
+    qty_by_char: dict = {}
+    for d, cid, tid, q in grouped:
+        inner = qty_by_char.setdefault(cid, {})
+        inner[tid] = inner.get(tid, 0) + int(q or 0)
+
+    items_by_type: dict = {}
+    unit_value: dict = {}     # (character_id, type_id) → refined ISK per mined unit
+    for c in chars:
+        per_type = qty_by_char.get(c.character_id)
+        if not per_type:
+            continue
+        s = _settings_for(db, c.character_id)
+        base_yield = s.refine_base_yield if s else 0.50
+        use_basis = basis_override or (s.price_basis if s else "sell")
+        levels = {sk.skill_id: (sk.trained_level or 0)
+                  for sk in db.query(EsiSkill).filter(EsiSkill.character_id == c.character_id).all()}
+        valued = _mining_value(eve_db, per_type, use_basis, base_yield, levels)
+        for it in valued["items"]:
+            agg = items_by_type.setdefault(it["type_id"], {
+                "type_id": it["type_id"], "name": it["name"],
+                "category": it["category"], "qty": 0, "value": 0.0})
+            agg["qty"] += it["qty"]
+            agg["value"] += it["value"]
+            if it["qty"]:
+                unit_value[(c.character_id, it["type_id"])] = it["value"] / it["qty"]
+
+    items = [{**it, "value": round(it["value"], 2)} for it in items_by_type.values()]
+
+    # per-day ISK: value each day's mined qty at its own character's unit value
+    daily = [{"date": d.isoformat(), "value": (q or 0) * unit_value.get((cid, tid), 0.0),
+              "quantity": int(q or 0)} for d, cid, tid, q in grouped]
+
+    summary = income.summarize_mining(items, daily)
+
+    # raw ledger rows (newest first) with per-row refined value
+    entries = _ledger_entries(db, eve_db, cids, start_d, end_d, limit)
+    for e in entries:
+        e["value"] = round(e["quantity"] * unit_value.get((e["character_id"], e["type_id"]), 0.0), 2)
+    return summary, entries
+
+
+@router.get("/mining", summary="Mining income: mined ore refined → Jita value, by category/type/day")
+async def get_mining(
+    scope: str = Query("all", description="all | char:<id> | group:<name>"),
+    start: Optional[str] = Query(None, description="ISO date YYYY-MM-DD"),
+    end: Optional[str] = Query(None, description="ISO date YYYY-MM-DD"),
+    basis: Optional[str] = Query(None, pattern="^(buy|sell|split)$",
+                                 description="Jita price basis (defaults to each char's setting)"),
+    limit: int = Query(500, ge=1, le=2000),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    chars = _scoped_chars(db, current_user, scope)
+    start_d = _parse_day(start) or _LEDGER_EPOCH
+    end_d = _parse_day(end) or utcnow().date()
+    summary, entries = _mining_summary(db, eve_db, chars, start_d, end_d, basis, limit)
+    needs_scope = [c.character_name for c in chars if _MINING_SCOPE not in (c.scopes or "").split()]
+    return {
+        "summary": summary, "entries": entries,
+        "period": {"start": start_d.isoformat(), "end": end_d.isoformat()},
+        "needs_scope": needs_scope, "scope": scope,
+    }
+
+
+# ── Market: Trade Profits (FIFO realized P&L) ──────────────────────────────────
+
+def _char_fee_rates(db: Session, character_id: int) -> tuple:
+    """The character's (broker_fee_pct, sales_tax_pct) from its Accounting + Broker
+    Relations skills. Station-standing discounts are not modelled (treated as 0), so
+    broker fee is the conservative skill-only rate."""
+    levels = {sk.skill_id: (sk.trained_level or 0)
+              for sk in db.query(EsiSkill).filter(EsiSkill.character_id == character_id).all()}
+    return skills.broker_fee_pct(levels), skills.sales_tax_pct(levels)
+
+
+@router.get("/trade-profits", summary="Realized trade profit (FIFO buy↔sell) with broker fee + sales tax")
+async def get_trade_profits(
+    scope: str = Query("all", description="all | char:<id> | group:<name>"),
+    start: Optional[str] = Query(None, description="ISO date YYYY-MM-DD (sell date)"),
+    end: Optional[str] = Query(None, description="ISO date YYYY-MM-DD (sell date)"),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    chars = _scoped_chars(db, current_user, scope)
+    start_dt, end_dt = _parse_day(start), _parse_day(end)
+
+    # FIFO runs over each character's full transaction history (cost basis needs buys
+    # from before the window); the date filter is applied to the realized rows after.
+    all_rows: list = []
+    unmatched_total: dict = {}
+    for c in chars:
+        txns = (db.query(EsiWalletTransaction)
+                .filter(EsiWalletTransaction.character_id == c.character_id)
+                .order_by(EsiWalletTransaction.date.asc()).all())
+        if not txns:
+            continue
+        broker_pct, tax_pct = _char_fee_rates(db, c.character_id)
+        rows_in = [{"type_id": t.type_id, "is_buy": t.is_buy, "quantity": t.quantity,
+                    "unit_price": t.unit_price, "date": t.date} for t in txns]
+        res = trade_profits.match_trades(rows_in, broker_pct, tax_pct)
+        for r in res["rows"]:
+            r["character_id"] = c.character_id
+            r["character_name"] = c.character_name
+        all_rows.extend(res["rows"])
+        for tid, u in res["unmatched"].items():
+            unmatched_total[tid] = unmatched_total.get(tid, 0) + u
+
+    # resolve item names
+    type_ids = {r["type_id"] for r in all_rows} | set(unmatched_total)
+    names = _type_names(eve_db, type_ids)
+    for r in all_rows:
+        r["name"] = (names.get(r["type_id"]) or {}).get("name") or f"Type #{r['type_id']}"
+
+    def _in_window(r) -> bool:
+        if not r["date"]:
+            return False
+        d = datetime.date.fromisoformat(r["date"])
+        if start_dt and d < start_dt:
+            return False
+        if end_dt and d > end_dt:
+            return False
+        return True
+
+    rows = sorted((r for r in all_rows if _in_window(r)),
+                  key=lambda r: (r["date"], r["name"]), reverse=True)
+    summary = trade_profits.summarize_trades(rows)
+
+    unmatched = sorted(
+        ({"type_id": tid, "name": (names.get(tid) or {}).get("name") or f"Type #{tid}", "units": u}
+         for tid, u in unmatched_total.items()),
+        key=lambda x: -x["units"])
+
+    needs_scope = [c.character_name for c in chars if _WALLET_SCOPE not in (c.scopes or "").split()]
+    return {
+        "rows": rows, "summary": summary, "unmatched": unmatched,
+        "period": {"start": start_dt.isoformat() if start_dt else None,
+                   "end": end_dt.isoformat() if end_dt else None},
+        "needs_scope": needs_scope, "scope": scope,
+    }
+
+
+# ── Industry: completed jobs + manufacturing profit (FIFO cost ledger) ──────────
+
+def _job_bom(eve_db: Session, job, me: int, sde_activity: int) -> tuple:
+    """(inputs, product_type_id, produced) for an industry job — its ME-adjusted material
+    consumption (from the SDE activity's BOM) + output quantity. ``inputs`` = [{type_id, qty}];
+    consumed qty per material = ``max(runs, ceil(base_qty·runs·(1−ME/100)))`` (rig/structure
+    ME is not known per ESI job, so blueprint ME only; ME is 0 for non-manufacturing)."""
+    bt = job.blueprint_type_id
+    runs = job.runs or 0
+    prod = eve_repo.product_for_blueprint(eve_db, bt) if bt else None
+    qty_per_run = (prod or {}).get("qty_per_run") or 1
+    product_type_id = job.product_type_id or (prod or {}).get("product_type_id")
+    inputs = [
+        {"type_id": m["type_id"],
+         "qty": max(runs, math.ceil((m["base_qty"] or 0) * runs * (1 - me / 100.0)))}
+        for m in (eve_repo.materials(eve_db, bt, sde_activity) if bt else [])
+    ]
+    return inputs, product_type_id, runs * qty_per_run
+
+
+def _in_window(day: Optional[str], start_d, end_d) -> bool:
+    if not day:
+        return False
+    d = datetime.date.fromisoformat(day)
+    return not ((start_d and d < start_d) or (end_d and d > end_d))
+
+
+def _jita_sell(type_ids) -> dict:
+    """{type_id: Jita sell price} for allocating a contract-buy price across its items."""
+    ids = [t for t in type_ids if t]
+    if not ids:
+        return {}
+    agg = market.fuzzwork_aggregates_or_empty(_THE_FORGE_REGION, ids)
+    out = {}
+    for tid in ids:
+        se = (agg.get(str(tid)) or {}).get("sell") or {}
+        out[tid] = se.get("percentile") or se.get("min")
+    return out
+
+
+def _contract_buy_events(items, price: float, date, jita: dict) -> list:
+    """A contract I paid ``price`` for → buy events, the price allocated across the acquired
+    items by Jita value (equal split if no prices), so they become tracked cost basis."""
+    vals = {it.type_id: (jita.get(it.type_id) or 0.0) * int(it.quantity or 0) for it in items}
+    total = sum(vals.values())
+    n = len([it for it in items if (it.quantity or 0) > 0]) or 1
+    out = []
+    for it in items:
+        qty = int(it.quantity or 0)
+        if qty <= 0:
+            continue
+        share = (vals[it.type_id] / total) if total > 0 else (1.0 / n)
+        out.append({"kind": "buy", "date": date, "type_id": it.type_id,
+                    "qty": qty, "unit_cost": (price * share) / qty})
+    return out
+
+
+@router.get("/industry", summary="Completed manufacturing jobs + realized manufacturing profit")
+async def get_industry(
+    scope: str = Query("all", description="all | char:<id> | group:<name>"),
+    start: Optional[str] = Query(None, description="ISO date YYYY-MM-DD"),
+    end: Optional[str] = Query(None, description="ISO date YYYY-MM-DD"),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    chars = _scoped_chars(db, current_user, scope)
+    cids = [c.character_id for c in chars]
+    char_name = {c.character_id: c.character_name for c in chars}
+    start_d, end_d = _parse_day(start), _parse_day(end)
+    rates = {cid: _char_fee_rates(db, cid) for cid in cids}
+
+    # market buys (material cost basis) + sells (manufacturing realization)
+    events: list = []
+    name_ids: set = set()
+    txns = (db.query(EsiWalletTransaction)
+            .filter(EsiWalletTransaction.character_id.in_(cids or [-1])).all())
+    for t in txns:
+        broker_pct, tax_pct = rates.get(t.character_id, (3.0, 7.5))
+        if t.type_id:
+            name_ids.add(t.type_id)
+        if t.is_buy:
+            events.append({"kind": "buy", "date": t.date, "type_id": t.type_id,
+                           "qty": t.quantity, "unit_cost": (t.unit_price or 0.0) * (1 + broker_pct / 100.0)})
+        else:
+            events.append({"kind": "sell", "date": t.date, "type_id": t.type_id,
+                           "qty": t.quantity, "unit_price": t.unit_price,
+                           "broker_pct": broker_pct, "tax_pct": tax_pct})
+
+    # minerals refined from your own ore (Inventory → Reprocess) are owned cost basis:
+    # feed them in as acquisitions so own-ore builds aren't flagged "missing inputs".
+    for it in (db.query(InventoryItem)
+               .filter(InventoryItem.user_id == current_user.id, InventoryItem.source == "reprocess",
+                       InventoryItem.eve_type_id.isnot(None)).all()):
+        if it.eve_type_id:
+            name_ids.add(it.eve_type_id)
+        events.append({"kind": "buy", "date": it.created_at, "type_id": it.eve_type_id,
+                       "qty": it.quantity, "unit_cost": it.price or 0.0})
+
+    # completed industry jobs of every activity → build events (manufacturing + reactions
+    # produce a sellable lot and feed Manufacturing Profit; copying/research/invention just
+    # show their cost in the jobs table).
+    jobs = (db.query(EsiIndustryJob)
+            .filter(EsiIndustryJob.character_id.in_(cids or [-1]),
+                    EsiIndustryJob.status == "delivered",
+                    EsiIndustryJob.activity_id.in_(list(_ACT_META))).all())
+    bp_me = {b.item_id: (b.material_efficiency or 0)
+             for b in db.query(EsiBlueprintCopy)
+             .filter(EsiBlueprintCopy.character_id.in_(cids or [-1])).all()}
+    overrides = {o.job_id: o.custom_unit_price for o in db.query(JobCostOverride)
+                 .filter(JobCostOverride.user_id == current_user.id).all()}
+    job_meta: list = []
+    for j in jobs:
+        sde_act, act_name, produces = _ACT_META.get(j.activity_id, (j.activity_id, "Other", False))
+        me = bp_me.get(j.blueprint_id, 0) if j.activity_id == 1 else 0   # ME only on manufacturing
+        inputs, product_type_id, produced = _job_bom(eve_db, j, me, sde_act)
+        job_meta.append((j, inputs, product_type_id, produced, act_name, produces))
+        name_ids.update(m["type_id"] for m in inputs)
+        for tid in (product_type_id, j.blueprint_type_id):
+            if tid:
+                name_ids.add(tid)
+
+    names = eve_repo.type_names(eve_db, name_ids)
+    for ev in events:
+        if ev["kind"] == "sell":
+            ev["name"] = names.get(ev["type_id"]) or f"Type #{ev['type_id']}"
+    for j, inputs, product_type_id, produced, act_name, produces in job_meta:
+        events.append({
+            "kind": "build", "date": j.end_date,
+            "completed_at": j.end_date.isoformat() if j.end_date else None,
+            "job_id": j.job_id, "owner": char_name.get(j.character_id) or "Personal",
+            "activity": act_name, "blueprint_name": names.get(j.blueprint_type_id),
+            "product_type_id": product_type_id,
+            "product_name": names.get(product_type_id) or (f"Type #{product_type_id}" if product_type_id else None),
+            "runs": j.runs or 0, "product_qty": produced, "produces": produces,
+            "job_cost": j.cost or 0.0, "copy_cost": 0.0, "inputs": inputs,
+            "custom_unit_price": overrides.get(j.job_id),
+        })
+
+    # finished item-exchange contracts touching my chars (issued or accepted). A SELL (I gave
+    # items for a price) → contract_sell (profit, consumes cost basis); a BUY (I paid for items)
+    # → buy events so the acquired items become tracked cost basis for later builds/sales.
+    cset = set(cids)
+    contracts = [c for c in db.query(EsiContract).filter(
+        EsiContract.character_id.in_(cids or [-1]), EsiContract.type == "item_exchange",
+        EsiContract.status == "finished").all() if c.issuer_id in cset or c.acceptor_id in cset]
+    if contracts:
+        contract_ids = [c.contract_id for c in contracts]
+        incl_by: dict = {}
+        excl_by: dict = {}
+        for it in (db.query(EsiContractItem)
+                   .filter(EsiContractItem.contract_id.in_(contract_ids or [-1])).all()):
+            (incl_by if it.is_included else excl_by).setdefault(it.contract_id, []).append(it)
+        annos = {a.contract_id: a for a in db.query(ContractAnnotation)
+                 .filter(ContractAnnotation.user_id == current_user.id,
+                         ContractAnnotation.contract_id.in_(contract_ids or [-1])).all()}
+        acceptor_names = _resolve_names(db, [c.acceptor_id for c in contracts if c.acceptor_id])
+        buy_specs: list = []      # (items, price, date) for contract purchases
+        for c in contracts:
+            if not (c.price and c.price > 0):
+                continue
+            issued = c.issuer_id in cset
+            accepted = (c.acceptor_id in cset) and not issued
+            incl = incl_by.get(c.contract_id) or []     # offered by the issuer
+            excl = excl_by.get(c.contract_id) or []      # requested from the acceptor
+            if issued and incl:                          # I issued a sell → gave items for ISK
+                broker_pct, _tax = rates.get(c.character_id, (3.0, 7.5))
+                anno = annos.get(c.contract_id)
+                events.append({
+                    "kind": "contract_sell", "date": c.date_completed, "contract_id": c.contract_id,
+                    "character": char_name.get(c.character_id) or "Personal",
+                    "acceptor": acceptor_names.get(c.acceptor_id) or (f"#{c.acceptor_id}" if c.acceptor_id else "—"),
+                    "title": c.title or "—", "note": (anno.note if anno else None),
+                    "price": c.price, "broker": (c.price or 0.0) * broker_pct / 100.0,
+                    "items": [{"type_id": it.type_id, "qty": int(it.quantity or 0)} for it in incl],
+                })
+            elif issued and excl:                        # I issued a buy-request → received items
+                buy_specs.append((excl, c.price, c.date_completed))
+            elif accepted and incl:                      # I accepted someone's sell → bought items
+                buy_specs.append((incl, c.price, c.date_completed))
+        if buy_specs:
+            jita = _jita_sell({it.type_id for items, _p, _d in buy_specs for it in items})
+            for items, price, date in buy_specs:
+                events.extend(_contract_buy_events(items, price, date, jita))
+
+    ledger = industry_ledger.run_ledger(events)
+    job_rows = sorted((r for r in ledger["jobs"] if _in_window(r["date"], start_d, end_d)),
+                      key=lambda r: r["completed_at"] or "", reverse=True)
+    mfg_rows = sorted((r for r in ledger["manufacturing"] if _in_window(r["date"], start_d, end_d)),
+                      key=lambda r: (r["date"], r["name"]), reverse=True)
+    ctr_rows = sorted((r for r in ledger["contracts"] if _in_window(r["date"], start_d, end_d)),
+                      key=lambda r: r["date"], reverse=True)
+
+    needs_scope = [c.character_name for c in chars if _WALLET_SCOPE not in (c.scopes or "").split()]
+    return {
+        "jobs": job_rows, "jobs_summary": industry_ledger.summarize_jobs(job_rows),
+        "manufacturing": mfg_rows, "mfg_summary": industry_ledger.summarize_manufacturing(mfg_rows),
+        "contracts": ctr_rows, "contracts_summary": industry_ledger.summarize_contracts(ctr_rows),
+        "period": {"start": start_d.isoformat() if start_d else None,
+                   "end": end_d.isoformat() if end_d else None},
+        "needs_scope": needs_scope, "scope": scope,
+    }
+
+
+class JobOverrideIn(BaseModel):
+    job_id: int
+    custom_unit_price: Optional[float] = None     # null clears the override (Re-process Job)
+
+
+@router.post("/industry/job-override", summary="Set/clear a job's Custom Unit Price (detail panel)")
+async def set_job_override(
+    body: JobOverrideIn,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (db.query(JobCostOverride)
+           .filter(JobCostOverride.user_id == current_user.id, JobCostOverride.job_id == body.job_id).first())
+    if body.custom_unit_price is None or body.custom_unit_price < 0:
+        if row:                                   # Re-process Job — drop the manual cost
+            db.delete(row)
+            db.commit()
+        return {"job_id": body.job_id, "custom_unit_price": None}
+    if not row:
+        row = JobCostOverride(user_id=current_user.id, job_id=body.job_id, created_at=utcnow())
+        db.add(row)
+    row.custom_unit_price = body.custom_unit_price
+    row.updated_at = utcnow()
+    db.commit()
+    return {"job_id": body.job_id, "custom_unit_price": row.custom_unit_price}

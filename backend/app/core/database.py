@@ -329,6 +329,10 @@ class InventoryItem(Base):
     flow = Column(String(10), nullable=False, default="input")  # input | output
     item_status = Column(String(12), nullable=False, default="in_stock")  # in_stock | used | sold
     sale_price = Column(Float, nullable=True)  # ISK per unit when sold
+    # How this lot entered the warehouse. "reprocess" lots (minerals refined from your own
+    # ore) are fed into the Tracking → Industry FIFO cost ledger so own-ore builds get a
+    # cost basis instead of reading "missing inputs". None = manually added / unspecified.
+    source = Column(String(20), nullable=True)
 
     # Set while a lot is attached to a pending delivery (it stays visible in the
     # warehouse). Cleared on delivery completion; the lot is deleted on failure.
@@ -364,6 +368,30 @@ class StockMovement(Base):
     owner = relationship("UserDB", backref="stock_movements")
     project = relationship("Projects", backref="stock_movements")
     job = relationship("ProductionJob", backref="stock_movements")
+
+
+class ReprocessingPreset(Base):
+    """A user's named reprocessing setup — the structure base yield, fitted yield rigs,
+    facility tax and the character's reprocessing skills/implant — so warehouse ore can be
+    refined at a saved location ("where, what rig %, what tax") without re-entering it. See
+    [[indyops-tracking-profit-tracker]] / [[indyops-io13-ore-refining]]."""
+    __tablename__ = "reprocessing_presets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(80), nullable=False)
+    base_yield = Column(Float, nullable=False, default=0.50)     # structure/station base 0..1
+    tax_pct = Column(Float, nullable=False, default=0.0)         # facility take on output, %
+    security = Column(String(4), nullable=False, default="hi")   # hi | low | null (rig band)
+    reprocessing_lvl = Column(Integer, nullable=False, default=0)
+    efficiency_lvl = Column(Integer, nullable=False, default=0)
+    ore_specific_lvl = Column(Integer, nullable=False, default=0)
+    implant_pct = Column(Float, nullable=False, default=0.0)     # 0 / 1 / 2 / 4
+    rig_type_ids = Column(Text, nullable=True)                   # JSON list of rig type ids
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, nullable=True)
+
+    owner = relationship("UserDB", backref="reprocessing_presets")
 
 
 class Delivery(Base):
@@ -1017,6 +1045,40 @@ class EsiContract(Base):
     availability = Column(String(30), nullable=True)
     start_location_id = Column(BigInteger, nullable=True)
     end_location_id = Column(BigInteger, nullable=True)
+
+
+class EsiContractItem(Base):
+    """Items inside an item-exchange contract, fetched once per finished contract (they're
+    immutable) for the Tracking → Industry Contract-Profit view. ``is_included`` True =
+    offered by the issuer (what a sale gives away), False = requested from the acceptor."""
+    __tablename__ = "esi_contract_items"
+    __table_args__ = (UniqueConstraint("character_id", "contract_id", "record_id",
+                                       name="uq_esi_contract_item"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    contract_id = Column(BigInteger, nullable=False, index=True)
+    record_id = Column(BigInteger, nullable=False)
+    type_id = Column(Integer, nullable=True)
+    quantity = Column(BigInteger, nullable=True)
+    is_included = Column(Boolean, nullable=True)
+    is_singleton = Column(Boolean, nullable=True)
+
+
+class JobCostOverride(Base):
+    """A user's manual unit-cost override for one industry job (the "Custom Unit Price" in
+    the Tracking → Industry job detail panel). When a job's inputs can't be attributed to
+    tracked buys (Missing inputs), the user can set the produced item's unit cost here so
+    its profit is still tracked. Keyed by (user_id, job_id)."""
+    __tablename__ = "job_cost_overrides"
+    __table_args__ = (UniqueConstraint("user_id", "job_id", name="uq_job_cost_override"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    job_id = Column(BigInteger, nullable=False, index=True)
+    custom_unit_price = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, nullable=True)
 
 
 class EsiIndustryJob(Base):

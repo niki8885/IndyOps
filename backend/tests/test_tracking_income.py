@@ -57,6 +57,41 @@ def test_summarize_ratting_combines_wallet_and_loot():
     assert day1["total"] == 1_650_000.0
 
 
+# ── income.summarize_mining ────────────────────────────────────────────────────
+
+def test_summarize_mining_buckets_categories_totals_and_series():
+    items = [
+        {"type_id": 18, "name": "Plagioclase", "category": "ore", "qty": 1000, "value": 500_000.0},
+        {"type_id": 1230, "name": "Veldspar", "category": "ore", "qty": 2000, "value": 300_000.0},
+        {"type_id": 16634, "name": "Cobaltite", "category": "moon_ore", "qty": 500, "value": 1_000_000.0},
+        {"type_id": 16264, "name": "Clear Icicle", "category": "ice", "qty": 10, "value": 200_000.0},
+    ]
+    daily = [
+        {"date": "2026-06-01", "value": 500_000.0, "quantity": 1000},
+        {"date": "2026-06-01", "value": 300_000.0, "quantity": 2000},   # same day → summed
+        {"date": "2026-06-02", "value": 1_200_000.0, "quantity": 510},
+    ]
+    s = income.summarize_mining(items, daily)
+    assert s["total_value"] == 2_000_000.0
+    assert s["total_quantity"] == 3510
+    assert s["type_count"] == 4
+    assert s["categories"]["ore"] == {"value": 800_000.0, "qty": 3000}
+    assert s["categories"]["moon_ore"]["value"] == 1_000_000.0
+    assert s["categories"]["gas"] == {"value": 0.0, "qty": 0}            # always present
+    # items sorted by value desc (moon ore first)
+    assert s["items"][0]["type_id"] == 16634
+    # per-day series ascending, same-day rows summed
+    assert [x["date"] for x in s["series"]] == ["2026-06-01", "2026-06-02"]
+    assert s["series"][0] == {"date": "2026-06-01", "value": 800_000.0, "quantity": 3000}
+
+
+def test_summarize_mining_empty():
+    s = income.summarize_mining([], [])
+    assert s["total_value"] == 0.0 and s["total_quantity"] == 0 and s["type_count"] == 0
+    assert s["items"] == [] and s["series"] == []
+    assert all(s["categories"][c] == {"value": 0.0, "qty": 0} for c in income.MINING_CATEGORIES)
+
+
 # ── loot.parse_lines ───────────────────────────────────────────────────────────
 
 def test_parse_lines_both_formats_and_warnings():
