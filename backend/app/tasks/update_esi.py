@@ -3,6 +3,7 @@ import logging
 import time
 
 import requests
+from sqlalchemy import or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.adapters import esi
@@ -14,6 +15,7 @@ from app.core.database import (
     EsiSkill,
     EsiAsset,
     EsiContract,
+    EsiContractItem,
     EsiIndustryJob,
     EsiStanding,
     EsiStructure,
@@ -38,6 +40,7 @@ _IMPLANTS_SCOPE = "esi-clones.read_implants.v1"
 _MINING_SCOPE = "esi-industry.read_character_mining.v1"
 _BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
 _MARKET_ORDERS_SCOPE = "esi-markets.read_character_orders.v1"
+_CONTRACTS_SCOPE = "esi-contracts.read_character_contracts.v1"
 
 # Wallet-journal ref_types captured into EsiWalletEntry for the Tracking income
 # ledgers: mission rewards (main + time bonus) and ratting income (bounty + ESS).
@@ -479,6 +482,29 @@ def sync_character(db, char: LinkedCharacter) -> dict:
                 ["status", "date_accepted", "date_completed", "acceptor_id"])
         return len(rows)
 
+    def _contract_items():
+        # Items for finished item-exchange contracts I issued OR accepted (sells feed
+        # Contract-Profit, buys feed cost basis). Immutable once finished, so fetch once
+        # (skip already-itemized) and cap per sync.
+        if not _has_scope(char, _CONTRACTS_SCOPE):
+            return 0
+        done = [c for (c,) in db.query(EsiContract.contract_id).filter(
+            EsiContract.character_id == cid, EsiContract.type == "item_exchange",
+            EsiContract.status == "finished",
+            or_(EsiContract.issuer_id == cid, EsiContract.acceptor_id == cid)).all()]
+        have = {c for (c,) in db.query(EsiContractItem.contract_id).filter(
+            EsiContractItem.character_id == cid).distinct()}
+        todo = [c for c in done if c not in have][:50]
+        n = 0
+        for contract_id in todo:
+            rows = [{"character_id": cid, "contract_id": contract_id, "record_id": it.get("record_id"),
+                     "type_id": it.get("type_id"), "quantity": it.get("quantity"),
+                     "is_included": it.get("is_included"), "is_singleton": it.get("is_singleton")}
+                    for it in esi.fetch_contract_items(cid, contract_id, token) if it.get("record_id")]
+            _upsert(db, EsiContractItem, rows, ["character_id", "contract_id", "record_id"], [])
+            n += len(rows)
+        return n
+
     def _jobs():
         rows = [_map_job(cid, j) for j in esi.fetch_industry_jobs(cid, token)]
         _replace(db, EsiIndustryJob, cid, rows)
@@ -581,6 +607,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("implants", _implants)
     step("mining", _mining)
     step("contracts", _contracts)
+    step("contract_items", _contract_items)   # after contracts: needs the finished set
     step("industry_jobs", _jobs)
     step("standings", _standings)
     step("blueprints", _blueprints)

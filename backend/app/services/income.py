@@ -21,6 +21,9 @@ ESS = "ess_escrow_transfer"
 MISSION_REF_TYPES = (MAIN_REWARD, BONUS_REWARD)
 RATTING_REF_TYPES = (BOUNTY, ESS)
 
+# Same ore buckets the per-character mining journal uses (characters_router._CATEGORIES).
+MINING_CATEGORIES = ("ore", "moon_ore", "ice", "gas", "other")
+
 
 def _day(value) -> Optional[str]:
     """ISO date (``YYYY-MM-DD``) of a datetime, or None."""
@@ -135,5 +138,51 @@ def summarize_ratting(wallet_entries: list[dict], loot_rows: list[dict]) -> dict
         "loot_total": round(loot_total, 2),
         "grand_total": round(bounty_total + ess_total + loot_total, 2),
         "counts": counts,
+        "series": sorted(series.values(), key=lambda x: x["date"]),
+    }
+
+
+def summarize_mining(items: list[dict], daily: list[dict]) -> dict:
+    """Aggregate already-valued mining rows into category totals, a grand total, the
+    per-ore-type breakdown and a per-day ISK series.
+
+    The router does the heavy lifting (SQL aggregation + refine→Jita valuation, using
+    each character's own reprocessing skills) and passes the result in:
+    ``items`` are dicts with ``type_id``, ``name``, ``category``, ``qty`` and ``value``
+    (refined-mineral ISK per ore type); ``daily`` are dicts with ``date`` (ISO
+    ``YYYY-MM-DD`` string), ``value`` (ISK) and ``quantity``. This stays pure stdlib so
+    it's trivially testable — see [[indyops-service-layering]]."""
+    cats = {c: {"value": 0.0, "qty": 0} for c in MINING_CATEGORIES}
+    total_value = total_qty = 0.0
+
+    for it in items:
+        cat = it.get("category") or "other"
+        val = it.get("value") or 0.0
+        qty = it.get("qty") or 0
+        b = cats.setdefault(cat, {"value": 0.0, "qty": 0})
+        b["value"] += val
+        b["qty"] += qty
+        total_value += val
+        total_qty += qty
+    for b in cats.values():
+        b["value"] = round(b["value"], 2)
+
+    series: dict = {}
+    for d in daily:
+        day = d.get("date")
+        if not day:
+            continue
+        s = series.setdefault(day, {"date": day, "value": 0.0, "quantity": 0})
+        s["value"] += d.get("value") or 0.0
+        s["quantity"] += d.get("quantity") or 0
+    for s in series.values():
+        s["value"] = round(s["value"], 2)
+
+    return {
+        "total_value": round(total_value, 2),
+        "total_quantity": int(total_qty),
+        "type_count": len(items),
+        "categories": cats,
+        "items": sorted(items, key=lambda x: -(x.get("value") or 0.0)),
         "series": sorted(series.values(), key=lambda x: x["date"]),
     }
