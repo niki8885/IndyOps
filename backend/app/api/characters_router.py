@@ -412,14 +412,35 @@ async def get_blueprints(
     products = eve_repo.products_for_blueprints(eve_db, [b.type_id for b in bps])
     prod_names = _type_names(eve_db, [p["product_type_id"] for p in products.values()])
 
-    loc_ids = {b.location_id for b in bps if b.location_id}
-    station_names = _station_names(eve_db, loc_ids)
-    structure_names = _structure_names(db, loc_ids)
+    # Resolve each blueprint's location through the asset parent-chain (mirrors get_assets):
+    # a print inside a container reports the container's item_id as its location_id, which must
+    # climb to the station/structure that holds the container. EsiBlueprintCopy has no
+    # location_type, so feed the character's EsiAsset rows as the container map and let
+    # resolve_root infer station/system from the id (an unknown leaf id is treated as a structure).
+    assets = db.query(EsiAsset).filter(EsiAsset.character_id == char.character_id).all()
+    items_by_id = {a.item_id: {"location_id": a.location_id, "location_type": a.location_type}
+                   for a in assets}
+    bp_roots: dict = {}
+    by_kind = {"station": set(), "structure": set(), "system": set()}
+    for b in bps:
+        kind, rid = asset_location.resolve_root(b.location_id, None, items_by_id)
+        bp_roots[b.item_id] = (kind, rid)
+        if kind in by_kind and rid is not None:
+            by_kind[kind].add(rid)
+
+    station_names = _station_names(eve_db, by_kind["station"])
+    system_names = _system_names(eve_db, by_kind["system"])
+    structure_names = _structure_names(db, by_kind["structure"])
 
     def _loc_name(b):
-        if not b.location_id:
-            return None
-        return station_names.get(b.location_id) or structure_names.get(b.location_id) or f"#{b.location_id}"
+        kind, rid = bp_roots.get(b.item_id, (None, None))
+        if kind == "station":
+            return station_names.get(rid) or f"Station #{rid}"
+        if kind == "system":
+            return system_names.get(rid) or f"System #{rid}"
+        if kind == "structure":
+            return structure_names.get(rid) or f"Structure #{rid}"
+        return f"#{b.location_id}" if b.location_id else None
 
     # Stack identical prints (same type/ME/TE/runs/location) into one row with a count;
     # ESI returns one item per blueprint instance, so without this the tab shows dozens

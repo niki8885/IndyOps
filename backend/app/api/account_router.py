@@ -1042,6 +1042,7 @@ async def get_trade_profits(
         broker_pct, tax_pct = _char_fee_rates(db, c.character_id)
         rows_in.extend({"type_id": t.type_id, "is_buy": t.is_buy, "quantity": t.quantity,
                         "unit_price": t.unit_price, "date": t.date,
+                        "transaction_id": t.transaction_id,
                         "broker_pct": broker_pct, "tax_pct": tax_pct,
                         "character_id": c.character_id, "character_name": c.character_name}
                        for t in txns)
@@ -1068,7 +1069,15 @@ async def get_trade_profits(
 
     rows = sorted((r for r in all_rows if _in_window(r)),
                   key=lambda r: (r["date"], r["name"]), reverse=True)
-    summary = trade_profits.summarize_trades(rows)
+
+    # per-row opt-outs: excluded trades stay in the table (the UI dims them) but are left
+    # out of the summary metrics — same mechanism as Tracking → Industry (kind 'trade',
+    # keyed on the sell transaction id).
+    excl_trades = {e.ref_id for e in db.query(TrackingExclusion).filter(
+        TrackingExclusion.user_id == current_user.id, TrackingExclusion.kind == "trade").all()}
+    for r in rows:
+        r["excluded"] = r.get("sell_tx_id") in excl_trades
+    summary = trade_profits.summarize_trades([r for r in rows if not r["excluded"]])
 
     unmatched = sorted(
         ({"type_id": tid, "name": (names.get(tid) or {}).get("name") or f"Type #{tid}", "units": u}
@@ -1087,21 +1096,24 @@ async def get_trade_profits(
 # ── Industry: completed jobs + manufacturing profit (FIFO cost ledger) ──────────
 
 def _job_bom(eve_db: Session, job, me: int, sde_activity: int) -> tuple:
-    """(inputs, product_type_id, produced) for an industry job — its ME-adjusted material
-    consumption (from the SDE activity's BOM) + output quantity. ``inputs`` = [{type_id, qty}];
-    consumed qty per material = ``max(runs, ceil(base_qty·runs·(1−ME/100)))`` (rig/structure
-    ME is not known per ESI job, so blueprint ME only; ME is 0 for non-manufacturing)."""
+    """(inputs, product_type_id, produced, bom_known) for an industry job — its ME-adjusted
+    material consumption (from the SDE activity's BOM) + output quantity. ``inputs`` =
+    [{type_id, qty}]; consumed qty per material = ``max(runs, ceil(base_qty·runs·(1−ME/100)))``
+    (rig/structure ME is not known per ESI job, so blueprint ME only; ME is 0 for
+    non-manufacturing). ``bom_known`` is False when no blueprint id / no SDE BOM rows were
+    found — the caller must NOT treat such a job as a zero-cost (free) build."""
     bt = job.blueprint_type_id
     runs = job.runs or 0
     prod = eve_repo.product_for_blueprint(eve_db, bt) if bt else None
     qty_per_run = (prod or {}).get("qty_per_run") or 1
     product_type_id = job.product_type_id or (prod or {}).get("product_type_id")
+    mats = eve_repo.materials(eve_db, bt, sde_activity) if bt else []
     inputs = [
         {"type_id": m["type_id"],
          "qty": max(runs, math.ceil((m["base_qty"] or 0) * runs * (1 - me / 100.0)))}
-        for m in (eve_repo.materials(eve_db, bt, sde_activity) if bt else [])
+        for m in mats
     ]
-    return inputs, product_type_id, runs * qty_per_run
+    return inputs, product_type_id, runs * qty_per_run, bool(bt) and bool(mats)
 
 
 def _in_window(day: Optional[str], start_d, end_d) -> bool:
@@ -1200,8 +1212,8 @@ async def get_industry(
     for j in jobs:
         sde_act, act_name, produces = _ACT_META.get(j.activity_id, (j.activity_id, "Other", False))
         me = bp_me.get(j.blueprint_id, 0) if j.activity_id == 1 else 0   # ME only on manufacturing
-        inputs, product_type_id, produced = _job_bom(eve_db, j, me, sde_act)
-        job_meta.append((j, inputs, product_type_id, produced, act_name, produces))
+        inputs, product_type_id, produced, bom_known = _job_bom(eve_db, j, me, sde_act)
+        job_meta.append((j, inputs, product_type_id, produced, act_name, produces, bom_known))
         name_ids.update(m["type_id"] for m in inputs)
         for tid in (product_type_id, j.blueprint_type_id):
             if tid:
@@ -1211,7 +1223,7 @@ async def get_industry(
     for ev in events:
         if ev["kind"] == "sell":
             ev["name"] = names.get(ev["type_id"]) or f"Type #{ev['type_id']}"
-    for j, inputs, product_type_id, produced, act_name, produces in job_meta:
+    for j, inputs, product_type_id, produced, act_name, produces, bom_known in job_meta:
         events.append({
             "kind": "build", "date": j.end_date,
             "completed_at": j.end_date.isoformat() if j.end_date else None,
@@ -1220,7 +1232,7 @@ async def get_industry(
             "product_type_id": product_type_id,
             "product_name": names.get(product_type_id) or (f"Type #{product_type_id}" if product_type_id else None),
             "runs": j.runs or 0, "product_qty": produced, "produces": produces,
-            "job_cost": j.cost or 0.0, "copy_cost": 0.0, "inputs": inputs,
+            "job_cost": j.cost or 0.0, "copy_cost": 0.0, "inputs": inputs, "bom_known": bom_known,
             "custom_unit_price": overrides.get(j.job_id),
         })
 
@@ -1331,19 +1343,19 @@ async def set_job_override(
 
 
 class ExclusionIn(BaseModel):
-    kind: str                  # 'job' | 'contract'
-    ref_id: int                # job_id or contract_id
+    kind: str                  # 'job' | 'contract' | 'trade'
+    ref_id: int                # job_id, contract_id, or sell transaction_id (trade)
     excluded: bool             # True = exclude from totals, False = re-include
 
 
-@router.post("/industry/exclude", summary="Include/exclude a job or contract from the Industry totals")
+@router.post("/industry/exclude", summary="Include/exclude a job, contract or market trade from the totals")
 async def set_exclusion(
     body: ExclusionIn,
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if body.kind not in ("job", "contract"):
-        raise HTTPException(status_code=400, detail="kind must be 'job' or 'contract'")
+    if body.kind not in ("job", "contract", "trade"):
+        raise HTTPException(status_code=400, detail="kind must be 'job', 'contract' or 'trade'")
     row = (db.query(TrackingExclusion)
            .filter(TrackingExclusion.user_id == current_user.id,
                    TrackingExclusion.kind == body.kind, TrackingExclusion.ref_id == body.ref_id).first())

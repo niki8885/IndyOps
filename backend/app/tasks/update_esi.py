@@ -28,6 +28,9 @@ from app.core.database import (
     BankLedgerEntry,
     EsiWalletEntry,
     CharacterWealthSnapshot,
+    EsiCorpWallet,
+    EsiCorpIndustryJob,
+    EsiCorpMember,
 )
 from app.core.database_eve import EveSessionLocal, EveType, EvePlanet
 from app.core.timeutil import utcnow
@@ -45,6 +48,15 @@ _BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
 _MARKET_ORDERS_SCOPE = "esi-markets.read_character_orders.v1"
 _CONTRACTS_SCOPE = "esi-contracts.read_character_contracts.v1"
 _PLANETS_SCOPE = "esi-planets.manage_planets.v1"
+# Corporation (Phase B): roles scope gates whether we can even ask the character's corp roles;
+# the corp-data scopes gate the corp-level endpoints (further role-gated by ESI itself).
+_CORP_ROLES_SCOPE = "esi-characters.read_corporation_roles.v1"
+_CORP_WALLET_SCOPE = "esi-wallet.read_corporation_wallets.v1"
+_CORP_JOBS_SCOPE = "esi-industry.read_corporation_jobs.v1"
+_CORP_MEMBERS_SCOPE = "esi-corporations.read_corporation_membership.v1"
+# in-game roles that grant the corp endpoints (Director implies all)
+_ROLE_ACCOUNTANT = {"Director", "Accountant", "Junior_Accountant"}
+_ROLE_FACTORY = {"Director", "Factory_Manager"}
 _PI_FULL_PCT = 90.0                               # storage-full notification threshold
 _PI_EXPIRY_WARN = datetime.timedelta(hours=24)    # "extractor stops soon" lead time
 
@@ -339,11 +351,22 @@ def _asset_structure_ids(db, character_id) -> set:
 
 
 def _blueprint_structure_ids(db, character_id) -> set:
-    rows = (
-        db.query(EsiBlueprintCopy.location_id)
-        .filter(EsiBlueprintCopy.character_id == character_id).all()
-    )
-    return {loc for (loc,) in rows if asset_location.maybe_structure_id(loc)}
+    """Terminus Upwell-structure ids holding a character's blueprints. Climbs the asset
+    parent-chain so a print sitting in a container resolves to the station/structure that
+    holds the container — instead of treating the container's own item_id as a structure
+    (which 404s on /universe/structures and pollutes the EsiStructure cache with errors)."""
+    items_by_id = {
+        a.item_id: {"location_id": a.location_id, "location_type": a.location_type}
+        for a in db.query(EsiAsset.item_id, EsiAsset.location_id, EsiAsset.location_type)
+        .filter(EsiAsset.character_id == character_id).all()
+    }
+    out: set = set()
+    for (loc,) in (db.query(EsiBlueprintCopy.location_id)
+                   .filter(EsiBlueprintCopy.character_id == character_id).all()):
+        kind, rid = asset_location.resolve_root(loc, None, items_by_id)
+        if kind == "structure" and rid is not None:
+            out.add(rid)
+    return out
 
 
 # Planetary interaction (PI) helpers
@@ -407,6 +430,46 @@ def _pi_notify(db, char, label, summary, row, now) -> None:
     for severity, title, body in notes:
         db.add(AgendaNotification(user_id=char.user_id, alert_id=None,
                                   severity=severity, title=title, body=body))
+
+
+def _job_product_names(type_ids: set) -> dict:
+    """{product_type_id: name} for the job-completion notification labels (one SDE read).
+    Resilient: names are cosmetic, so an SDE read failure returns {} rather than blocking
+    the job sync."""
+    ids = {t for t in type_ids if t}
+    if not ids:
+        return {}
+    try:
+        eve = EveSessionLocal()
+        try:
+            return {tid: name for tid, name in
+                    eve.query(EveType.type_id, EveType.type_name).filter(EveType.type_id.in_(ids)).all()}
+        finally:
+            eve.close()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _job_notify(db, char, row, product_name, status, now) -> None:
+    """Emit / withdraw the 'industry job finished, not collected' Agenda notification, latched
+    on row.notified_ready. ESI sets status='ready' when a job's timer ends but the product is
+    still uncollected, and 'delivered' once the player collects it — the self-dismiss signal.
+    source_key ties the notification to the job so it can be deleted on collect."""
+    key = f"job_ready:{row.job_id}"
+    if status == "ready" and not row.notified_ready:
+        label = product_name or (f"чертёж #{row.blueprint_type_id}" if row.blueprint_type_id else "работа")
+        runs = row.runs or 0
+        db.add(AgendaNotification(
+            user_id=char.user_id, alert_id=None, severity="info",
+            title="Производство: работа завершена",
+            body=f"{label} ×{runs} — готово к получению, не забрано.",
+            source_key=key))
+        row.notified_ready = True
+    elif status == "delivered" and row.notified_ready:
+        db.query(AgendaNotification).filter(
+            AgendaNotification.user_id == char.user_id,
+            AgendaNotification.source_key == key).delete(synchronize_session=False)
+        row.notified_ready = False
 
 
 # Per-character sync
@@ -575,9 +638,41 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         return n
 
     def _jobs():
-        rows = [_map_job(cid, j) for j in esi.fetch_industry_jobs(cid, token)]
-        _replace(db, EsiIndustryJob, cid, rows)
-        return len(rows)
+        # Upsert (not replace) so the notified_ready latch survives between syncs; emit a
+        # one-shot "job finished, not collected" notification when ESI flips status→'ready'
+        # and self-dismiss it on →'delivered'. Prune jobs ESI no longer returns.
+        jobs = esi.fetch_industry_jobs(cid, token) or []
+        now = utcnow()
+        names = _job_product_names({j.get("product_type_id") for j in jobs})
+        seen: list = []
+        for j in jobs:
+            jid = j.get("job_id")
+            if not jid:
+                continue
+            data = _map_job(cid, j)
+            row = db.query(EsiIndustryJob).filter_by(character_id=cid, job_id=jid).first()
+            if row is None:
+                row = EsiIndustryJob(character_id=cid, job_id=jid, notified_ready=False)
+                db.add(row)
+            for k, v in data.items():
+                setattr(row, k, v)
+            _job_notify(db, char, row, names.get(j.get("product_type_id")), j.get("status"), now)
+            seen.append(jid)
+        db.query(EsiIndustryJob).filter(
+            EsiIndustryJob.character_id == cid, ~EsiIndustryJob.job_id.in_(seen or [-1])
+        ).delete(synchronize_session=False)
+        db.commit()
+        return len(jobs)
+
+    def _corp_roles():
+        # the character's corp roles gate the corp-level (Phase B) endpoints; store them so
+        # sync_corporations can pick a role-holding character per corp.
+        if not _has_scope(char, _CORP_ROLES_SCOPE):
+            return 0
+        data = esi.fetch_corp_roles(cid, token) or {}
+        char.corp_roles = data.get("roles") or []
+        db.commit()
+        return len(char.corp_roles)
 
     def _standings():
         rows = [_map_standing(cid, s) for s in esi.fetch_standings(cid, token)]
@@ -738,6 +833,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("contracts", _contracts)
     step("contract_items", _contract_items)   # after contracts: needs the finished set
     step("industry_jobs", _jobs)
+    step("corp_roles", _corp_roles)
     step("standings", _standings)
     step("blueprints", _blueprints)
     step("market_orders", _orders)
@@ -752,8 +848,126 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     return summary
 
 
+# ── Corporation-level sync (Phase B) ────────────────────────────────────────────
+
+def _best_corp_grantor(chars, role_set, scope):
+    """Pick a character that can satisfy a role-gated corp endpoint: it must hold ``scope`` and
+    (when ``role_set`` is given) at least one of those in-game corp roles. ``role_set=None``
+    means scope-only (e.g. membership). Returns the character or None."""
+    for c in chars:
+        if not _has_scope(c, scope):
+            continue
+        if role_set is None or (set(c.corp_roles or []) & role_set):
+            return c
+    return None
+
+
+def _sync_corp_wallet(db, corp_id, char, token, now) -> int:
+    rows = esi.fetch_corp_wallets(corp_id, token) or []
+    for w in rows:
+        div = w.get("division")
+        if div is None:
+            continue
+        row = db.query(EsiCorpWallet).filter_by(corporation_id=corp_id, division=div).first()
+        if row is None:
+            row = EsiCorpWallet(corporation_id=corp_id, division=div)
+            db.add(row)
+        row.balance = w.get("balance")
+        row.synced_by = char.character_id
+        row.synced_at = now
+    db.commit()
+    return len(rows)
+
+
+def _sync_corp_jobs(db, corp_id, char, token, now) -> int:
+    jobs = esi.fetch_corp_industry_jobs(corp_id, token) or []
+    seen: list = []
+    for j in jobs:
+        jid = j.get("job_id")
+        if not jid:
+            continue
+        row = db.query(EsiCorpIndustryJob).filter_by(corporation_id=corp_id, job_id=jid).first()
+        if row is None:
+            row = EsiCorpIndustryJob(corporation_id=corp_id, job_id=jid)
+            db.add(row)
+        row.installer_id = j.get("installer_id")
+        row.activity_id = j.get("activity_id")
+        row.blueprint_type_id = j.get("blueprint_type_id")
+        row.product_type_id = j.get("product_type_id")
+        row.runs = j.get("runs")
+        row.status = j.get("status")
+        row.start_date = esi.parse_dt(j.get("start_date"))
+        row.end_date = esi.parse_dt(j.get("end_date"))
+        row.location_id = j.get("location_id") or j.get("facility_id") or j.get("output_location_id")
+        row.cost = j.get("cost")
+        row.synced_at = now
+        seen.append(jid)
+    db.query(EsiCorpIndustryJob).filter(
+        EsiCorpIndustryJob.corporation_id == corp_id,
+        ~EsiCorpIndustryJob.job_id.in_(seen or [-1])).delete(synchronize_session=False)
+    db.commit()
+    return len(jobs)
+
+
+def _sync_corp_members(db, corp_id, char, token, now) -> int:
+    ids = esi.fetch_corp_members(corp_id, token) or []
+    known = {lc.character_id: lc.character_name for lc in
+             db.query(LinkedCharacter.character_id, LinkedCharacter.character_name)
+             .filter(LinkedCharacter.character_id.in_(ids or [-1])).all()}
+    for mid in ids:
+        row = db.query(EsiCorpMember).filter_by(corporation_id=corp_id, character_id=mid).first()
+        if row is None:
+            row = EsiCorpMember(corporation_id=corp_id, character_id=mid)
+            db.add(row)
+        if known.get(mid):
+            row.character_name = known[mid]
+        row.synced_at = now
+    db.query(EsiCorpMember).filter(
+        EsiCorpMember.corporation_id == corp_id,
+        ~EsiCorpMember.character_id.in_(ids or [-1])).delete(synchronize_session=False)
+    db.commit()
+    return len(ids)
+
+
+def sync_corporations(db) -> dict:
+    """Corp-level (Phase B) sync. For each corporation that has an active linked character with
+    the right role + scope, pull the REAL corp wallet / industry jobs / member roster once (via
+    that role-holding character's token). Corp data is keyed by corporation_id and shared across
+    the app's users in that corp — it reflects the corporation, not any one user's characters."""
+    summary: dict = {"corporations": 0, "results": [], "errors": []}
+    chars = (db.query(LinkedCharacter)
+             .filter(LinkedCharacter.is_active.is_(True), LinkedCharacter.status == "active",
+                     LinkedCharacter.corporation_id.isnot(None)).all())
+    by_corp: dict = {}
+    for c in chars:
+        by_corp.setdefault(c.corporation_id, []).append(c)
+    summary["corporations"] = len(by_corp)
+
+    for corp_id, members in by_corp.items():
+        res: dict = {"corporation_id": corp_id, "counts": {}, "errors": []}
+        now = utcnow()
+
+        def _try(name, role_set, scope, fn, _members=members, _res=res):
+            grantor = _best_corp_grantor(_members, role_set, scope)
+            if grantor is None:
+                return
+            try:
+                token = esi.valid_access_token(db, grantor)
+                _res["counts"][name] = fn(db, grantor.corporation_id, grantor, token, now)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("corp sync %s/%s failed: %s", grantor.corporation_id, name, exc)
+                _res["errors"].append(f"{name}: {exc}")
+
+        _try("wallet", _ROLE_ACCOUNTANT, _CORP_WALLET_SCOPE, _sync_corp_wallet)
+        _try("industry_jobs", _ROLE_FACTORY, _CORP_JOBS_SCOPE, _sync_corp_jobs)
+        _try("members", None, _CORP_MEMBERS_SCOPE, _sync_corp_members)
+        summary["results"].append(res)
+    return summary
+
+
 def sync_all_active() -> dict:
-    """Sync every active linked character. Entry point for the scheduled worker job."""
+    """Sync every active linked character, then the corp-level data. Entry point for the
+    scheduled worker job."""
     db = SessionLocal()
     summary: dict = {"characters": 0, "results": [], "errors": []}
     try:
@@ -772,6 +986,12 @@ def sync_all_active() -> dict:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("esi sync for %s failed", char.character_id)
                 summary["errors"].append(f"{char.character_id}: {exc}")
+        # corp-level pass runs after characters so corp_roles are fresh this cycle
+        try:
+            summary["corporations"] = sync_corporations(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("corp sync failed")
+            summary["errors"].append(f"corporations: {exc}")
     finally:
         db.close()
     return summary

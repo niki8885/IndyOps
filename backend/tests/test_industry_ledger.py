@@ -16,6 +16,7 @@ def _build(job_id, day, inputs, product_type_id, product_qty, runs, job_cost, **
             "product_name": f"P{product_type_id}", "runs": runs, "product_qty": product_qty,
             "job_cost": job_cost, "copy_cost": kw.get("copy_cost", 0.0), "inputs": inputs,
             "activity": kw.get("activity", "Manufacturing"), "produces": kw.get("produces", True),
+            "bom_known": kw.get("bom_known", True),
             "custom_unit_price": kw.get("custom_unit_price")}
 
 
@@ -102,6 +103,49 @@ def test_partial_material_shortfall_flags_missing():
     ])
     j = out["jobs"][0]
     assert j["missing"] is True and j["materials_cost"] == 3000.0   # 600 × 5
+    assert j["missing_reason"] == "untracked_inputs"
+
+
+# ── unknown BOM (no SDE materials) must not read as a free build ────────────────
+
+def test_unknown_bom_producing_build_flagged_missing():
+    # SDE returned no bill-of-materials (bom_known=False, inputs=[]) → no cost basis at all.
+    # Must NOT read as a near-free build: flag missing ('no_bom') and keep it out of profit.
+    out = industry_ledger.run_ledger([
+        _build(1, 1, [], 9999, 10, 10, 1000.0, bom_known=False),
+        _sell(9999, 10, 1000.0, 2),
+    ])
+    j = out["jobs"][0]
+    assert j["missing"] is True and j["missing_reason"] == "no_bom"
+    assert j["materials_cost"] == 0.0
+    assert out["manufacturing"] == []                 # not counted into profit by default
+
+
+def test_unknown_bom_counted_with_include_missing():
+    out = industry_ledger.run_ledger([
+        _build(1, 1, [], 9999, 10, 10, 1000.0, bom_known=False),
+        _sell(9999, 10, 1000.0, 2),
+    ], include_missing=True)
+    assert len(out["manufacturing"]) == 1 and out["manufacturing"][0]["missing"] is True
+
+
+def test_unknown_bom_custom_price_clears_missing():
+    out = industry_ledger.run_ledger([
+        _build(1, 1, [], 9999, 10, 10, 1000.0, bom_known=False, custom_unit_price=50.0),
+        _sell(9999, 10, 80.0, 2),
+    ])
+    j = out["jobs"][0]
+    assert j["missing"] is False and j["missing_reason"] is None and j["unit_cost"] == 50.0
+    assert out["manufacturing"][0]["profit"] == 300.0          # 800 - 500
+
+
+def test_non_producing_unknown_bom_not_flagged():
+    # copying/research consume nothing, so an empty/unknown BOM there is fine — not missing
+    out = industry_ledger.run_ledger([
+        _build(1, 1, [], 9999, 10, 10, 1000.0, produces=False, bom_known=False),
+    ])
+    j = out["jobs"][0]
+    assert j["missing"] is False and j["missing_reason"] is None
 
 
 # ── non-producing activities + custom unit price ───────────────────────────────

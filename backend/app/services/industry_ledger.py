@@ -63,6 +63,7 @@ def run_ledger(events: list[dict], include_missing: bool = False) -> dict:
         if kind == "build":
             materials_cost = 0.0
             missing = False
+            missing_reason = None
             for m in e.get("inputs", []):
                 need = int(m.get("qty") or 0)
                 q = queues.get(m["type_id"]) or []
@@ -80,6 +81,16 @@ def run_ledger(events: list[dict], include_missing: bool = False) -> dict:
                         q.pop(0)
                 if need > 0:                                       # shortfall — no cost basis
                     missing = True
+                    missing_reason = "untracked_inputs"
+
+            # A producing build (manufacturing/reaction) whose bill-of-materials couldn't be
+            # resolved — no SDE BOM rows or no blueprint id (bom_known=False) — has no cost
+            # basis at all. Flag it missing instead of reporting a near-free build; a
+            # custom_unit_price below still clears it. bom_known defaults True, so callers that
+            # don't supply it and non-producing activities (copying/research) are unaffected.
+            if e.get("produces", True) and not e.get("bom_known", True):
+                missing = True
+                missing_reason = "no_bom"
 
             produced = int(e.get("product_qty") or 0)
             job_cost = float(e.get("job_cost") or 0.0)
@@ -92,6 +103,7 @@ def run_ledger(events: list[dict], include_missing: bool = False) -> dict:
                 total_cost = unit_cost * produced
                 materials_cost = max(0.0, total_cost - job_cost - copy_cost)
                 missing = False
+                missing_reason = None
             else:
                 total_cost = materials_cost + job_cost + copy_cost
                 unit_cost = total_cost / produced if produced else 0.0
@@ -113,6 +125,7 @@ def run_ledger(events: list[dict], include_missing: bool = False) -> dict:
                 "sold": 0,
                 "consumed": 0,
                 "missing": missing,
+                "missing_reason": missing_reason,   # 'no_bom' | 'untracked_inputs' | None
                 "custom_unit_price": float(custom) if custom is not None else None,
             }
             jobs_by_id[e.get("job_id")] = row

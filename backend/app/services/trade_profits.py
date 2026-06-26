@@ -32,8 +32,9 @@ def match_trades(txns: list[dict], broker_pct: float = 0.0, tax_pct: float = 0.0
     and another character sells — so a buy on one char can back a sell on another. Each
     txn may carry its own ``broker_pct``/``tax_pct`` (the owning character's skill rates);
     the ``broker_pct``/``tax_pct`` args are the fallback when a txn omits them. A txn may
-    also carry ``character_id``/``character_name`` (the seller's) which is copied onto the
-    realized row.
+    also carry ``character_id``/``character_name`` (the seller's) and ``transaction_id`` (the
+    sell's ESI id), both copied onto the realized row — ``transaction_id`` becomes
+    ``sell_tx_id``, a stable per-row key the UI uses to exclude/hide individual trades.
 
     Returns ``{"rows": [...], "unmatched": {type_id: units}}`` — one realized trade row per
     sell (matched portion only), and the count of sell units with no tracked buy. Buy-side
@@ -87,6 +88,7 @@ def match_trades(txns: list[dict], broker_pct: float = 0.0, tax_pct: float = 0.0
             "date": _day(t.get("date")),
             "type_id": tid,
             "name": t.get("name"),
+            "sell_tx_id": t.get("transaction_id"),   # stable per-row key for exclude/hide
             "character_id": t.get("character_id"),
             "character_name": t.get("character_name"),
             "units": matched,

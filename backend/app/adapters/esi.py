@@ -343,6 +343,37 @@ def fetch_standings(character_id: int, token: str) -> list:
     return _esi_get(f"/characters/{character_id}/standings/", token)
 
 
+# ── Corporation (Phase B) — role-gated corp-level data ──────────────────────────
+
+def fetch_corp_roles(character_id: int, token: str) -> dict:
+    """The character's roles in its own corporation: ``{roles: [...], roles_at_hq: [...],
+    roles_at_base: [...], roles_at_other: [...]}``. Used to gate the corp endpoints below
+    (Director / Accountant / Factory_Manager …). Needs read_corporation_roles."""
+    return _esi_get(f"/characters/{character_id}/roles/", token)
+
+
+def fetch_corp_wallets(corporation_id: int, token: str) -> list:
+    """Corp wallet division balances: ``[{division, balance}]`` (divisions 1–7). Needs the
+    Accountant or Junior_Accountant role (or Director) on the calling character — otherwise
+    ESI returns 403."""
+    return _esi_get(f"/corporations/{corporation_id}/wallets/", token)
+
+
+def fetch_corp_industry_jobs(corporation_id: int, token: str) -> list:
+    """Corp-owned industry jobs (running + completed). Needs the Factory_Manager role (or
+    Director). Paginated; each row carries installer_id, activity_id, blueprint/product type,
+    runs, status, start/end dates, location_id and cost."""
+    return _esi_get(
+        f"/corporations/{corporation_id}/industry/jobs/", token,
+        params={"include_completed": "true"}, paginate=True)
+
+
+def fetch_corp_members(corporation_id: int, token: str) -> list:
+    """Corp member character ids: ``[character_id, …]``. Readable by any member with the
+    read_corporation_membership scope."""
+    return _esi_get(f"/corporations/{corporation_id}/members/", token, paginate=True)
+
+
 def fetch_blueprints(character_id: int, token: str) -> list:
     """Owned blueprints (BPOs and BPCs): ``[{item_id, type_id, location_id, location_flag,
     quantity, runs, material_efficiency, time_efficiency}]``. ``runs == -1`` and

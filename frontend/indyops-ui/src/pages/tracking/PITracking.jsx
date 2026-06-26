@@ -8,8 +8,10 @@ import { get, post, del } from '../../api/client'
 import { fmtIsk, fmtInt, timeUntil, GREEN, RED, AMBER } from './fmt'
 import { ScopeSelect, SyncButton, SortableTable } from './common'
 
+// Planet celestial types (Temperate=11, Barren=2016, …) serve an /icon image; the
+// /render variant 404s for them. Use /icon, consistent with the rest of the app.
 const planetImg = (id, size = 128) =>
-  id ? `https://images.evetech.net/types/${id}/render?size=${size}` : null
+  id ? `https://images.evetech.net/types/${id}/icon?size=${size}` : null
 const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '—')
 const fmtRadius = m => (m == null ? '—' : `${fmtInt(Math.round(m / 1000))} km`)
 const barColor = pct => (pct == null ? 'var(--accent-dim)' : pct >= 90 ? RED : pct >= 70 ? AMBER : GREEN)

@@ -48,6 +48,14 @@ def test_match_trades_partial_match_flags_remainder():
     assert res["unmatched"] == {34: 20}
 
 
+def test_match_trades_threads_sell_transaction_id():
+    # the sell's transaction_id becomes sell_tx_id (the stable per-row exclude key)
+    buy = {**_t(34, True, 10, 5.0, 1)}
+    sell = {**_t(34, False, 10, 8.0, 2), "transaction_id": 987654321}
+    res = trade_profits.match_trades([buy, sell])
+    assert res["rows"][0]["sell_tx_id"] == 987654321
+
+
 def test_match_trades_separates_items():
     res = trade_profits.match_trades(
         [_t(34, True, 10, 5.0, 1), _t(35, True, 10, 5.0, 1),

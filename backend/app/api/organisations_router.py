@@ -7,9 +7,9 @@ from sqlalchemy.orm import Session
 from app.adapters import esi
 from app.core.database import (
     get_db, Organisation, OrganisationFollow, OrganisationMember, Employee, UserDB,
-    LinkedCharacter, CorpTrackingPref,
+    LinkedCharacter, CorpTrackingPref, EsiCorpWallet, EsiCorpIndustryJob, EsiCorpMember,
 )
-from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveStation
+from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveStation, EveType
 from app.core.schemas import EmployeeType, OrganisationType, Visibility
 from app.core.security import get_current_user
 from app.api.responses import ERR_400, ERR_403, ERR_404
@@ -132,6 +132,20 @@ def _require_owner(org: Organisation, user: UserDB):
 
 
 _CORP = OrganisationType.CORPORATION.value
+
+# Corp-ESI (Phase B) access gating — mirrors update_esi role/scope constants.
+_SC_CORP_WALLET = "esi-wallet.read_corporation_wallets.v1"
+_SC_CORP_JOBS = "esi-industry.read_corporation_jobs.v1"
+_SC_CORP_MEMBERS = "esi-corporations.read_corporation_membership.v1"
+_R_ACCOUNTANT = {"Director", "Accountant", "Junior_Accountant"}
+_R_FACTORY = {"Director", "Factory_Manager"}
+_CORP_ACT = {1: "Manufacturing", 3: "TE Research", 4: "ME Research", 5: "Copying",
+             7: "Reverse Engineering", 8: "Invention", 9: "Reactions", 11: "Reactions"}
+_CORP_JOB_ACTIVE = {"active", "ready", "paused"}
+
+
+def _char_has_scope(ch, scope) -> bool:
+    return scope in (ch.scopes or "").split()
 
 
 def _user_corp_ids(db: Session, user_id: int) -> set:
@@ -701,6 +715,154 @@ async def corp_capital(
                         "wallet_balance": c.wallet_balance, "assets_value": c.assets_value,
                         "total": round((c.wallet_balance or 0.0) + (c.assets_value or 0.0), 2)}
                        for c in sorted(chars, key=lambda c: -((c.wallet_balance or 0) + (c.assets_value or 0)))],
+    }
+
+
+@router.post("/me/corporations/{corporation_id}/org", response_model=OrganisationOut,
+             status_code=status.HTTP_201_CREATED, tags=["corporations"], responses={**ERR_400, **ERR_404})
+async def create_corp_org(
+        corporation_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """One-click create + link a Corporation-type Organisation for one of the user's
+    corporations, so it becomes usable in the org → projects flow (and the corp dashboard's
+    Members/Projects). Guards: the user must have a linked character in that corp; only one
+    corp-org per (owner, corporation) — if it already exists, the existing one is returned."""
+    char = (db.query(LinkedCharacter)
+            .filter(LinkedCharacter.user_id == current_user.id,
+                    LinkedCharacter.corporation_id == corporation_id).first())
+    if not char:
+        raise HTTPException(status_code=404, detail="You have no linked character in that corporation")
+
+    existing = (db.query(Organisation)
+                .filter(Organisation.owner_id == current_user.id,
+                        Organisation.org_type == _CORP,
+                        Organisation.corporation_id == corporation_id).first())
+    if existing:                                   # idempotent — reuse the user's corp-org
+        return _org_out(db, existing, current_user.id)
+
+    corp_name = char.corporation_name
+    if not corp_name:
+        try:
+            corp_name = esi.fetch_corporation(corporation_id).get("name")
+        except Exception:  # noqa: BLE001
+            corp_name = None
+    corp_name = corp_name or f"Corp {corporation_id}"
+
+    # Organisation.name is globally unique — disambiguate on clash with the corp id
+    name = corp_name
+    if db.query(Organisation).filter(Organisation.name == name).first():
+        name = f"{corp_name} [{corporation_id}]"
+        if db.query(Organisation).filter(Organisation.name == name).first():
+            raise HTTPException(status_code=400, detail="An organisation with this name already exists")
+
+    org = Organisation(
+        name=name, owner_id=current_user.id, org_type=_CORP,
+        corporation_id=corporation_id, corporation_name=corp_name,
+        visibility=Visibility.PRIVATE.value, is_public=False,
+    )
+    db.add(org)
+    db.commit()
+    db.refresh(org)
+    return _org_out(db, org, current_user.id)
+
+
+@router.get("/me/corporations/{corporation_id}/corp-data", tags=["corporations"], responses={**ERR_404})
+async def corp_data(
+        corporation_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Real corp-level data (Phase B): the corporation's OWN wallet, industry jobs and member
+    roster — not a regrouping of the user's personal characters. Returns ``access`` flags so the
+    UI can prompt for a director to grant corp-ESI when data isn't available (and avoid showing
+    personal work as corp work). Also returns the user's own-character capital in this corp as a
+    clearly-separated ``personal`` block."""
+    my_chars = (db.query(LinkedCharacter)
+                .filter(LinkedCharacter.user_id == current_user.id,
+                        LinkedCharacter.corporation_id == corporation_id).all())
+    if not my_chars:
+        raise HTTPException(status_code=404, detail="You have no linked character in that corporation")
+
+    roles = sorted({r for c in my_chars for r in (c.corp_roles or [])})
+    can_wallet = any(_char_has_scope(c, _SC_CORP_WALLET) and (set(c.corp_roles or []) & _R_ACCOUNTANT) for c in my_chars)
+    can_jobs = any(_char_has_scope(c, _SC_CORP_JOBS) and (set(c.corp_roles or []) & _R_FACTORY) for c in my_chars)
+    can_members = any(_char_has_scope(c, _SC_CORP_MEMBERS) for c in my_chars)
+    need_relink = not any(_char_has_scope(c, s) for c in my_chars
+                          for s in (_SC_CORP_WALLET, _SC_CORP_JOBS, _SC_CORP_MEMBERS))
+
+    # wallet (corp-wide, real)
+    wrows = db.query(EsiCorpWallet).filter(EsiCorpWallet.corporation_id == corporation_id).all()
+    wallet = None
+    if wrows:
+        synced = max((w.synced_at for w in wrows if w.synced_at), default=None)
+        wallet = {
+            "total": round(sum(w.balance or 0.0 for w in wrows), 2),
+            "divisions": [{"division": w.division, "balance": w.balance}
+                          for w in sorted(wrows, key=lambda w: w.division)],
+            "synced_at": synced.isoformat() if synced else None,
+        }
+
+    # industry jobs (corp-OWNED, real)
+    jrows = (db.query(EsiCorpIndustryJob)
+             .filter(EsiCorpIndustryJob.corporation_id == corporation_id)
+             .order_by(EsiCorpIndustryJob.end_date.desc()).limit(300).all())
+    jobs = None
+    if jrows or can_jobs:
+        prod_ids = {j.product_type_id for j in jrows if j.product_type_id}
+        installer_ids = {j.installer_id for j in jrows if j.installer_id}
+        names: dict = {}
+        if prod_ids:
+            eve = EveSessionLocal()
+            try:
+                names = dict(eve.query(EveType.type_id, EveType.type_name)
+                             .filter(EveType.type_id.in_(prod_ids)).all())
+            finally:
+                eve.close()
+        inst_names = {cid: nm for cid, nm in
+                      db.query(EsiCorpMember.character_id, EsiCorpMember.character_name)
+                      .filter(EsiCorpMember.corporation_id == corporation_id,
+                              EsiCorpMember.character_id.in_(installer_ids or [-1])).all()}
+        jobs = {
+            "active": sum(1 for j in jrows if j.status in _CORP_JOB_ACTIVE),
+            "total": len(jrows),
+            "rows": [{
+                "job_id": j.job_id,
+                "installer": inst_names.get(j.installer_id) or (f"#{j.installer_id}" if j.installer_id else "—"),
+                "activity": _CORP_ACT.get(j.activity_id, "Other"),
+                "product_name": names.get(j.product_type_id) or (f"Type #{j.product_type_id}" if j.product_type_id else "—"),
+                "runs": j.runs, "status": j.status,
+                "end_date": j.end_date.isoformat() if j.end_date else None,
+                "cost": j.cost,
+            } for j in jrows],
+        }
+
+    # members (real in-game roster)
+    mrows = db.query(EsiCorpMember).filter(EsiCorpMember.corporation_id == corporation_id).all()
+    my_ids = {c.character_id for c in my_chars}
+    members = None
+    if mrows or can_members:
+        members = {
+            "count": len(mrows),
+            "rows": [{"character_id": m.character_id,
+                      "character_name": m.character_name or f"#{m.character_id}",
+                      "is_mine": m.character_id in my_ids}
+                     for m in sorted(mrows, key=lambda m: (m.character_name or "~").lower())][:1000],
+        }
+
+    # the user's own characters' capital in this corp — kept SEPARATE from the corp wallet so
+    # personal funds are never presented as the corporation's.
+    liquid = sum(c.wallet_balance or 0.0 for c in my_chars)
+    assets = sum(c.assets_value or 0.0 for c in my_chars)
+    personal = {"character_count": len(my_chars), "liquid": round(liquid, 2),
+                "assets": round(assets, 2), "total": round(liquid + assets, 2)}
+
+    return {
+        "corporation_id": corporation_id,
+        "access": {"roles": roles, "can_wallet": can_wallet, "can_jobs": can_jobs,
+                   "can_members": can_members, "need_relink": need_relink},
+        "wallet": wallet, "jobs": jobs, "members": members, "personal": personal,
     }
 
 

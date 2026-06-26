@@ -56,6 +56,14 @@ ESI_SCOPES = [
     # planetary interaction colonies (planets + extractor/storage layout) → Tracking → PI.
     # New scope → characters must re-link once; colonies stay empty until granted.
     "esi-planets.manage_planets.v1",
+    # CORPORATION (Phase B): real corp-level tracking — wallet/industry/members, gated by the
+    # linking character's in-game roles (Director/Accountant/Factory Manager). A character
+    # without the role still grants the scope but the corp endpoint returns 403, so corp data
+    # only appears for corps where the user holds a sufficiently-roled character. Re-link once.
+    "esi-characters.read_corporation_roles.v1",       # which corp roles the character holds
+    "esi-wallet.read_corporation_wallets.v1",          # corp wallet division balances (Accountant)
+    "esi-corporations.read_corporation_membership.v1", # corp member list (any member; Director-safe)
+    "esi-industry.read_corporation_jobs.v1",           # corp-owned industry jobs (Factory Manager)
 ]
 
 ESI_USER_AGENT = os.getenv(
