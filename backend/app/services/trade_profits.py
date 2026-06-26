@@ -23,17 +23,26 @@ def _day(value) -> Optional[str]:
     return value.date().isoformat() if value is not None else None
 
 
-def match_trades(txns: list[dict], broker_pct: float, tax_pct: float) -> dict:
-    """FIFO-match one character's market transactions into realized trades.
+def match_trades(txns: list[dict], broker_pct: float = 0.0, tax_pct: float = 0.0) -> dict:
+    """FIFO-match a stream of market transactions into realized trades.
 
     ``txns`` are dicts with ``type_id``, ``is_buy`` (bool), ``quantity`` (int),
-    ``unit_price`` (float), ``date`` (datetime) and optional ``name``. Returns
-    ``{"rows": [...], "unmatched": {type_id: units}}`` — one realized trade row per
-    sell (matched portion only), and the count of sell units with no tracked buy."""
+    ``unit_price`` (float), ``date`` (datetime) and optional ``name``. The stream may
+    pool transactions from *several characters* — common when an alt buys (e.g. in Jita)
+    and another character sells — so a buy on one char can back a sell on another. Each
+    txn may carry its own ``broker_pct``/``tax_pct`` (the owning character's skill rates);
+    the ``broker_pct``/``tax_pct`` args are the fallback when a txn omits them. A txn may
+    also carry ``character_id``/``character_name`` (the seller's) which is copied onto the
+    realized row.
+
+    Returns ``{"rows": [...], "unmatched": {type_id: units}}`` — one realized trade row per
+    sell (matched portion only), and the count of sell units with no tracked buy. Buy-side
+    broker fee uses each consumed lot's own buyer rate; sell-side broker + sales tax use the
+    selling txn's rate."""
     # chronological; on a tie a same-timestamp buy is processed before the sell so it
     # can back it (buys sort key 0, sells 1).
     ordered = sorted(txns, key=lambda t: (t.get("date"), 0 if t.get("is_buy") else 1))
-    queues: dict = {}            # type_id -> list of [qty_remaining, unit_price] (FIFO)
+    queues: dict = {}            # type_id -> list of [qty_remaining, unit_price, broker_pct] (FIFO)
     rows: list = []
     unmatched: dict = {}
 
@@ -43,19 +52,23 @@ def match_trades(txns: list[dict], broker_pct: float, tax_pct: float) -> dict:
         price = float(t.get("unit_price") or 0.0)
         if qty <= 0:
             continue
+        t_broker = float(t.get("broker_pct", broker_pct) or 0.0)
         if t.get("is_buy"):
-            queues.setdefault(tid, []).append([qty, price])
+            queues.setdefault(tid, []).append([qty, price, t_broker])
             continue
 
         # sell — consume the oldest buy lots
+        t_tax = float(t.get("tax_pct", tax_pct) or 0.0)
         remaining = qty
         matched = 0
         buy_value = 0.0
+        broker_buy = 0.0          # buy-side broker fee, per lot's own buyer rate
         q = queues.get(tid) or []
         while remaining > 0 and q:
             lot = q[0]
             take = min(remaining, lot[0])
             buy_value += take * lot[1]
+            broker_buy += take * lot[1] * lot[2] / 100.0
             matched += take
             remaining -= take
             lot[0] -= take
@@ -67,14 +80,15 @@ def match_trades(txns: list[dict], broker_pct: float, tax_pct: float) -> dict:
             continue
 
         sell_value = matched * price
-        broker_buy = buy_value * broker_pct / 100.0
-        broker_sell = sell_value * broker_pct / 100.0
-        sales_tax = sell_value * tax_pct / 100.0
+        broker_sell = sell_value * t_broker / 100.0
+        sales_tax = sell_value * t_tax / 100.0
         profit = sell_value - buy_value - broker_buy - broker_sell - sales_tax
         rows.append({
             "date": _day(t.get("date")),
             "type_id": tid,
             "name": t.get("name"),
+            "character_id": t.get("character_id"),
+            "character_name": t.get("character_name"),
             "units": matched,
             "unit_buy": round(buy_value / matched, 2),
             "unit_sell": round(price, 2),

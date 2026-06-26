@@ -2,15 +2,29 @@
 // the character/group scope selector, date-range picker, summary stat cards, an
 // ESI-sync button and a generic sortable table. Mirrors the patterns in OrdersTracking.
 import { useState, useEffect, useMemo } from 'react'
-import { post } from '../../api/client'
+import { get, post } from '../../api/client'
 import { fmtIsk } from './fmt'
 
+// Scope selector: All characters / Groups (free-text group_name) / Corporations (derived
+// from each character's EVE corp) / individual Characters. Corps are fetched here so every
+// tracking tab gets corp scoping without threading the list through each one.
 export function ScopeSelect({ scope, setScope, chars, groups }) {
+  const [corps, setCorps] = useState([])
+  useEffect(() => { get('/organisations/me/corporations').then(setCorps).catch(() => setCorps([])) }, [])
   return (
     <select value={scope} onChange={e => setScope(e.target.value)} style={{ padding: '7px 10px', minWidth: 200 }}>
       <option value="all">All characters</option>
       {groups.length > 0 && (
         <optgroup label="Groups">{groups.map(g => <option key={g} value={`group:${g}`}>{g}</option>)}</optgroup>
+      )}
+      {corps.length > 0 && (
+        <optgroup label="Corporations">
+          {corps.map(c => (
+            <option key={c.corporation_id} value={`corp:${c.corporation_id}`}>
+              {c.corporation_name || `Corp ${c.corporation_id}`}
+            </option>
+          ))}
+        </optgroup>
       )}
       <optgroup label="Characters">
         {chars.map(c => <option key={c.id} value={`char:${c.id}`}>{c.character_name}</option>)}

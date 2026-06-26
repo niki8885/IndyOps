@@ -23,12 +23,15 @@ from app.core.database import (
     EsiMiningLedger,
     EsiBlueprintCopy,
     EsiMarketOrder,
+    EsiPlanet,
+    AgendaNotification,
     BankLedgerEntry,
     EsiWalletEntry,
     CharacterWealthSnapshot,
 )
+from app.core.database_eve import EveSessionLocal, EveType, EvePlanet
 from app.core.timeutil import utcnow
-from app.services import asset_location, currency
+from app.services import asset_location, currency, pi
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,9 @@ _MINING_SCOPE = "esi-industry.read_character_mining.v1"
 _BLUEPRINTS_SCOPE = "esi-characters.read_blueprints.v1"
 _MARKET_ORDERS_SCOPE = "esi-markets.read_character_orders.v1"
 _CONTRACTS_SCOPE = "esi-contracts.read_character_contracts.v1"
+_PLANETS_SCOPE = "esi-planets.manage_planets.v1"
+_PI_FULL_PCT = 90.0                               # storage-full notification threshold
+_PI_EXPIRY_WARN = datetime.timedelta(hours=24)    # "extractor stops soon" lead time
 
 # Wallet-journal ref_types captured into EsiWalletEntry for the Tracking income
 # ledgers: mission rewards (main + time bonus) and ratting income (bounty + ESS).
@@ -340,6 +346,69 @@ def _blueprint_structure_ids(db, character_id) -> set:
     return {loc for (loc,) in rows if asset_location.maybe_structure_id(loc)}
 
 
+# Planetary interaction (PI) helpers
+
+def _pi_eve_context(type_ids: set, planet_ids: set) -> tuple[dict, dict]:
+    """One SDE read for a colony batch: ``({type_id: {volume, capacity}}, {planet_id:
+    planet_name})``. Volume/capacity feed the storage calc; planet names label the
+    notifications. Empty dicts if the SDE hasn't been synced with eve_planets yet."""
+    eve = EveSessionLocal()
+    try:
+        type_info: dict = {}
+        if type_ids:
+            for tid, vol, cap in (eve.query(EveType.type_id, EveType.volume, EveType.capacity)
+                                  .filter(EveType.type_id.in_(type_ids)).all()):
+                type_info[tid] = {"volume": vol or 0.0, "capacity": cap or 0.0}
+        names: dict = {}
+        if planet_ids:
+            for pid, pname in (eve.query(EvePlanet.planet_id, EvePlanet.planet_name)
+                               .filter(EvePlanet.planet_id.in_(planet_ids)).all()):
+                names[pid] = pname
+        return type_info, names
+    finally:
+        eve.close()
+
+
+def _pi_notify(db, char, label, summary, row, now) -> None:
+    """Emit Agenda notifications on colony state changes, latched on the row so each
+    fires once until the condition clears: extraction stopped, storage ≥90%, extractor
+    stopping within 24h."""
+    notes: list = []
+    # extraction stopped (had an extractor, no head still running)
+    if summary["has_extractor"] and not summary["extracting"]:
+        if not row.notified_stopped:
+            notes.append(("down", "PI: добыча остановилась",
+                          f"{label}: экстрактор закончил цикл — планета простаивает."))
+            row.notified_stopped = True
+    else:
+        row.notified_stopped = False
+
+    # extractor stops within 24h (only while still running)
+    exp = summary["extractor_expiry"]
+    if summary["extracting"] and exp and (exp - now) <= _PI_EXPIRY_WARN:
+        if not row.notified_expiring:
+            hrs = max(0, int((exp - now).total_seconds() // 3600))
+            notes.append(("info", "PI: экстрактор скоро встанет",
+                          f"{label}: добыча остановится примерно через {hrs} ч."))
+            row.notified_expiring = True
+    elif summary["extracting"]:
+        row.notified_expiring = False     # re-armed once a fresh (>24h) cycle starts
+
+    # storage ≥ 90% full
+    pct = pi.storage_pct(summary["storage_used"], summary["storage_capacity"])
+    if pct is not None and pct >= _PI_FULL_PCT:
+        if not row.notified_full:
+            notes.append(("down", "PI: склад заполнен",
+                          f"{label}: хранилище заполнено на {pct:.0f}% — добыча скоро встанет."))
+            row.notified_full = True
+    elif pct is not None:
+        row.notified_full = False
+
+    for severity, title, body in notes:
+        db.add(AgendaNotification(user_id=char.user_id, alert_id=None,
+                                  severity=severity, title=title, body=body))
+
+
 # Per-character sync
 
 def sync_character(db, char: LinkedCharacter) -> dict:
@@ -535,6 +604,66 @@ def sync_character(db, char: LinkedCharacter) -> dict:
         _replace(db, EsiMarketOrder, cid, rows)
         return len(rows)
 
+    def _planets():
+        # PI colonies: list endpoint + one detail call each, reduced to extraction +
+        # storage state (services/pi.py). Upsert (not replace) so the notification
+        # latches survive between syncs; prune colonies the character abandoned.
+        if not _has_scope(char, _PLANETS_SCOPE):
+            return 0
+        colonies = esi.fetch_planets(cid, token) or []
+        if not colonies:
+            db.query(EsiPlanet).filter(EsiPlanet.character_id == cid).delete(synchronize_session=False)
+            db.commit()
+            return 0
+        now = utcnow()
+        # fetch every colony's layout, collecting the type/planet ids to resolve in one SDE read
+        details: dict = {}
+        type_ids: set = set()
+        for col in colonies:
+            pid = col.get("planet_id")
+            try:
+                d = esi.fetch_planet_detail(cid, pid, token)
+            except Exception as exc:  # noqa: BLE001 — a single bad colony shouldn't fail the step
+                logger.warning("esi sync %s/planet %s detail failed: %s", cid, pid, exc)
+                d = {"pins": []}
+            details[pid] = d
+            for p in d.get("pins") or []:
+                if p.get("type_id"):
+                    type_ids.add(p["type_id"])
+                for c in p.get("contents") or []:
+                    if c.get("type_id"):
+                        type_ids.add(c["type_id"])
+        type_info, names = _pi_eve_context(type_ids, {c.get("planet_id") for c in colonies})
+
+        seen: list = []
+        for col in colonies:
+            pid = col.get("planet_id")
+            summary = pi.summarize_colony(details[pid].get("pins") or [], type_info, now)
+            row = db.query(EsiPlanet).filter_by(character_id=cid, planet_id=pid).first()
+            if row is None:
+                row = EsiPlanet(character_id=cid, planet_id=pid,
+                                notified_stopped=False, notified_full=False, notified_expiring=False)
+                db.add(row)
+            _pi_notify(db, char, names.get(pid) or f"Planet {pid}", summary, row, now)
+            row.solar_system_id = col.get("solar_system_id")
+            row.planet_type = col.get("planet_type")
+            row.upgrade_level = col.get("upgrade_level")
+            row.num_pins = col.get("num_pins")
+            row.last_update = esi.parse_dt(col.get("last_update"))
+            row.has_extractor = summary["has_extractor"]
+            row.extracting = summary["extracting"]
+            row.extractor_expiry = summary["extractor_expiry"]
+            row.products = summary["products"]
+            row.storage_used = summary["storage_used"]
+            row.storage_capacity = summary["storage_capacity"]
+            row.synced_at = now
+            seen.append(pid)
+        db.query(EsiPlanet).filter(
+            EsiPlanet.character_id == cid, ~EsiPlanet.planet_id.in_(seen)
+        ).delete(synchronize_session=False)
+        db.commit()
+        return len(colonies)
+
     # The wallet journal feeds both the bank-donation credit and the income ledger;
     # fetch it once per character and memoize so we don't paginate it twice.
     _journal: dict = {}
@@ -612,6 +741,7 @@ def sync_character(db, char: LinkedCharacter) -> dict:
     step("standings", _standings)
     step("blueprints", _blueprints)
     step("market_orders", _orders)
+    step("planets", _planets)
     step("bank_donations", _bank)
     step("wallet_income", _income)   # mission/bounty/ESS income (shares the journal fetch)
     step("structures", _structures)  # after blueprints: resolves their location ids too

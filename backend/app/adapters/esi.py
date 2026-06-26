@@ -358,6 +358,22 @@ def fetch_market_orders(character_id: int, token: str) -> list:
     return _esi_get(f"/characters/{character_id}/orders/", token)
 
 
+def fetch_planets(character_id: int, token: str) -> list:
+    """Character's planetary-interaction colonies: ``[{planet_id, solar_system_id,
+    planet_type, owner_id, upgrade_level, num_pins, last_update}]``. One row per
+    colonized planet; ``planet_type`` is a string (temperate/barren/oceanic/…).
+    Requires the ``esi-planets.manage_planets.v1`` scope."""
+    return _esi_get(f"/characters/{character_id}/planets/", token)
+
+
+def fetch_planet_detail(character_id: int, planet_id: int, token: str) -> dict:
+    """Full layout of one colony: ``{links, pins, routes}``. Each pin carries its
+    ``type_id`` and (when applicable) ``extractor_details`` (product_type_id,
+    cycle_time, qty_per_cycle, expiry_time on the pin), ``factory_details``,
+    ``schematic_id`` and ``contents`` ([{type_id, amount}]) for storage pins."""
+    return _esi_get(f"/characters/{character_id}/planets/{planet_id}/", token)
+
+
 def fetch_wallet_journal(character_id: int, token: str) -> list:
     """Wallet journal (income/expense events incl. ``player_donation``). Paginated.
     Each entry carries: id, ref_type, amount, balance, date, first_party_id,

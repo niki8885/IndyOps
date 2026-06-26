@@ -26,9 +26,12 @@ from app.core.database import (
     EsiMarketOrder, EsiIndustryJob, EsiContract, EsiContractItem, EsiSkill, EsiStructure,
     BankLedgerEntry, EsiWalletEntry, EsiWalletTransaction, EsiBlueprintCopy, ContractAnnotation,
     CourierRouteCache, LootAppraisal, EsiNameCache, EsiMiningLedger, InventoryItem,
-    JobCostOverride, TrackingExclusion,
+    JobCostOverride, TrackingExclusion, EsiPlanet, CorpTrackingPref,
 )
-from app.core.database_eve import EveSessionLocal, EveStation, EveRegion
+from app.core.database_eve import (
+    EveSessionLocal, EveStation, EveRegion, EvePlanet, EveSolarSystem, EveType,
+)
+from app.services import pi as pi_svc
 from app.core.security import get_current_user
 from app.core.timeutil import utcnow
 from app.repositories import eve as eve_repo
@@ -104,15 +107,26 @@ def _user_chars(db: Session, user: UserDB) -> list:
     return db.query(LinkedCharacter).filter(LinkedCharacter.user_id == user.id).all()
 
 
+def _untracked_corp_ids(db: Session, user: UserDB) -> set:
+    """Corporations the user has explicitly toggled OFF (``CorpTrackingPref.tracked=False``).
+    Absence of a row = tracked, so this returns only the opted-out corp ids."""
+    return {p.corporation_id for p in db.query(CorpTrackingPref)
+            .filter(CorpTrackingPref.user_id == user.id, CorpTrackingPref.tracked.is_(False)).all()}
+
+
 def _scoped_chars(db: Session, user: UserDB, scope: Optional[str]) -> list:
     """Resolve a ``scope`` string to the user's matching characters.
 
-    ``all`` (default) → every linked character; ``char:<id>`` → one (matched on the
-    LinkedCharacter PK or the EVE character_id); ``group:<name>`` → all characters
-    whose Character-Settings group_name equals ``<name>``."""
+    ``all`` (default) → every linked character, MINUS those whose corporation the user has
+    toggled off in ``CorpTrackingPref`` (chars with no corp stay); ``char:<id>`` → one
+    (matched on the LinkedCharacter PK or the EVE character_id); ``group:<name>`` → all
+    characters whose Character-Settings group_name equals ``<name>``; ``corp:<corp_id>`` →
+    all characters in that EVE corporation. Always filtered to the user's own characters —
+    a corp scope never reaches into other users' data."""
     chars = _user_chars(db, user)
     if not scope or scope == "all":
-        return chars
+        untracked = _untracked_corp_ids(db, user)
+        return [c for c in chars if c.corporation_id not in untracked] if untracked else chars
     if scope.startswith("char:"):
         try:
             cid = int(scope.split(":", 1)[1])
@@ -128,6 +142,12 @@ def _scoped_chars(db: Session, user: UserDB, scope: Optional[str]) -> list:
         }
         return [c for c in chars
                 if settings.get(c.character_id) and settings[c.character_id].group_name == gname]
+    if scope.startswith("corp:"):
+        try:
+            corp_id = int(scope.split(":", 1)[1])
+        except ValueError:
+            return chars
+        return [c for c in chars if c.corporation_id == corp_id]
     return chars
 
 
@@ -1007,26 +1027,28 @@ async def get_trade_profits(
     chars = _scoped_chars(db, current_user, scope)
     start_dt, end_dt = _parse_day(start), _parse_day(end)
 
-    # FIFO runs over each character's full transaction history (cost basis needs buys
-    # from before the window); the date filter is applied to the realized rows after.
-    all_rows: list = []
-    unmatched_total: dict = {}
+    # FIFO runs over the *pooled* transaction history of every character in scope: an alt
+    # may buy (e.g. in Jita) while another character sells, so a buy on one char must be
+    # able to back a sell on another. Cost basis needs buys from before the window, so the
+    # full history is matched and the date filter is applied to the realized rows after.
+    # Each txn keeps its own character's fee rates: buy-side broker uses the buyer's rate,
+    # sell-side broker + sales tax use the seller's; the row is attributed to the seller.
+    rows_in: list = []
     for c in chars:
         txns = (db.query(EsiWalletTransaction)
-                .filter(EsiWalletTransaction.character_id == c.character_id)
-                .order_by(EsiWalletTransaction.date.asc()).all())
+                .filter(EsiWalletTransaction.character_id == c.character_id).all())
         if not txns:
             continue
         broker_pct, tax_pct = _char_fee_rates(db, c.character_id)
-        rows_in = [{"type_id": t.type_id, "is_buy": t.is_buy, "quantity": t.quantity,
-                    "unit_price": t.unit_price, "date": t.date} for t in txns]
-        res = trade_profits.match_trades(rows_in, broker_pct, tax_pct)
-        for r in res["rows"]:
-            r["character_id"] = c.character_id
-            r["character_name"] = c.character_name
-        all_rows.extend(res["rows"])
-        for tid, u in res["unmatched"].items():
-            unmatched_total[tid] = unmatched_total.get(tid, 0) + u
+        rows_in.extend({"type_id": t.type_id, "is_buy": t.is_buy, "quantity": t.quantity,
+                        "unit_price": t.unit_price, "date": t.date,
+                        "broker_pct": broker_pct, "tax_pct": tax_pct,
+                        "character_id": c.character_id, "character_name": c.character_name}
+                       for t in txns)
+
+    res = trade_profits.match_trades(rows_in)
+    all_rows = res["rows"]
+    unmatched_total = res["unmatched"]
 
     # resolve item names
     type_ids = {r["type_id"] for r in all_rows} | set(unmatched_total)
@@ -1340,27 +1362,28 @@ async def set_exclusion(
 @router.get("/tracking-summary", summary="Unified income/profit across every tracking stream (Agenda)")
 async def tracking_summary(
     days: int = Query(30, ge=1, le=365, description="window size ending today"),
+    scope: str = Query("all", description="all | char:<id> | group:<name> | corp:<corp_id>"),
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
     eve_db: Session = Depends(_get_eve_db),
 ):
-    """One call that runs every Tracking stream (scope=all) over the last ``days`` and
-    returns each stream's headline number plus the account grand total — the data the
-    individual tabs each compute in isolation, unified for the Agenda summary card.
+    """One call that runs every Tracking stream over the last ``days`` for the given
+    ``scope`` and returns each stream's headline number plus the grand total — the data the
+    individual tabs each compute in isolation, unified for the Agenda / corp summary card.
     Profit streams (Market/Manufacturing/Contracts) report realized profit; the rest
     report income (Missions/Ratting/Deliveries) or refined value (Mining)."""
     end_d = utcnow().date()
     start = (end_d - datetime.timedelta(days=days - 1)).isoformat()
 
-    trade = await get_trade_profits(scope="all", start=start, end=None,
+    trade = await get_trade_profits(scope=scope, start=start, end=None,
                                     current_user=current_user, db=db, eve_db=eve_db)
-    industry = await get_industry(scope="all", start=start, end=None,
+    industry = await get_industry(scope=scope, start=start, end=None,
                                   current_user=current_user, db=db, eve_db=eve_db)
-    missions = await get_missions(scope="all", start=start, end=None, current_user=current_user, db=db)
-    ratting = await get_ratting(scope="all", start=start, end=None, current_user=current_user, db=db)
-    mining = await get_mining(scope="all", start=start, end=None, basis=None, limit=500,
+    missions = await get_missions(scope=scope, start=start, end=None, current_user=current_user, db=db)
+    ratting = await get_ratting(scope=scope, start=start, end=None, current_user=current_user, db=db)
+    mining = await get_mining(scope=scope, start=start, end=None, basis=None, limit=500,
                               current_user=current_user, db=db, eve_db=eve_db)
-    deliveries = await get_deliveries(scope="all", status="completed", start=start, end=None,
+    deliveries = await get_deliveries(scope=scope, status="completed", start=start, end=None,
                                       current_user=current_user, db=db, eve_db=eve_db)
 
     streams = [
@@ -1379,3 +1402,171 @@ async def tracking_summary(
         "grand_total": grand_total,
         "per_day": round(grand_total / days, 2) if days else 0.0,
     }
+
+
+# ── PI: planetary-interaction colonies + manual PI-stock warehouse ───────────────
+
+_PLANETS_SCOPE = "esi-planets.manage_planets.v1"
+
+
+@router.get("/pi", summary="Planetary-interaction colonies (planet, extraction status, storage) per character")
+async def get_pi(
+    scope: str = Query("all", description="all | char:<id> | group:<name>"),
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    """Colony cards for the selected characters: planet (name/type/radius/location from the
+    SDE), command-center level + pin count, extraction status (running/idle + when the last
+    head stops), storage fill %, and the extracted products valued at Jita sell."""
+    chars = _scoped_chars(db, current_user, scope)
+    owner = {c.character_id: c.character_name for c in chars}
+    rows = (db.query(EsiPlanet)
+            .filter(EsiPlanet.character_id.in_([c.character_id for c in chars] or [-1]))
+            .all())
+
+    # SDE enrichment: planet (name/radius/celestial type), system name + security, region
+    planet_ids = {r.planet_id for r in rows}
+    planets = {p.planet_id: p for p in eve_db.query(EvePlanet)
+               .filter(EvePlanet.planet_id.in_(planet_ids or [-1])).all()}
+    sys_ids = {r.solar_system_id for r in rows if r.solar_system_id}
+    systems = {s.solar_system_id: s for s in eve_db.query(EveSolarSystem)
+               .filter(EveSolarSystem.solar_system_id.in_(sys_ids or [-1])).all()}
+    region_names = _region_names(eve_db, {p.region_id for p in planets.values()})
+
+    # value the extracted products at Jita sell + resolve their names
+    prod_ids = {tid for r in rows for tid in (r.products or [])}
+    prod_names = _type_names(eve_db, prod_ids)
+    prod_jita = _jita_sell(prod_ids)
+
+    colonies = []
+    for r in rows:
+        pl = planets.get(r.planet_id)
+        sysm = systems.get(r.solar_system_id)
+        colonies.append({
+            "character_id": r.character_id,
+            "character_name": owner.get(r.character_id),
+            "planet_id": r.planet_id,
+            "planet_name": (pl.planet_name if pl else None) or f"Planet #{r.planet_id}",
+            "planet_type": r.planet_type,                       # ESI string (temperate/…)
+            "planet_type_id": pl.type_id if pl else None,        # celestial type → image
+            "radius": pl.radius if pl else None,                 # metres
+            "system": sysm.solar_system_name if sysm else None,
+            "security": round(sysm.security, 1) if sysm and sysm.security is not None else None,
+            "region": region_names.get(pl.region_id) if pl else None,
+            "upgrade_level": r.upgrade_level,
+            "num_pins": r.num_pins,
+            "has_extractor": r.has_extractor,
+            "extracting": r.extracting,
+            "extractor_expiry": r.extractor_expiry.isoformat() if r.extractor_expiry else None,
+            "storage_used": r.storage_used,
+            "storage_capacity": r.storage_capacity,
+            "storage_pct": pi_svc.storage_pct(r.storage_used, r.storage_capacity),
+            "products": [{"type_id": tid,
+                          "name": (prod_names.get(tid) or {}).get("name") or f"#{tid}",
+                          "value": prod_jita.get(tid)}
+                         for tid in (r.products or [])],
+            "synced_at": r.synced_at.isoformat() if r.synced_at else None,
+        })
+    colonies.sort(key=lambda c: (c["character_name"] or "", c["planet_name"]))
+
+    needs_scope = [c.character_name for c in chars if _PLANETS_SCOPE not in (c.scopes or "").split()]
+    return {"colonies": colonies, "needs_scope": needs_scope, "scope": scope}
+
+
+class PiStockBody(BaseModel):
+    text: str                       # EVE clipboard paste: "Name<tab>Qty" or "Qty<tab>Name"
+    place: Optional[str] = None     # optional storage/system label
+
+
+def _pi_stock_rows(db: Session, eve_db: Session, user: UserDB) -> tuple[list, float]:
+    """Current PI-sourced warehouse lots (source='pi', in stock) re-valued at Jita sell.
+    Returns (rows, total_value). The total is the realized-on-sale worth of extracted PI."""
+    items = (db.query(InventoryItem)
+             .filter(InventoryItem.user_id == user.id, InventoryItem.source == "pi",
+                     InventoryItem.item_status == "in_stock").all())
+    jita = _jita_sell({it.eve_type_id for it in items if it.eve_type_id})
+    rows, total = [], 0.0
+    for it in items:
+        unit = jita.get(it.eve_type_id)
+        value = (unit or 0.0) * int(it.quantity or 0)
+        total += value
+        rows.append({
+            "id": it.id, "type_id": it.eve_type_id, "name": it.name,
+            "quantity": int(it.quantity or 0), "place": it.place,
+            "unit_value": unit, "value": round(value, 2),
+            "created_at": it.created_at.isoformat() if it.created_at else None,
+        })
+    rows.sort(key=lambda r: -r["value"])
+    return rows, round(total, 2)
+
+
+@router.get("/pi/stock", summary="PI-sourced warehouse lots valued at Jita (extraction profit)")
+async def get_pi_stock(
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    rows, total = _pi_stock_rows(db, eve_db, current_user)
+    return {"rows": rows, "total_value": total}
+
+
+@router.post("/pi/stock", summary="Parse a PI material paste into the warehouse (source='pi')")
+async def add_pi_stock(
+    body: PiStockBody,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    eve_db: Session = Depends(_get_eve_db),
+):
+    """Parse an EVE clipboard paste of extracted PI products, resolve names → type_ids,
+    and add each as a warehouse lot tagged ``source='pi'`` (flow=output, in stock). The
+    Jita value of these lots is the PI extraction profit, summed in GET /pi/stock."""
+    parsed = loot.parse_lines(body.text)
+    warnings: list = []
+    items: list = []
+    for name, qty, warns in parsed:
+        warnings.extend(warns)
+        if name:
+            items.append({"name": name, "qty": qty})
+
+    resolved = eve_repo.types_by_name(eve_db, [it["name"] for it in items])
+    type_ids = [info["type_id"] for info in resolved.values()]
+    volumes = {tid: vol for tid, vol in eve_db.query(EveType.type_id, EveType.volume)
+               .filter(EveType.type_id.in_(type_ids or [-1])).all()}
+    jita = _jita_sell(type_ids)
+
+    now = utcnow()
+    added = 0
+    for it in items:
+        info = resolved.get(it["name"].strip().lower())
+        if not info:
+            warnings.append(f"Unknown item, skipped: {it['name']}")
+            continue
+        tid = info["type_id"]
+        db.add(InventoryItem(
+            user_id=current_user.id, eve_type_id=tid, name=info["name"],
+            volume=volumes.get(tid), quantity=it["qty"], price=jita.get(tid),
+            place=(body.place or None), flow="output", item_status="in_stock",
+            source="pi", created_at=now,
+        ))
+        added += 1
+    db.commit()
+
+    rows, total = _pi_stock_rows(db, eve_db, current_user)
+    return {"added": added, "warnings": warnings, "rows": rows, "total_value": total}
+
+
+@router.delete("/pi/stock/{item_id}", summary="Remove a PI warehouse lot", status_code=204)
+async def delete_pi_stock(
+    item_id: int,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = (db.query(InventoryItem)
+            .filter(InventoryItem.id == item_id, InventoryItem.user_id == current_user.id,
+                    InventoryItem.source == "pi").first())
+    if not item:
+        raise HTTPException(status_code=404, detail="PI stock lot not found")
+    db.delete(item)
+    db.commit()
+    return Response(status_code=204)

@@ -187,6 +187,23 @@ class OrganisationFollow(Base):
     created_at = Column(DateTime, default=utcnow)
 
 
+class CorpTrackingPref(Base):
+    """Per-user toggle for whether an EVE corporation's characters feed *that user's*
+    tracking. Keyed on corporation_id (not an org id) so it works even when no
+    Organisation row exists for the corp. Absence of a row = tracked (default ON);
+    a row with tracked=False drops the user's characters in that corp from their
+    'all' tracking aggregate (see account_router._scoped_chars)."""
+    __tablename__ = "corp_tracking_prefs"
+    __table_args__ = (UniqueConstraint("user_id", "corporation_id", name="uq_corp_tracking_pref"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    corporation_id = Column(Integer, nullable=False)
+    tracked = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, nullable=True)
+
+
 class SystemCostIndex(Base):
     """ESI industry cost index per (solar system, activity), refreshed by a worker
     job. Activity key matches ESI ``/industry/systems/`` (``manufacturing``,
@@ -822,7 +839,7 @@ class LinkedCharacter(Base):
 
     character_id = Column(Integer, nullable=False, unique=True, index=True)
     character_name = Column(String(200), nullable=False)
-    corporation_id = Column(Integer, nullable=True)
+    corporation_id = Column(Integer, nullable=True, index=True)  # indexed: corp-membership derivation
     corporation_name = Column(String(200), nullable=True)
     alliance_id = Column(Integer, nullable=True)
     alliance_name = Column(String(200), nullable=True)
@@ -845,6 +862,9 @@ class LinkedCharacter(Base):
     ship_name = Column(String(200), nullable=True)
     online = Column(Boolean, nullable=True)
     last_login = Column(DateTime, nullable=True)
+    # opt-in: expose this character's (non-financial) presence in its corporation's roster
+    # so corp admins can see who's active. Default off — no presence is shared until granted.
+    corp_roster_visible = Column(Boolean, nullable=False, default=False, server_default="false")
 
     is_active = Column(Boolean, nullable=False, default=True)        # activation status
     status = Column(String(20), nullable=False, default="active")   # active|token_expired|invalid
@@ -1157,6 +1177,39 @@ class EsiMarketOrder(Base):
     escrow = Column(Float, nullable=True)            # buy orders only
     issued = Column(DateTime, nullable=True)
     synced_at = Column(DateTime, nullable=True)
+
+
+class EsiPlanet(Base):
+    """A character's *active* planetary-interaction colony, replaced each sync.
+
+    One row per colonized planet. The list endpoint gives ``planet_type`` /
+    ``upgrade_level`` / ``num_pins``; the detail endpoint is reduced (services/pi.py) to
+    the derived extraction + storage fields. ``products`` is a JSON list of extracted
+    product type_ids. The ``notified_*`` flags are latches so the sync emits each
+    Agenda notification once per state change (cleared when the condition clears)."""
+    __tablename__ = "esi_planets"
+    __table_args__ = (UniqueConstraint("character_id", "planet_id", name="uq_esi_planet"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    character_id = Column(Integer, nullable=False, index=True)
+    planet_id = Column(BigInteger, nullable=False)
+    solar_system_id = Column(Integer, nullable=True)
+    planet_type = Column(String(20), nullable=True)        # temperate | barren | …
+    upgrade_level = Column(Integer, nullable=True)         # command-center level 0–5
+    num_pins = Column(Integer, nullable=True)
+    last_update = Column(DateTime, nullable=True)          # ESI colony last_update
+
+    has_extractor = Column(Boolean, nullable=True)
+    extracting = Column(Boolean, nullable=True)
+    extractor_expiry = Column(DateTime, nullable=True)     # when the last head stops
+    products = Column(JSON, nullable=True)                 # [product_type_id, …]
+    storage_used = Column(Float, nullable=True)            # m³
+    storage_capacity = Column(Float, nullable=True)        # m³
+    synced_at = Column(DateTime, nullable=True)
+
+    notified_stopped = Column(Boolean, nullable=False, default=False)
+    notified_full = Column(Boolean, nullable=False, default=False)
+    notified_expiring = Column(Boolean, nullable=False, default=False)
 
 
 class BankLedgerEntry(Base):

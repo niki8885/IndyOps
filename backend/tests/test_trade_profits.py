@@ -56,6 +56,22 @@ def test_match_trades_separates_items():
     assert res["unmatched"] == {}   # type 35 never sold → not unmatched, just held
 
 
+def test_match_trades_pools_buy_and_sell_across_characters():
+    # buy on the Jita alt, sell on another character — must still match (per-txn rates).
+    buy = {**_t(34, True, 100, 5.0, 1), "character_id": 1, "character_name": "Zizo Jita",
+           "broker_pct": 1.0, "tax_pct": 4.0}
+    sell = {**_t(34, False, 100, 8.0, 2), "character_id": 2, "character_name": "Nikita",
+            "broker_pct": 2.0, "tax_pct": 3.0}
+    res = trade_profits.match_trades([buy, sell])
+    assert res["unmatched"] == {}
+    r = res["rows"][0]
+    assert r["units"] == 100 and r["character_name"] == "Nikita"   # attributed to seller
+    assert r["broker_buy"] == 5.0      # 500 buy value × 1% (buyer's rate)
+    assert r["broker_sell"] == 16.0    # 800 sell value × 2% (seller's rate)
+    assert r["sales_tax"] == 24.0      # 800 × 3% (seller's rate)
+    assert r["profit"] == 255.0        # 800 − 500 − 5 − 16 − 24
+
+
 # ── summarize_trades ─────────────────────────────────────────────────────────
 
 def test_summarize_trades_totals_series_and_by_item():

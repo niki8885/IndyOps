@@ -30,9 +30,12 @@ from app.core.database_eve import (
     EveConstellation,
     EveSolarSystem,
     EveStation,
+    EvePlanet,
     EveRigBonus,
     EveReprocessingRig,
 )
+
+_PLANET_GROUP_ID = 7   # invGroups: Planet (category 2 Celestial)
 
 logger = logging.getLogger(__name__)
 
@@ -661,6 +664,40 @@ def update_solar_systems(db) -> int:
     return _upsert_chunks(db, build, raw)
 
 
+def update_planets(db) -> int:
+    """Planets (and their radius/name/type) from mapDenormalize, filtered to groupID 7.
+
+    mapDenormalize holds every celestial; we keep only planets so the PI tab can show a
+    colony's planet name, physical radius and celestial type. The full file is large, so
+    we filter in Python before upserting (~80k planet rows)."""
+    raw = [r for r in _download_csv("mapDenormalize")
+           if _coerce(r, "groupID", int) == _PLANET_GROUP_ID]
+
+    def build(batch):
+        values = [
+            {
+                "planet_id": _coerce(r, "itemID", int),
+                "type_id": _coerce(r, "typeID", int),
+                "solar_system_id": _coerce(r, "solarSystemID", int),
+                "region_id": _coerce(r, "regionID", int),
+                "planet_name": (r.get("itemName") or "")[:100] or None,
+                "radius": _coerce(r, "radius", float),
+                "celestial_index": _coerce(r, "celestialIndex", int),
+            }
+            for r in batch
+        ]
+        stmt = pg_insert(EvePlanet).values(values)
+        return stmt.on_conflict_do_update(
+            index_elements=["planet_id"],
+            set_={c: stmt.excluded[c] for c in (
+                "type_id", "solar_system_id", "region_id",
+                "planet_name", "radius", "celestial_index",
+            )},
+        )
+
+    return _upsert_chunks(db, build, raw)
+
+
 def update_stations(db) -> int:
     raw = _download_csv("staStations")
 
@@ -719,6 +756,7 @@ STEPS: list[tuple[str, Any]] = [
     ("constellations", update_constellations),
     ("solar_systems", update_solar_systems),
     ("stations", update_stations),
+    ("planets", update_planets),
 ]
 
 
