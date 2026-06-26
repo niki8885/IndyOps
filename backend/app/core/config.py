@@ -53,6 +53,9 @@ ESI_SCOPES = [
     # active market orders (buy/sell) → Tracking → Orders + the account dashboard.
     # New scope → characters must re-link once; orders stay empty until granted.
     "esi-markets.read_character_orders.v1",
+    # planetary interaction colonies (planets + extractor/storage layout) → Tracking → PI.
+    # New scope → characters must re-link once; colonies stay empty until granted.
+    "esi-planets.manage_planets.v1",
 ]
 
 ESI_USER_AGENT = os.getenv(

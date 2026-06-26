@@ -6,8 +6,9 @@ import ContractsTracking from './tracking/ContractsTracking'
 import MissionTracking from './tracking/MissionTracking'
 import RattingTracking from './tracking/RattingTracking'
 import MiningTracking from './tracking/MiningTracking'
+import PITracking from './tracking/PITracking'
 
-const SUBTABS = ['Market', 'Industry', 'Orders', 'Contracts', 'Mission', 'Ratting', 'Mining']
+const SUBTABS = ['Market', 'Industry', 'Orders', 'Contracts', 'Mission', 'Ratting', 'Mining', 'PI']
 
 export default function TrackingPage() {
   // Orders is the first fully built sub-tab, so land on it.
@@ -27,6 +28,7 @@ export default function TrackingPage() {
       {tab === 4 && <MissionTracking />}
       {tab === 5 && <RattingTracking />}
       {tab === 6 && <MiningTracking />}
+      {tab === 7 && <PITracking />}
     </div>
   )
 }

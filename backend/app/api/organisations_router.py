@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 from app.adapters import esi
 from app.core.database import (
     get_db, Organisation, OrganisationFollow, OrganisationMember, Employee, UserDB,
+    LinkedCharacter, CorpTrackingPref,
 )
+from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveStation
 from app.core.schemas import EmployeeType, OrganisationType, Visibility
 from app.core.security import get_current_user
 from app.api.responses import ERR_400, ERR_403, ERR_404
@@ -129,15 +131,33 @@ def _require_owner(org: Organisation, user: UserDB):
         raise HTTPException(status_code=403, detail="You are not the owner of this organisation")
 
 
+_CORP = OrganisationType.CORPORATION.value
+
+
+def _user_corp_ids(db: Session, user_id: int) -> set:
+    """Distinct EVE corporation ids across the user's linked characters."""
+    return {cid for (cid,) in db.query(LinkedCharacter.corporation_id)
+            .filter(LinkedCharacter.user_id == user_id, LinkedCharacter.corporation_id.isnot(None))
+            .distinct()}
+
+
 def _get_member_role(db: Session, org: Organisation, user_id: int) -> Optional[str]:
-    """Return the user's effective role in the org, or None if not a member."""
+    """Return the user's effective role in the org, or None if not a member.
+
+    For a Corporation org, a user with a linked character in that corporation is an
+    *auto-derived* read-only member ("MEMBER" — deliberately NOT in WRITE_ROLES, so being
+    in the corp never grants edit rights)."""
     if org.owner_id == user_id:
         return "OWNER"
     m = db.query(OrganisationMember).filter(
         OrganisationMember.org_id == org.id,
         OrganisationMember.user_id == user_id,
     ).first()
-    return m.role if m else None
+    if m:
+        return m.role
+    if org.org_type == _CORP and org.corporation_id and org.corporation_id in _user_corp_ids(db, user_id):
+        return "MEMBER"
+    return None
 
 
 def _require_write(db: Session, org: Organisation, user: UserDB):
@@ -588,3 +608,156 @@ async def add_character(
     db.commit()
     db.refresh(emp)
     return emp
+
+
+# ---------------------------------------------------------------------------
+# Corporations: derived corp ↔ character link + per-corp tracking & roster
+# ---------------------------------------------------------------------------
+
+class CorpTrackingUpdate(BaseModel):
+    tracked: bool
+
+
+class RosterVisibilityUpdate(BaseModel):
+    character_id: int
+    visible: bool
+
+
+@router.get("/me/corporations", tags=["corporations"])
+async def my_corporations(
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """The corporations the user's linked characters belong to (derived from ESI
+    affiliation), each with its character count, the matching corp-org id (if one exists)
+    and the user's per-corp tracking toggle. Drives the Corporations page + tracking scope
+    selector."""
+    chars = (db.query(LinkedCharacter)
+             .filter(LinkedCharacter.user_id == current_user.id,
+                     LinkedCharacter.corporation_id.isnot(None)).all())
+    by_corp: dict = {}
+    for c in chars:
+        d = by_corp.setdefault(c.corporation_id, {
+            "corporation_id": c.corporation_id, "corporation_name": c.corporation_name,
+            "character_count": 0})
+        d["character_count"] += 1
+        if not d["corporation_name"] and c.corporation_name:
+            d["corporation_name"] = c.corporation_name
+
+    org_by_corp = {o.corporation_id: o for o in db.query(Organisation).filter(
+        Organisation.org_type == _CORP,
+        Organisation.corporation_id.in_(list(by_corp) or [-1])).all()}
+    untracked = {p.corporation_id for p in db.query(CorpTrackingPref).filter(
+        CorpTrackingPref.user_id == current_user.id, CorpTrackingPref.tracked.is_(False)).all()}
+
+    out = []
+    for corp_id, d in by_corp.items():
+        org = org_by_corp.get(corp_id)
+        out.append({**d, "logo": corp_logo_url(corp_id),
+                    "org_id": org.id if org else None,
+                    "tracked": corp_id not in untracked})
+    out.sort(key=lambda x: (x["corporation_name"] or "").lower())
+    return out
+
+
+@router.put("/me/corporations/{corporation_id}/tracking", tags=["corporations"])
+async def set_corp_tracking(
+        corporation_id: int,
+        body: CorpTrackingUpdate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Toggle whether this corporation's characters feed the user's tracking. Off → they're
+    dropped from the user's 'All characters' aggregate (see account_router._scoped_chars)."""
+    pref = db.query(CorpTrackingPref).filter_by(
+        user_id=current_user.id, corporation_id=corporation_id).first()
+    if not pref:
+        pref = CorpTrackingPref(user_id=current_user.id, corporation_id=corporation_id, created_at=utcnow())
+        db.add(pref)
+    pref.tracked = body.tracked
+    pref.updated_at = utcnow()
+    db.commit()
+    return {"corporation_id": corporation_id, "tracked": body.tracked}
+
+
+@router.get("/me/corporations/{corporation_id}/capital", tags=["corporations"])
+async def corp_capital(
+        corporation_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Liquid + assets capital of the requesting user's OWN characters in this corp (model
+    R — never another user's wallet). Drives the corp dashboard Capital tab."""
+    chars = (db.query(LinkedCharacter)
+             .filter(LinkedCharacter.user_id == current_user.id,
+                     LinkedCharacter.corporation_id == corporation_id).all())
+    liquid = sum(c.wallet_balance or 0.0 for c in chars)
+    assets = sum(c.assets_value or 0.0 for c in chars)
+    return {
+        "corporation_id": corporation_id,
+        "character_count": len(chars),
+        "liquid": round(liquid, 2), "assets": round(assets, 2), "total": round(liquid + assets, 2),
+        "characters": [{"character_id": c.character_id, "character_name": c.character_name,
+                        "wallet_balance": c.wallet_balance, "assets_value": c.assets_value,
+                        "total": round((c.wallet_balance or 0.0) + (c.assets_value or 0.0), 2)}
+                       for c in sorted(chars, key=lambda c: -((c.wallet_balance or 0) + (c.assets_value or 0)))],
+    }
+
+
+@router.put("/me/corp-roster-visibility", tags=["corporations"], responses={**ERR_404})
+async def set_corp_roster_visibility(
+        body: RosterVisibilityUpdate,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Opt one of the user's own characters in/out of its corp's activity roster (presence
+    only — never financial). Off by default."""
+    ch = db.query(LinkedCharacter).filter_by(
+        character_id=body.character_id, user_id=current_user.id).first()
+    if not ch:
+        raise HTTPException(status_code=404, detail="Character not found")
+    ch.corp_roster_visible = body.visible
+    db.commit()
+    return {"character_id": body.character_id, "visible": body.visible}
+
+
+@router.get("/{org_id}/corp/members", tags=["corporations"], responses={**ERR_400, **ERR_403, **ERR_404})
+async def corp_roster(
+        org_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Activity roster for a corp-org: every character (across all app users) IN this
+    corporation that has opted into roster visibility — presence only (online / last login /
+    last sync / location / ship), NO financial fields. Role-gated to SENIOR+ so juniors can't
+    enumerate the corp."""
+    org = _get_org_or_404(db, org_id)
+    if org.org_type != _CORP or not org.corporation_id:
+        raise HTTPException(status_code=400, detail="Not a corporation organisation")
+    _require_write(db, org, current_user)
+
+    chars = (db.query(LinkedCharacter)
+             .filter(LinkedCharacter.corporation_id == org.corporation_id,
+                     LinkedCharacter.corp_roster_visible.is_(True)).all())
+    sys_ids = {c.location_system_id for c in chars if c.location_system_id}
+    st_ids = {c.location_id for c in chars if c.location_id and c.location_type == "station"}
+    eve = EveSessionLocal()
+    try:
+        sysnames = dict(eve.query(EveSolarSystem.solar_system_id, EveSolarSystem.solar_system_name)
+                        .filter(EveSolarSystem.solar_system_id.in_(sys_ids or [-1])).all())
+        stnames = dict(eve.query(EveStation.station_id, EveStation.station_name)
+                       .filter(EveStation.station_id.in_(st_ids or [-1])).all())
+    finally:
+        eve.close()
+
+    members = [{
+        "character_id": c.character_id,
+        "character_name": c.character_name,
+        "online": c.online,
+        "last_login": c.last_login.isoformat() if c.last_login else None,
+        "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
+        "system": sysnames.get(c.location_system_id),
+        "station": stnames.get(c.location_id) if c.location_type == "station" else None,
+        "ship_name": c.ship_name,
+    } for c in sorted(chars, key=lambda c: (not c.online, c.character_name or ""))]
+    return {"members": members, "corporation_id": org.corporation_id}

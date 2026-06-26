@@ -266,6 +266,24 @@ class EveSolarSystem(EveBase):
     z = Column(Float, nullable=True)
 
 
+class EvePlanet(EveBase):
+    """mapDenormalize rows for planets (groupID 7) — one row per planet in the universe.
+
+    Lets the PI tab show a colony's planet name + physical radius + its celestial
+    ``type_id`` (Temperate=11, Barren=2016, …) for the planet image, joined off the
+    ESI colony's ``planet_id``. Loaded by ``update_sde.update_planets``.
+    """
+    __tablename__ = "eve_planets"
+
+    planet_id = Column(Integer, primary_key=True)        # mapDenormalize.itemID
+    type_id = Column(Integer, nullable=True)             # celestial planet type (Temperate/Barren/…)
+    solar_system_id = Column(Integer, nullable=True, index=True)
+    region_id = Column(Integer, nullable=True)
+    planet_name = Column(String(100), nullable=True)     # e.g. "Tanoo III"
+    radius = Column(Float, nullable=True)                # metres
+    celestial_index = Column(Integer, nullable=True)     # planet's orbit number in the system
+
+
 class EveStation(EveBase):
     """staStations — NPC stations."""
     __tablename__ = "eve_stations"
