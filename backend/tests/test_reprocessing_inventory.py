@@ -77,6 +77,17 @@ def test_preset_crud(app_db):
     assert run(ir.list_presets(current_user=USER, db=app_db)) == []
 
 
+def test_preset_structure_type_drives_base_yield(app_db):
+    # a known structure sets the base yield authoritatively (ignores the typed value)
+    p = run(ir.create_preset(body=ir.PresetIn(name="Refinery", structure_type="tatara", base_yield=0.99),
+                             current_user=USER, db=app_db))
+    assert p["structure_type"] == "tatara" and p["base_yield"] == 0.55
+    # custom (no/unknown structure) keeps the manual value
+    c = run(ir.create_preset(body=ir.PresetIn(name="Custom", structure_type="", base_yield=0.62),
+                             current_user=USER, db=app_db))
+    assert c["structure_type"] is None and c["base_yield"] == 0.62
+
+
 # ── reprocess ──────────────────────────────────────────────────────────────────
 
 def test_reprocess_creates_minerals_with_cost_basis(app_db, eve_db, monkeypatch):

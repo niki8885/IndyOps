@@ -374,6 +374,22 @@ def test_industry_contract_profit(app_db, eve_db, monkeypatch):
     assert c["profit"] == 2610.0 and c["missing"] is False         # 8000 - 5150 - 240
     assert out["contracts_summary"]["total_profit"] == 2610.0
 
+    # exclude the contract → still listed (flagged) but dropped from the summary total
+    run(ar.set_exclusion(body=ar.ExclusionIn(kind="contract", ref_id=500, excluded=True),
+                         current_user=USER, db=app_db))
+    after = run(ar.get_industry(scope="all", start=None, end=None,
+                                current_user=USER, db=app_db, eve_db=eve_db))
+    assert len(after["contracts"]) == 1 and after["contracts"][0]["excluded"] is True
+    assert after["contracts_summary"]["total_profit"] == 0.0 and after["contracts_summary"]["count"] == 0
+
+    # re-include → counted again
+    run(ar.set_exclusion(body=ar.ExclusionIn(kind="contract", ref_id=500, excluded=False),
+                         current_user=USER, db=app_db))
+    reincl = run(ar.get_industry(scope="all", start=None, end=None,
+                                 current_user=USER, db=app_db, eve_db=eve_db))
+    assert reincl["contracts"][0]["excluded"] is False
+    assert reincl["contracts_summary"]["total_profit"] == 2610.0
+
 
 def _seed_reaction_sde(eve_db):
     eve_db.add_all([

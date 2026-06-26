@@ -119,28 +119,32 @@ export default function TradeOptimizerPage() {
           <input type="number" min="0" step="0.1" placeholder="e.g. 5" value={minMargin}
             onChange={e => setMinMargin(e.target.value)} onKeyDown={onKey} />
 
+          {/* Min volume/day — always a typed number (no blind slider); the slider is an
+              optional coarse helper once candidate data bounds it (cross-hub / in-station). */}
+          <RailLabel style={{ marginTop: 16 }}>Min volume / day</RailLabel>
+          <input type="number" min="0" step="1" placeholder="any (0)" value={minVol || ''}
+            onChange={e => setMinVol(Math.max(0, Number(e.target.value) || 0))} onKeyDown={onKey} />
           {volMax > 0 && (
             <>
-              <RailLabel style={{ marginTop: 16 }}>
-                Min volume/day — {minVol > 0 ? fmtNum(minVol) : 'any'}
-              </RailLabel>
               <input type="range" min="0" max={Math.ceil(volMax)} step={Math.max(1, Math.ceil(volMax / 100))}
                 value={Math.min(minVol, Math.ceil(volMax))} onChange={e => setMinVol(Number(e.target.value))}
-                style={{ width: '100%' }} />
+                style={{ width: '100%', marginTop: 6 }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text)' }}>
                 <span>any</span><span>{fmtNum(volMax)}/day</span>
               </div>
-              {tab === 2 && (
-                <div style={{ fontSize: 10, color: 'var(--text)', marginTop: 4 }}>
-                  Applied as the portfolio liquidity floor.
-                </div>
-              )}
             </>
           )}
+          {tab === 2 && (
+            <div style={{ fontSize: 10, color: 'var(--text)', marginTop: 4 }}>
+              Applied as the portfolio liquidity floor.
+            </div>
+          )}
 
-          {tab === 0 && (
+          {(tab === 0 || tab === 2) && (
             <>
-              <RailLabel style={{ marginTop: 16 }}>Sell strategy</RailLabel>
+              <RailLabel style={{ marginTop: 16 }}>
+                {tab === 2 ? 'Method (sell leg)' : 'Sell strategy'}
+              </RailLabel>
               <div style={{ display: 'flex', gap: 6 }}>
                 {[['patient', 'Sell order'], ['instant', 'To buy orders']].map(([v, lbl]) => (
                   <button key={v} onClick={() => setStrategy(v)}
@@ -148,6 +152,12 @@ export default function TradeOptimizerPage() {
                     style={{ flex: 1, padding: '4px 8px', fontSize: 11 }}>{lbl}</button>
                 ))}
               </div>
+              {tab === 2 && (
+                <div style={{ fontSize: 10, color: 'var(--text)', marginTop: 4 }}>
+                  Buys from sell orders at the buy hub, then sells via the chosen leg. For buy-order
+                  station trading (Buy → Sell at one hub) use the In-station flips tab.
+                </div>
+              )}
 
               <RailLabel style={{ marginTop: 16 }}>Buy at</RailLabel>
               <HubToggles hubs={hubs} selected={buyHubs} onToggle={n => toggle(buyHubs, setBuyHubs, n)} />

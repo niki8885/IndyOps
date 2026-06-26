@@ -33,12 +33,17 @@ def _day(value) -> Optional[str]:
     return value.date().isoformat() if value is not None else None
 
 
-def run_ledger(events: list[dict]) -> dict:
+def run_ledger(events: list[dict], include_missing: bool = False) -> dict:
     """Walk industry/market ``events`` through a FIFO cost ledger.
 
     Returns ``{"jobs": [...], "manufacturing": [...]}`` — one job row per build (with
     realized material cost, unit cost, produced/sold/consumed and a ``missing`` flag) and
-    one manufacturing-profit row per sell that consumed built units."""
+    one manufacturing-profit row per sell that consumed built units.
+
+    ``include_missing`` controls whether sales of built units whose source job had an
+    incomplete cost basis are counted into manufacturing profit. Default ``False`` (the
+    conservative behaviour: don't count an overstated-margin sale). When ``True`` those
+    sales are realized too and the row carries ``missing: True`` so the UI can flag it."""
     ordered = sorted(events, key=lambda e: (e.get("date"), _ORDER.get(e.get("kind"), 9)))
 
     queues: dict = {}        # type_id -> list of lots [qty, unit_cost, origin, job_id, missing]
@@ -128,6 +133,7 @@ def run_ledger(events: list[dict]) -> dict:
             q = queues.get(type_id) or []
             built_units = 0
             built_cost = 0.0
+            missing_any = False
             while need > 0 and q:
                 lot = q[0]
                 take = min(need, lot[0])
@@ -137,9 +143,12 @@ def run_ledger(events: list[dict]) -> dict:
                     src = jobs_by_id.get(lot[3])
                     if src:
                         src["sold"] += take
-                    if not lot[4]:                # complete cost basis → counts in profit
+                    # complete cost basis always counts; missing only when include_missing
+                    if not lot[4] or include_missing:
                         built_units += take
                         built_cost += take * lot[1]
+                        if lot[4]:
+                            missing_any = True
                 if lot[0] <= 0:
                     q.pop(0)
             if built_units > 0:
@@ -160,6 +169,7 @@ def run_ledger(events: list[dict]) -> dict:
                     "sales_tax": round(sales_tax, 2),
                     "profit": round(profit, 2),
                     "margin": round(profit / built_cost * 100, 2) if built_cost else None,
+                    "missing": missing_any,
                 })
             continue
 

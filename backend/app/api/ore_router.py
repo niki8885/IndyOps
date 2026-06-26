@@ -38,7 +38,7 @@ from app.services import ore_acquisition as oa
 from app.services import ore_basket
 from app.services import pricing
 from app.services import skills as skills_svc
-from app.services.refining import RefineSetup, RigYield, compute_yield, reprocess
+from app.services.refining import RefineSetup, RigYield, compute_yield, reprocess, BASE_YIELD_PRESETS
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -508,13 +508,25 @@ async def character_skills(
     }
 
 
+# Friendly labels for the structure base-yield presets (refining.BASE_YIELD_PRESETS).
+_STRUCTURE_LABELS = {
+    "npc_station": "NPC Station",
+    "athanor": "Athanor",
+    "tatara": "Tatara",
+}
+
+
 @router.get("/rigs")
 async def list_rigs(
         current_user: UserDB = Depends(get_current_user),
         eve_db: Session = Depends(_get_eve_db),
 ):
-    """Structure reprocessing-yield rigs (data-driven, from the SDE)."""
-    return {"rigs": eve_repo.reprocessing_rigs(eve_db)}
+    """Structure reprocessing-yield rigs (data-driven, from the SDE) + the structure-type
+    base yields, so the reprocessing-preset editor can offer a structure picker that fills
+    the base yield instead of asking the user to type it."""
+    structures = [{"key": k, "label": _STRUCTURE_LABELS.get(k, k), "base_yield": v}
+                  for k, v in BASE_YIELD_PRESETS.items()]
+    return {"rigs": eve_repo.reprocessing_rigs(eve_db), "structures": structures}
 
 
 @router.get("/gas/catalog")

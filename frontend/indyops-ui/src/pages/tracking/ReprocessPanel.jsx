@@ -8,7 +8,7 @@ import { get, post, put, del } from '../../api/client'
 import { fmtIsk, fmtInt, GREEN, RED } from './fmt'
 
 const BLANK = {
-  name: '', base_yield: 0.5, tax_pct: 0, security: 'hi',
+  name: '', structure_type: 'athanor', base_yield: 0.5, tax_pct: 0, security: 'hi',
   reprocessing_lvl: 5, efficiency_lvl: 5, ore_specific_lvl: 4, implant_pct: 0, rig_type_ids: [],
 }
 const numStyle = { width: 64, padding: '5px 6px' }
@@ -17,6 +17,7 @@ const rowKey = o => `${o.location_id}:${o.type_id}`
 export default function ReprocessPanel() {
   const [presets, setPresets] = useState([])
   const [rigs, setRigs] = useState([])
+  const [structures, setStructures] = useState([])
   const [assets, setAssets] = useState({ locations: [], ore: [] })
   const [presetId, setPresetId] = useState(null)
   const [locId, setLocId] = useState('')          // '' = not yet chosen, 'all' = every location
@@ -31,7 +32,7 @@ export default function ReprocessPanel() {
   const loadAssets = useCallback(() => get('/inventory/reprocessing/assets').then(d => setAssets(d || { locations: [], ore: [] })).catch(() => {}), [])
   useEffect(() => {
     loadPresets(); loadAssets()
-    get('/ore/rigs').then(d => setRigs(d.rigs || [])).catch(() => {})
+    get('/ore/rigs').then(d => { setRigs(d.rigs || []); setStructures(d.structures || []) }).catch(() => {})
   }, [loadPresets, loadAssets])
 
   const locations = assets.locations || []
@@ -45,6 +46,12 @@ export default function ReprocessPanel() {
   const toggleRig = rid => setEditing(e => ({
     ...e, rig_type_ids: e.rig_type_ids.includes(rid) ? e.rig_type_ids.filter(x => x !== rid) : [...e.rig_type_ids, rid],
   }))
+  // picking a structure type fills the base yield (a known structure drives it; '' = custom)
+  const pickStructure = key => setEditing(e => {
+    const s = structures.find(x => x.key === key)
+    return { ...e, structure_type: key || null, ...(s ? { base_yield: s.base_yield } : {}) }
+  })
+  const knownStruct = !!editing && structures.some(s => s.key === editing.structure_type)
 
   function pickLocation(v) { setLocId(v); setSel({}); setResult(null) }
 
@@ -99,7 +106,15 @@ export default function ReprocessPanel() {
         <div className="card" style={{ marginBottom: 12, background: 'var(--bg)' }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
             <input placeholder="Preset name" value={editing.name} onChange={e => setField('name', e.target.value)} style={{ padding: '6px 8px', minWidth: 180 }} />
-            <label style={{ fontSize: 12 }}>Base yield <input type="number" step="0.01" min="0" max="1" value={editing.base_yield} onChange={e => setField('base_yield', Number(e.target.value))} style={numStyle} /></label>
+            <label style={{ fontSize: 12 }}>Structure
+              <select value={editing.structure_type || ''} onChange={e => pickStructure(e.target.value)} style={{ marginLeft: 4, padding: '5px 6px' }}>
+                {structures.map(s => <option key={s.key} value={s.key}>{s.label} ({Math.round(s.base_yield * 100)}%)</option>)}
+                <option value="">— custom —</option>
+              </select>
+            </label>
+            <label style={{ fontSize: 12 }} title={knownStruct ? 'Set by the chosen structure — pick “custom” to edit' : 'Base structure/station yield (0–1)'}>Base yield
+              <input type="number" step="0.01" min="0" max="1" value={editing.base_yield} disabled={knownStruct}
+                onChange={e => setField('base_yield', Number(e.target.value))} style={{ ...numStyle, opacity: knownStruct ? 0.6 : 1 }} /></label>
             <label style={{ fontSize: 12 }}>Tax % <input type="number" step="0.1" min="0" value={editing.tax_pct} onChange={e => setField('tax_pct', Number(e.target.value))} style={numStyle} /></label>
             <label style={{ fontSize: 12 }}>Security
               <select value={editing.security} onChange={e => setField('security', e.target.value)} style={{ marginLeft: 4, padding: '5px 6px' }}>
