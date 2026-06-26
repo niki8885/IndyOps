@@ -27,15 +27,19 @@ export default function IndustryTracking() {
   const [err, setErr] = useState('')
   const [detail, setDetail] = useState(null)     // job row open in the detail panel
   const [priceInput, setPriceInput] = useState('')
+  // count manufacturing/contract sales with an incomplete cost basis (overstated margin)?
+  const [includeMissing, setIncludeMissingState] = useState(() => localStorage.getItem('indyIncludeMissing') === '1')
+  const setIncludeMissing = v => { localStorage.setItem('indyIncludeMissing', v ? '1' : '0'); setIncludeMissingState(v) }
 
   const load = useCallback(() => {
     const qs = new URLSearchParams({ scope })
     if (start) qs.set('start', start)
     if (end) qs.set('end', end)
+    if (includeMissing) qs.set('include_missing', 'true')
     return get(`/account/industry?${qs.toString()}`)
       .then(d => { setData(d); setErr('') })
       .catch(e => setErr(e.message))
-  }, [scope, start, end])
+  }, [scope, start, end, includeMissing])
 
   function openDetail(job) {
     setPriceInput(job.custom_unit_price != null ? String(job.custom_unit_price) : '')
@@ -48,6 +52,12 @@ export default function IndustryTracking() {
       setDetail(null); load()
     } catch (e) { setErr(e.message) }
   }
+  async function toggleExclude(kind, refId, excluded) {
+    try {
+      await post('/account/industry/exclude', { kind, ref_id: refId, excluded })
+      load()
+    } catch (e) { setErr(e.message) }
+  }
 
   useEffect(() => { load() }, [load])
 
@@ -57,7 +67,8 @@ export default function IndustryTracking() {
 
   const mfgCols = [
     { key: 'date', label: 'Date', sortVal: r => r.date, render: r => fmtDate(r.date) },
-    { key: 'name', label: 'Item', sortVal: r => r.name, render: r => r.name },
+    { key: 'name', label: 'Item', sortVal: r => r.name, render: r => (r.missing
+      ? <span title="Partial cost basis — margin overstated"><span style={{ color: AMBER }}>*</span> {r.name}</span> : r.name) },
     { key: 'unit_build', label: 'Unit Build', num: true, sortVal: r => r.unit_build, render: r => fmtIsk(r.unit_build) },
     { key: 'unit_sell', label: 'Unit Sell', num: true, sortVal: r => r.unit_sell, render: r => fmtIsk(r.unit_sell) },
     { key: 'units', label: 'Units', num: true, sortVal: r => r.units, render: r => fmtInt(r.units) },
@@ -83,10 +94,18 @@ export default function IndustryTracking() {
     { key: 'produced', label: 'Produced', num: true, sortVal: r => r.produced, render: r => fmtInt(r.produced) },
     { key: 'sold', label: 'Sold', num: true, sortVal: r => r.sold, render: r => fmtInt(r.sold) },
     { key: 'consumed', label: 'Consumed', num: true, sortVal: r => r.consumed, render: r => fmtInt(r.consumed) },
-    { key: 'actions', label: 'Actions', render: r => (r.missing
-      ? <button className="badge" style={{ color: AMBER, borderColor: AMBER, cursor: 'pointer', background: 'none' }}
-          onClick={() => openDetail(r)} title="Inputs couldn't be fully attributed — click to set a Custom Unit Price.">Missing inputs</button>
-      : <button className="btn btn-ghost btn-sm" onClick={() => openDetail(r)}>Details</button>) },
+    { key: 'actions', label: 'Actions', render: r => (
+      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        {r.missing
+          ? <button className="badge" style={{ color: AMBER, border: `1px solid ${AMBER}`, cursor: 'pointer', background: 'rgba(200,169,81,0.10)' }}
+              onClick={() => openDetail(r)} title="Inputs couldn't be fully attributed — click to set a Custom Unit Price.">Missing inputs ✎</button>
+          : <button className="btn btn-ghost btn-sm" onClick={() => openDetail(r)}>Details</button>}
+        <button className="btn btn-ghost btn-sm" onClick={() => toggleExclude('job', r.job_id, !r.excluded)}
+          title={r.excluded ? 'Count this job again' : "Don't count this job in the totals"}>
+          {r.excluded ? 'Include' : 'Exclude'}
+        </button>
+      </span>
+    ) },
   ]
 
   const contractCols = [
@@ -101,6 +120,12 @@ export default function IndustryTracking() {
     { key: 'sales_tax', label: 'Sales Tax', num: true, sortVal: r => r.sales_tax, render: r => fmtIsk(r.sales_tax) },
     { key: 'margin', label: 'Margin', num: true, sortVal: r => r.margin ?? -Infinity, render: r => fmtPct(r.margin) },
     { key: 'profit', label: 'Profit', num: true, sortVal: r => r.profit, render: r => <span style={{ color: profitColor(r.profit) }}>{fmtIsk(r.profit)}</span> },
+    { key: 'actions', label: 'Actions', render: r => (
+      <button className="btn btn-ghost btn-sm" onClick={() => toggleExclude('contract', r.contract_id, !r.excluded)}
+        title={r.excluded ? 'Count this contract again' : "Don't count this contract in the totals"}>
+        {r.excluded ? 'Include' : 'Exclude'}
+      </button>
+    ) },
   ]
 
   return (
@@ -109,6 +134,11 @@ export default function IndustryTracking() {
         <ScopeSelect scope={scope} setScope={setScope} chars={chars} groups={groups} />
         <DateRange start={start} end={end} setStart={setStart} setEnd={setEnd} />
         <SyncButton scope={scope} onDone={load} />
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', cursor: 'pointer' }}
+          title="When off, manufacturing & contract sales whose inputs aren't fully tracked are left out of the totals (their margin would be overstated). When on, they're counted and flagged with *.">
+          <input type="checkbox" checked={includeMissing} onChange={e => setIncludeMissing(e.target.checked)} />
+          Count missing-input items
+        </label>
         {!data && !err && <span style={{ fontSize: 12, color: 'var(--text)' }}>Loading…</span>}
         {err && <span style={{ fontSize: 12, color: RED }}>{err}</span>}
       </div>
@@ -148,11 +178,16 @@ export default function IndustryTracking() {
         </StatRow>
       )}
       <SortableTable columns={jobCols} rows={data?.jobs || []} rowKey={r => r.job_id}
-        rowStyle={r => (r.missing ? { background: 'rgba(200,169,81,0.07)' } : undefined)}
+        rowStyle={r => (r.excluded ? { opacity: 0.4 } : (r.missing ? { background: 'rgba(200,169,81,0.07)' } : undefined))}
         empty="No completed industry jobs yet. Deliver a job, then Sync from ESI." />
 
       {detail && (
-        <div className="card" style={{ marginTop: 12, background: 'var(--bg)' }}>
+        <div onClick={() => setDetail(null)} style={{
+          position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.55)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        }}>
+        <div className="card" onClick={e => e.stopPropagation()}
+          style={{ background: 'var(--bg)', maxWidth: 560, width: '100%', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
           <div className="sec-label" style={{ marginBottom: 10 }}>Job detail — {detail.product_name || detail.activity}</div>
           <table style={{ marginBottom: 10 }}>
             <thead><tr><th>Blueprint</th><th style={{ textAlign: 'right' }}>Runs Missing</th><th>Custom Unit Price</th></tr></thead>
@@ -180,6 +215,7 @@ export default function IndustryTracking() {
             </span>
           </div>
         </div>
+        </div>
       )}
 
       <div className="sec-label" style={{ margin: '22px 0 8px' }}>Contract Profit</div>
@@ -195,7 +231,7 @@ export default function IndustryTracking() {
       )}
       <SortableTable columns={contractCols} rows={data?.contracts || []}
         rowKey={(r, i) => `${r.contract_id}-${i}`}
-        rowStyle={r => (r.missing ? { background: 'rgba(200,169,81,0.07)' } : undefined)}
+        rowStyle={r => (r.excluded ? { opacity: 0.4 } : (r.missing ? { background: 'rgba(200,169,81,0.07)' } : undefined))}
         empty="No sold item-exchange contracts yet. Sell items via contract, then Sync from ESI." />
       <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 8 }}>
         Item-exchange contracts you issued and sold: the bundle's items consume cost basis from the same FIFO ledger

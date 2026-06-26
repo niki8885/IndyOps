@@ -290,7 +290,26 @@ def fetch_wallet_balance(character_id: int, token: str) -> float:
 
 
 def fetch_transactions(character_id: int, token: str) -> list:
-    return _esi_get(f"/characters/{character_id}/wallet/transactions/", token)
+    """Character wallet transactions. ESI returns only the ~2500 most-recent rows and
+    pages backwards via a ``from_id`` cursor (NOT X-Pages, so ``paginate=True`` can't be
+    used here) — we follow the cursor to capture the full window ESI exposes (~30 days).
+    Sync upserts these, so retained buy history accumulates and sells can FIFO-match."""
+    path = f"/characters/{character_id}/wallet/transactions/"
+    out: list = []
+    seen: set = set()
+    from_id: Optional[int] = None
+    for _ in range(40):                       # safety cap (~100k transactions)
+        params = {"from_id": from_id} if from_id is not None else None
+        page = _esi_get(path, token, params=params)
+        if not page:
+            break
+        fresh = [t for t in page if t.get("transaction_id") not in seen]
+        if not fresh:                         # ESI returned only rows we already have
+            break
+        out.extend(fresh)
+        seen.update(t.get("transaction_id") for t in page)
+        from_id = min(t.get("transaction_id") for t in page)
+    return out
 
 
 def fetch_skills(character_id: int, token: str) -> dict:

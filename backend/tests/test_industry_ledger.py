@@ -59,6 +59,19 @@ def test_missing_inputs_flag_excludes_profit():
     assert out["manufacturing"] == []            # but profit is not
 
 
+def test_include_missing_counts_missing_build_sale():
+    events = [
+        _build(1, 1, [{"type_id": 34, "qty": 1000}], 9999, 10, 10, 1000.0),   # no buys → missing
+        _sell(9999, 10, 1000.0, 2),
+    ]
+    out = industry_ledger.run_ledger(events, include_missing=True)
+    assert len(out["manufacturing"]) == 1
+    r = out["manufacturing"][0]
+    # only the job cost (1000/10 = 100/unit) is the tracked basis; profit is overstated
+    assert r["units"] == 10 and r["total_build"] == 1000.0 and r["profit"] == 9000.0
+    assert r["missing"] is True
+
+
 def test_consumed_tracks_intermediate_used_by_later_job():
     out = industry_ledger.run_ledger([
         _buy(34, 100, 1.0, 1),

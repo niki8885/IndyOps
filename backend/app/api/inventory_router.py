@@ -612,6 +612,7 @@ def _jita_two_sided(type_ids: list) -> dict:
 
 class PresetIn(BaseModel):
     name: str
+    structure_type: Optional[str] = None       # npc_station | athanor | tatara (drives base_yield)
     base_yield: float = 0.50
     tax_pct: float = 0.0
     security: str = "hi"
@@ -622,9 +623,15 @@ class PresetIn(BaseModel):
     rig_type_ids: List[int] = []
 
 
+# Structure base yields — keep in sync with refining.BASE_YIELD_PRESETS. When a preset
+# names a known structure, its base yield is authoritative (the user can't fat-finger it).
+_STRUCTURE_BASE = {"npc_station": 0.50, "athanor": 0.50, "tatara": 0.55}
+
+
 def _preset_out(p: ReprocessingPreset) -> dict:
     return {
-        "id": p.id, "name": p.name, "base_yield": p.base_yield, "tax_pct": p.tax_pct,
+        "id": p.id, "name": p.name, "structure_type": p.structure_type,
+        "base_yield": p.base_yield, "tax_pct": p.tax_pct,
         "security": p.security, "reprocessing_lvl": p.reprocessing_lvl,
         "efficiency_lvl": p.efficiency_lvl, "ore_specific_lvl": p.ore_specific_lvl,
         "implant_pct": p.implant_pct,
@@ -634,7 +641,11 @@ def _preset_out(p: ReprocessingPreset) -> dict:
 
 def _apply_preset(p: ReprocessingPreset, body: PresetIn) -> None:
     p.name = (body.name or "").strip()[:80] or "Preset"
-    p.base_yield = min(1.0, max(0.0, body.base_yield))
+    st = body.structure_type if body.structure_type in _STRUCTURE_BASE else None
+    p.structure_type = st
+    # a known structure type sets the base yield authoritatively; otherwise take the
+    # manual value (custom NPC stations / unusual setups).
+    p.base_yield = _STRUCTURE_BASE[st] if st else min(1.0, max(0.0, body.base_yield))
     p.tax_pct = max(0.0, body.tax_pct)
     p.security = body.security if body.security in ("hi", "low", "null") else "hi"
     p.reprocessing_lvl = max(0, min(5, body.reprocessing_lvl))

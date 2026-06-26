@@ -26,7 +26,7 @@ from app.core.database import (
     EsiMarketOrder, EsiIndustryJob, EsiContract, EsiContractItem, EsiSkill, EsiStructure,
     BankLedgerEntry, EsiWalletEntry, EsiWalletTransaction, EsiBlueprintCopy, ContractAnnotation,
     CourierRouteCache, LootAppraisal, EsiNameCache, EsiMiningLedger, InventoryItem,
-    JobCostOverride,
+    JobCostOverride, TrackingExclusion,
 )
 from app.core.database_eve import EveSessionLocal, EveStation, EveRegion
 from app.core.security import get_current_user
@@ -1124,6 +1124,7 @@ async def get_industry(
     scope: str = Query("all", description="all | char:<id> | group:<name>"),
     start: Optional[str] = Query(None, description="ISO date YYYY-MM-DD"),
     end: Optional[str] = Query(None, description="ISO date YYYY-MM-DD"),
+    include_missing: bool = Query(False, description="count manufacturing/contract sales whose cost basis is incomplete (overstated margin)"),
     current_user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
     eve_db: Session = Depends(_get_eve_db),
@@ -1247,19 +1248,33 @@ async def get_industry(
             for items, price, date in buy_specs:
                 events.extend(_contract_buy_events(items, price, date, jita))
 
-    ledger = industry_ledger.run_ledger(events)
+    ledger = industry_ledger.run_ledger(events, include_missing=include_missing)
     job_rows = sorted((r for r in ledger["jobs"] if _in_window(r["date"], start_d, end_d)),
                       key=lambda r: r["completed_at"] or "", reverse=True)
     mfg_rows = sorted((r for r in ledger["manufacturing"] if _in_window(r["date"], start_d, end_d)),
                       key=lambda r: (r["date"], r["name"]), reverse=True)
-    ctr_rows = sorted((r for r in ledger["contracts"] if _in_window(r["date"], start_d, end_d)),
+    # contracts with an incomplete cost basis (margin overstated) are dropped from the
+    # totals unless include_missing is on — mirrors the manufacturing side.
+    ctr_rows = sorted((r for r in ledger["contracts"]
+                       if _in_window(r["date"], start_d, end_d) and (include_missing or not r.get("missing"))),
                       key=lambda r: r["date"], reverse=True)
+
+    # per-user row opt-outs: excluded jobs/contracts stay in their table (the UI dims them)
+    # but are left out of the summary metrics.
+    excl = db.query(TrackingExclusion).filter(TrackingExclusion.user_id == current_user.id).all()
+    excl_jobs = {e.ref_id for e in excl if e.kind == "job"}
+    excl_contracts = {e.ref_id for e in excl if e.kind == "contract"}
+    for r in job_rows:
+        r["excluded"] = r["job_id"] in excl_jobs
+    for r in ctr_rows:
+        r["excluded"] = r["contract_id"] in excl_contracts
 
     needs_scope = [c.character_name for c in chars if _WALLET_SCOPE not in (c.scopes or "").split()]
     return {
-        "jobs": job_rows, "jobs_summary": industry_ledger.summarize_jobs(job_rows),
+        "jobs": job_rows, "jobs_summary": industry_ledger.summarize_jobs([r for r in job_rows if not r["excluded"]]),
         "manufacturing": mfg_rows, "mfg_summary": industry_ledger.summarize_manufacturing(mfg_rows),
-        "contracts": ctr_rows, "contracts_summary": industry_ledger.summarize_contracts(ctr_rows),
+        "contracts": ctr_rows,
+        "contracts_summary": industry_ledger.summarize_contracts([r for r in ctr_rows if not r["excluded"]]),
         "period": {"start": start_d.isoformat() if start_d else None,
                    "end": end_d.isoformat() if end_d else None},
         "needs_scope": needs_scope, "scope": scope,
@@ -1291,6 +1306,33 @@ async def set_job_override(
     row.updated_at = utcnow()
     db.commit()
     return {"job_id": body.job_id, "custom_unit_price": row.custom_unit_price}
+
+
+class ExclusionIn(BaseModel):
+    kind: str                  # 'job' | 'contract'
+    ref_id: int                # job_id or contract_id
+    excluded: bool             # True = exclude from totals, False = re-include
+
+
+@router.post("/industry/exclude", summary="Include/exclude a job or contract from the Industry totals")
+async def set_exclusion(
+    body: ExclusionIn,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if body.kind not in ("job", "contract"):
+        raise HTTPException(status_code=400, detail="kind must be 'job' or 'contract'")
+    row = (db.query(TrackingExclusion)
+           .filter(TrackingExclusion.user_id == current_user.id,
+                   TrackingExclusion.kind == body.kind, TrackingExclusion.ref_id == body.ref_id).first())
+    if body.excluded and not row:
+        db.add(TrackingExclusion(user_id=current_user.id, kind=body.kind,
+                                 ref_id=body.ref_id, created_at=utcnow()))
+        db.commit()
+    elif not body.excluded and row:
+        db.delete(row)
+        db.commit()
+    return {"kind": body.kind, "ref_id": body.ref_id, "excluded": body.excluded}
 
 
 # ── Tracking summary (unified income/profit across all streams — Agenda) ─────────

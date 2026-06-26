@@ -380,6 +380,7 @@ class ReprocessingPreset(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     name = Column(String(80), nullable=False)
+    structure_type = Column(String(20), nullable=True)          # npc_station | athanor | tatara (drives base_yield)
     base_yield = Column(Float, nullable=False, default=0.50)     # structure/station base 0..1
     tax_pct = Column(Float, nullable=False, default=0.0)         # facility take on output, %
     security = Column(String(4), nullable=False, default="hi")   # hi | low | null (rig band)
@@ -1079,6 +1080,21 @@ class JobCostOverride(Base):
     custom_unit_price = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
+
+
+class TrackingExclusion(Base):
+    """A user's per-row opt-out from the Tracking → Industry totals: a completed industry
+    job or a sold contract the user doesn't want counted (a mistake, a gift, a test build).
+    Excluded rows still appear in their table (dimmed) but are left out of the summary
+    metrics. Keyed by (user_id, kind, ref_id) where kind ∈ {'job','contract'}."""
+    __tablename__ = "tracking_exclusions"
+    __table_args__ = (UniqueConstraint("user_id", "kind", "ref_id", name="uq_tracking_exclusion"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind = Column(String(16), nullable=False)      # 'job' | 'contract'
+    ref_id = Column(BigInteger, nullable=False, index=True)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class EsiIndustryJob(Base):
