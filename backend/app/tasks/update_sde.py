@@ -760,6 +760,36 @@ STEPS: list[tuple[str, Any]] = [
 ]
 
 
+# Steps whose target table was introduced after the original SDE schema. On an instance
+# already at the current fuzzwork build, run_sde_update short-circuits and skips every step,
+# so a newly-added table (e.g. eve_planets, mig 0036) would stay empty forever — its reads
+# silently fall back ("Planet #<id>", null image). These steps self-heal: on a skipped sync
+# they run when their table has no rows. Once populated they follow the normal build-bump path.
+_BACKFILL_IF_EMPTY: list[tuple[str, Any, Any]] = [
+    ("planets", update_planets, EvePlanet),
+]
+
+
+def _backfill_empty(db, summary: dict) -> list[str]:
+    """Run any _BACKFILL_IF_EMPTY step whose table is empty. Returns the names run."""
+    done: list[str] = []
+    for step_name, step_fn, model in _BACKFILL_IF_EMPTY:
+        try:
+            if db.query(model).first() is not None:
+                continue
+        except Exception:  # table missing / not yet created — skip quietly
+            continue
+        try:
+            count = step_fn(db)  # _upsert_chunks commits internally
+            summary["steps"][step_name] = {"rows": count, "backfilled": True}
+            done.append(step_name)
+        except Exception as exc:
+            logger.error("  backfill %-14s FAILED: %s", step_name, exc)
+            summary["errors"].append(f"{step_name}: {exc}")
+            db.rollback()
+    return done
+
+
 def run_sde_update(force: bool = False) -> dict:
     """
     Main entry point. Checks the fuzzwork build ID; skips if already current
@@ -774,7 +804,9 @@ def run_sde_update(force: bool = False) -> dict:
         logger.info("Latest fuzzwork build: %s (%s)", build_id, build_date)
 
         if not force and build_id and build_id == current_build_id(db):
-            logger.info("SDE already up-to-date (build %s). Skipping.", build_id)
+            backfilled = _backfill_empty(db, summary)  # self-heal newly-added empty tables
+            logger.info("SDE already up-to-date (build %s). Skipping%s.", build_id,
+                        f" (backfilled {', '.join(backfilled)})" if backfilled else "")
             summary["skipped"] = True
             return summary
 

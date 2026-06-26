@@ -3,7 +3,7 @@
 // with broker fee (buy + sell) and sales tax from the character's skills. Sells with no
 // tracked buy (unknown cost basis) are surfaced as a warning, not silently counted.
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { get } from '../../api/client'
+import { get, post } from '../../api/client'
 import { fmtIsk, fmtInt, fmtDate, GREEN, RED } from './fmt'
 import {
   ScopeSelect, DateRange, Stat, StatRow, SyncButton, ScopeWarning, SortableTable,
@@ -35,6 +35,15 @@ export default function MarketTracking() {
 
   useEffect(() => { load() }, [load])
 
+  // per-row opt-out (same backend mechanism as Industry: kind 'trade', keyed on the sell
+  // transaction id). Excluded trades stay in the table (dimmed) but drop out of the totals.
+  const toggleExclude = useCallback(async (refId, excluded) => {
+    try {
+      await post('/account/industry/exclude', { kind: 'trade', ref_id: refId, excluded })
+      await load()
+    } catch (e) { setErr(e.message) }
+  }, [load])
+
   const s = data?.summary
   const multiChar = scope === 'all' || scope.startsWith('group:')
 
@@ -52,6 +61,13 @@ export default function MarketTracking() {
     { key: 'sales_tax', label: 'Sales Tax', num: true, sortVal: r => r.sales_tax, render: r => fmtIsk(r.sales_tax) },
     { key: 'margin', label: 'Margin', num: true, sortVal: r => r.margin ?? -Infinity, render: r => fmtPct(r.margin) },
     { key: 'profit', label: 'Profit', num: true, sortVal: r => r.profit, render: r => <span style={{ color: profitColor(r.profit) }}>{fmtIsk(r.profit)}</span> },
+    { key: 'actions', label: 'Actions', render: r => (
+      <button className="btn btn-ghost btn-sm" onClick={() => toggleExclude(r.sell_tx_id, !r.excluded)}
+        disabled={r.sell_tx_id == null}
+        title={r.excluded ? 'Count this trade again' : "Don't count this trade in the totals"}>
+        {r.excluded ? 'Include' : 'Exclude'}
+      </button>
+    ) },
   ]
 
   return (
@@ -97,8 +113,8 @@ export default function MarketTracking() {
 
       <div className="sec-label" style={{ marginBottom: 8 }}>Trade Profits</div>
       <SortableTable columns={columns} rows={data?.rows || []}
-        rowKey={(r, i) => `${r.character_id}-${r.date}-${r.type_id}-${i}`}
-        rowStyle={r => (r.profit < 0 ? { background: 'rgba(224,82,82,0.06)' } : undefined)}
+        rowKey={(r, i) => (r.sell_tx_id != null ? `tx-${r.sell_tx_id}` : `${r.character_id}-${r.date}-${r.type_id}-${i}`)}
+        rowStyle={r => (r.excluded ? { opacity: 0.4 } : (r.profit < 0 ? { background: 'rgba(224,82,82,0.06)' } : undefined))}
         empty="No matched trades yet. Buy then sell an item, and Sync from ESI (history builds going forward)." />
 
       <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 8 }}>

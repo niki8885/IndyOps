@@ -196,6 +196,131 @@ def test_replace_swaps_set(db):
     assert type_ids == [20, 21]
 
 
+# ── _job_notify (industry-job completion notifications) ────────────────────────
+
+def test_job_notify_emits_once_and_self_dismisses():
+    from app.core.database import AgendaNotification
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine, tables=[
+        LinkedCharacter.__table__, EsiIndustryJob.__table__, AgendaNotification.__table__])
+    db = sessionmaker(bind=engine)()
+    try:
+        char = LinkedCharacter(user_id=42, character_id=CID, character_name="Maker", scopes="")
+        row = EsiIndustryJob(character_id=CID, job_id=11, blueprint_type_id=1, product_type_id=2,
+                             runs=10, status="ready", notified_ready=False)
+        db.add_all([char, row])
+        db.commit()
+        now = datetime.datetime(2026, 6, 27, 12, 0, 0)
+
+        # status 'ready' → one notification, latch set, tagged with the job source_key
+        ue._job_notify(db, char, row, "Widget", "ready", now)
+        db.commit()
+        notes = db.query(AgendaNotification).all()
+        assert len(notes) == 1 and row.notified_ready is True
+        assert notes[0].source_key == "job_ready:11" and "Widget" in notes[0].body
+
+        # still 'ready' next sync → no duplicate (latched)
+        ue._job_notify(db, char, row, "Widget", "ready", now)
+        db.commit()
+        assert db.query(AgendaNotification).count() == 1
+
+        # collected ('delivered') → notification withdrawn, latch cleared
+        ue._job_notify(db, char, row, "Widget", "delivered", now)
+        db.commit()
+        assert db.query(AgendaNotification).count() == 0 and row.notified_ready is False
+    finally:
+        db.close()
+        engine.dispose()
+
+
+# ── Corporation-level sync (Phase B) ───────────────────────────────────────────
+
+def test_best_corp_grantor_role_and_scope():
+    wallet_sc = ue._CORP_WALLET_SCOPE
+    has_role = LinkedCharacter(scopes=wallet_sc, corp_roles=["Accountant"])
+    no_role = LinkedCharacter(scopes=wallet_sc, corp_roles=["Member"])
+    no_scope = LinkedCharacter(scopes="", corp_roles=["Director"])
+    assert ue._best_corp_grantor([no_role, has_role], ue._ROLE_ACCOUNTANT, wallet_sc) is has_role
+    assert ue._best_corp_grantor([no_role, no_scope], ue._ROLE_ACCOUNTANT, wallet_sc) is None
+    assert ue._best_corp_grantor([no_role], None, wallet_sc) is no_role   # scope-only (membership)
+
+
+def _corp_db():
+    from app.core.database import EsiCorpWallet, EsiCorpIndustryJob, EsiCorpMember
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine, tables=[
+        LinkedCharacter.__table__, EsiCorpWallet.__table__,
+        EsiCorpIndustryJob.__table__, EsiCorpMember.__table__])
+    return sessionmaker(bind=engine)(), engine
+
+
+def test_sync_corporations_pulls_real_corp_data(monkeypatch):
+    from app.core.database import EsiCorpWallet, EsiCorpIndustryJob, EsiCorpMember
+    db, engine = _corp_db()
+    try:
+        director = LinkedCharacter(
+            user_id=1, character_id=CID, character_name="Boss", corporation_id=2000,
+            is_active=True, status="active", corp_roles=["Director"],
+            scopes=" ".join([ue._CORP_WALLET_SCOPE, ue._CORP_JOBS_SCOPE, ue._CORP_MEMBERS_SCOPE]))
+        grunt = LinkedCharacter(
+            user_id=2, character_id=CID + 1, character_name="Grunt", corporation_id=2000,
+            is_active=True, status="active", corp_roles=["Member"], scopes="")
+        db.add_all([director, grunt])
+        db.commit()
+
+        monkeypatch.setattr(ue.esi, "valid_access_token", lambda db, char: "tok")
+        monkeypatch.setattr(ue.esi, "fetch_corp_wallets",
+                            lambda corp, tok: [{"division": 1, "balance": 1000.0}, {"division": 2, "balance": 500.0}])
+        monkeypatch.setattr(ue.esi, "fetch_corp_industry_jobs",
+                            lambda corp, tok: [{"job_id": 9001, "installer_id": CID, "activity_id": 1,
+                                                "product_type_id": 587, "runs": 5, "status": "active",
+                                                "end_date": "2026-07-01T00:00:00Z", "cost": 12.5}])
+        monkeypatch.setattr(ue.esi, "fetch_corp_members", lambda corp, tok: [CID, CID + 1, CID + 2])
+
+        out = ue.sync_corporations(db)
+        assert out["corporations"] == 1
+
+        wallets = db.query(EsiCorpWallet).filter_by(corporation_id=2000).all()
+        assert {w.division for w in wallets} == {1, 2}
+        assert sum(w.balance for w in wallets) == 1500.0 and wallets[0].synced_by == CID
+
+        jobs = db.query(EsiCorpIndustryJob).filter_by(corporation_id=2000).all()
+        assert len(jobs) == 1 and jobs[0].job_id == 9001 and jobs[0].runs == 5
+
+        members = db.query(EsiCorpMember).filter_by(corporation_id=2000).all()
+        assert {m.character_id for m in members} == {CID, CID + 1, CID + 2}
+        names = {m.character_id: m.character_name for m in members}
+        assert names[CID] == "Boss" and names[CID + 2] is None   # 3rd member unknown → no name
+
+        # prune: a later sync with no jobs clears the corp's jobs
+        monkeypatch.setattr(ue.esi, "fetch_corp_industry_jobs", lambda corp, tok: [])
+        ue.sync_corporations(db)
+        assert db.query(EsiCorpIndustryJob).filter_by(corporation_id=2000).count() == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_sync_corporations_skips_corp_without_roles(monkeypatch):
+    from app.core.database import EsiCorpWallet
+    db, engine = _corp_db()
+    try:
+        member = LinkedCharacter(
+            user_id=1, character_id=CID, character_name="Nobody", corporation_id=3000,
+            is_active=True, status="active", corp_roles=["Member"],
+            scopes=" ".join([ue._CORP_WALLET_SCOPE, ue._CORP_JOBS_SCOPE]))
+        db.add(member)
+        db.commit()
+        monkeypatch.setattr(ue.esi, "valid_access_token", lambda db, char: "tok")
+        monkeypatch.setattr(ue.esi, "fetch_corp_wallets",
+                            lambda corp, tok: (_ for _ in ()).throw(AssertionError("must not be called")))
+        out = ue.sync_corporations(db)
+        assert out["corporations"] == 1 and db.query(EsiCorpWallet).count() == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
 # ── _resolve_structures ───────────────────────────────────────────────────────
 
 def test_resolve_structures_empty_returns_zero(db):
@@ -571,7 +696,8 @@ def test_sync_all_active(monkeypatch, db):
 def test_sync_all_active_no_characters(monkeypatch, db):
     monkeypatch.setattr(ue, "SessionLocal", lambda: db)
     summary = ue.sync_all_active()
-    assert summary == {"characters": 0, "results": [], "errors": []}
+    assert summary["characters"] == 0 and summary["results"] == [] and summary["errors"] == []
+    assert summary["corporations"]["corporations"] == 0   # corp pass ran, found no corps
 
 
 def test_sync_all_active_inactive_excluded(monkeypatch, db):

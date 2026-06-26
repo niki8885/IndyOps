@@ -98,7 +98,11 @@ export default function IndustryTracking() {
       <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
         {r.missing
           ? <button className="badge" style={{ color: AMBER, border: `1px solid ${AMBER}`, cursor: 'pointer', background: 'rgba(200,169,81,0.10)' }}
-              onClick={() => openDetail(r)} title="Inputs couldn't be fully attributed — click to set a Custom Unit Price.">Missing inputs ✎</button>
+              onClick={() => openDetail(r)}
+              title={r.missing_reason === 'no_bom'
+                ? "No recipe data for this job — its material cost is unknown (it is NOT free). Click to set a Custom Unit Price."
+                : "Inputs couldn't be fully attributed — click to set a Custom Unit Price."}>
+              {r.missing_reason === 'no_bom' ? 'No recipe ✎' : 'Missing inputs ✎'}</button>
           : <button className="btn btn-ghost btn-sm" onClick={() => openDetail(r)}>Details</button>}
         <button className="btn btn-ghost btn-sm" onClick={() => toggleExclude('job', r.job_id, !r.excluded)}
           title={r.excluded ? 'Count this job again' : "Don't count this job in the totals"}>
@@ -204,7 +208,9 @@ export default function IndustryTracking() {
           </table>
           {detail.missing && (
             <div style={{ fontSize: 12, color: '#c8a951', marginBottom: 10 }}>
-              Because there were missing inputs, profits won't be tracked when this item is sold — set a Custom Unit Price to track it.
+              {detail.missing_reason === 'no_bom'
+                ? "This job's recipe (bill of materials) isn't in the SDE, so its material cost is unknown — it is NOT free. Profit won't be tracked on sale until you set a Custom Unit Price."
+                : "Because there were missing inputs, profits won't be tracked when this item is sold — set a Custom Unit Price to track it."}
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>

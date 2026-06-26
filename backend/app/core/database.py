@@ -602,6 +602,9 @@ class AgendaNotification(Base):
     severity = Column(String(8), nullable=False, default="info")    # info | up | down
     title = Column(String(200), nullable=False)
     body = Column(Text, nullable=True)
+    # optional source tag for auto-managed (non-alert) notifications, e.g. 'job_ready:<job_id>'
+    # — lets the producer withdraw its own notification when the condition clears (self-dismiss).
+    source_key = Column(String(60), nullable=True, index=True)
     created_at = Column(DateTime, default=utcnow, index=True)
     read_at = Column(DateTime, nullable=True)
 
@@ -865,6 +868,9 @@ class LinkedCharacter(Base):
     # opt-in: expose this character's (non-financial) presence in its corporation's roster
     # so corp admins can see who's active. Default off — no presence is shared until granted.
     corp_roster_visible = Column(Boolean, nullable=False, default=False, server_default="false")
+    # the character's in-game corp roles (ESI /characters/{id}/roles/ → 'roles' list), e.g.
+    # ["Director","Accountant","Factory_Manager"]. Gates corp-level ESI sync (Phase B).
+    corp_roles = Column(JSON, nullable=True)
 
     is_active = Column(Boolean, nullable=False, default=True)        # activation status
     status = Column(String(20), nullable=False, default="active")   # active|token_expired|invalid
@@ -1103,10 +1109,11 @@ class JobCostOverride(Base):
 
 
 class TrackingExclusion(Base):
-    """A user's per-row opt-out from the Tracking → Industry totals: a completed industry
-    job or a sold contract the user doesn't want counted (a mistake, a gift, a test build).
-    Excluded rows still appear in their table (dimmed) but are left out of the summary
-    metrics. Keyed by (user_id, kind, ref_id) where kind ∈ {'job','contract'}."""
+    """A user's per-row opt-out from the Tracking totals: a completed industry job, a sold
+    contract, or a realized market trade the user doesn't want counted (a mistake, a gift, a
+    test build). Excluded rows still appear in their table (dimmed) but are left out of the
+    summary metrics. Keyed by (user_id, kind, ref_id) where kind ∈ {'job','contract','trade'}
+    and ref_id is the job_id / contract_id / sell transaction_id respectively."""
     __tablename__ = "tracking_exclusions"
     __table_args__ = (UniqueConstraint("user_id", "kind", "ref_id", name="uq_tracking_exclusion"),)
 
@@ -1137,6 +1144,9 @@ class EsiIndustryJob(Base):
     station_id = Column(BigInteger, nullable=True)
     cost = Column(Float, nullable=True)
     probability = Column(Float, nullable=True)
+    # latch: emit the "job finished, not collected" Agenda notification once when ESI flips
+    # status→'ready'; cleared (and the notification withdrawn) when it flips →'delivered'.
+    notified_ready = Column(Boolean, nullable=False, default=False, server_default="false")
 
 
 class EsiStanding(Base):
@@ -1210,6 +1220,59 @@ class EsiPlanet(Base):
     notified_stopped = Column(Boolean, nullable=False, default=False)
     notified_full = Column(Boolean, nullable=False, default=False)
     notified_expiring = Column(Boolean, nullable=False, default=False)
+
+
+class EsiCorpWallet(Base):
+    """A corporation wallet division's balance (Phase B). One row per (corporation, division
+    1–7), shared across the app's users in that corp — populated by whichever linked character
+    holds the Accountant/Director role + the corp-wallet scope (``synced_by`` records it).
+    Replaced each corp sync."""
+    __tablename__ = "esi_corp_wallets"
+    __table_args__ = (UniqueConstraint("corporation_id", "division", name="uq_corp_wallet"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corporation_id = Column(Integer, nullable=False, index=True)
+    division = Column(Integer, nullable=False)        # 1..7 (1 = master wallet)
+    balance = Column(Float, nullable=True)
+    synced_by = Column(Integer, nullable=True)        # the character_id that fetched it
+    synced_at = Column(DateTime, nullable=True)
+
+
+class EsiCorpIndustryJob(Base):
+    """A corp-OWNED industry job (Phase B) — the corp is the job owner, distinct from a member's
+    personal job. Keyed by (corporation_id, job_id); ``installer_id`` is the member who ran it.
+    Upserted each corp sync (jobs ESI drops are pruned)."""
+    __tablename__ = "esi_corp_industry_jobs"
+    __table_args__ = (UniqueConstraint("corporation_id", "job_id", name="uq_corp_job"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corporation_id = Column(Integer, nullable=False, index=True)
+    job_id = Column(BigInteger, nullable=False)
+    installer_id = Column(Integer, nullable=True)     # the member character who installed it
+    activity_id = Column(Integer, nullable=True)
+    blueprint_type_id = Column(Integer, nullable=True)
+    product_type_id = Column(Integer, nullable=True)
+    runs = Column(Integer, nullable=True)
+    status = Column(String(30), nullable=True)
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    location_id = Column(BigInteger, nullable=True)
+    cost = Column(Float, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+
+
+class EsiCorpMember(Base):
+    """A real member of a corporation (Phase B) — the actual in-game roster from ESI corp
+    membership, distinct from app users. Keyed by (corporation_id, character_id). Replaced each
+    corp sync. Names are resolved best-effort (EsiNameCache / linked characters)."""
+    __tablename__ = "esi_corp_members"
+    __table_args__ = (UniqueConstraint("corporation_id", "character_id", name="uq_corp_member"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corporation_id = Column(Integer, nullable=False, index=True)
+    character_id = Column(Integer, nullable=False)
+    character_name = Column(String(200), nullable=True)
+    synced_at = Column(DateTime, nullable=True)
 
 
 class BankLedgerEntry(Base):
