@@ -400,8 +400,8 @@ def _pi_notify(db, char, label, summary, row, now) -> None:
     # extraction stopped (had an extractor, no head still running)
     if summary["has_extractor"] and not summary["extracting"]:
         if not row.notified_stopped:
-            notes.append(("down", "PI: добыча остановилась",
-                          f"{label}: экстрактор закончил цикл — планета простаивает."))
+            notes.append(("down", "PI: extraction stopped",
+                          f"{label}: the extractor finished its cycle — the colony is idle."))
             row.notified_stopped = True
     else:
         row.notified_stopped = False
@@ -411,8 +411,8 @@ def _pi_notify(db, char, label, summary, row, now) -> None:
     if summary["extracting"] and exp and (exp - now) <= _PI_EXPIRY_WARN:
         if not row.notified_expiring:
             hrs = max(0, int((exp - now).total_seconds() // 3600))
-            notes.append(("info", "PI: экстрактор скоро встанет",
-                          f"{label}: добыча остановится примерно через {hrs} ч."))
+            notes.append(("info", "PI: extractor stopping soon",
+                          f"{label}: extraction stops in about {hrs}h."))
             row.notified_expiring = True
     elif summary["extracting"]:
         row.notified_expiring = False     # re-armed once a fresh (>24h) cycle starts
@@ -421,8 +421,8 @@ def _pi_notify(db, char, label, summary, row, now) -> None:
     pct = pi.storage_pct(summary["storage_used"], summary["storage_capacity"])
     if pct is not None and pct >= _PI_FULL_PCT:
         if not row.notified_full:
-            notes.append(("down", "PI: склад заполнен",
-                          f"{label}: хранилище заполнено на {pct:.0f}% — добыча скоро встанет."))
+            notes.append(("down", "PI: storage full",
+                          f"{label}: storage is {pct:.0f}% full — extraction will stall soon."))
             row.notified_full = True
     elif pct is not None:
         row.notified_full = False
@@ -457,12 +457,12 @@ def _job_notify(db, char, row, product_name, status, now) -> None:
     source_key ties the notification to the job so it can be deleted on collect."""
     key = f"job_ready:{row.job_id}"
     if status == "ready" and not row.notified_ready:
-        label = product_name or (f"чертёж #{row.blueprint_type_id}" if row.blueprint_type_id else "работа")
+        label = product_name or (f"blueprint #{row.blueprint_type_id}" if row.blueprint_type_id else "job")
         runs = row.runs or 0
         db.add(AgendaNotification(
             user_id=char.user_id, alert_id=None, severity="info",
-            title="Производство: работа завершена",
-            body=f"{label} ×{runs} — готово к получению, не забрано.",
+            title="Industry: job complete",
+            body=f"{label} ×{runs} — ready to collect, not picked up yet.",
             source_key=key))
         row.notified_ready = True
     elif status == "delivered" and row.notified_ready:
