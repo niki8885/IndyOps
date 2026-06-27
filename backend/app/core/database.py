@@ -1275,6 +1275,93 @@ class EsiCorpMember(Base):
     synced_at = Column(DateTime, nullable=True)
 
 
+class EsiCorpAsset(Base):
+    """A corporation's asset row (Phase C) — corp-owned items in offices / corp hangars /
+    containers, distinct from a member's personal assets. Keyed by (corporation_id, item_id);
+    replaced each corp sync. ``location_flag`` ``CorpSAG1``..``CorpSAG7`` marks the corp-hangar
+    division (the corp "warehouse"); ``CorpDeliveries`` is the deliveries hangar."""
+    __tablename__ = "esi_corp_assets"
+    __table_args__ = (UniqueConstraint("corporation_id", "item_id", name="uq_corp_asset"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corporation_id = Column(Integer, nullable=False, index=True)
+    item_id = Column(BigInteger, nullable=False)
+    type_id = Column(Integer, nullable=True)
+    quantity = Column(BigInteger, nullable=True)
+    location_id = Column(BigInteger, nullable=True)
+    location_flag = Column(String(60), nullable=True)
+    location_type = Column(String(30), nullable=True)
+    is_singleton = Column(Boolean, nullable=True)
+    is_blueprint_copy = Column(Boolean, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+
+
+class EsiCorpDivision(Base):
+    """A corporation's hangar / wallet division names (Phase C) from
+    /corporations/{id}/divisions/ (Director). Keyed by (corporation_id, kind, division) with
+    kind ∈ {'hangar','wallet'}; lets the warehouse view show real hangar names ("Minerals")
+    instead of a bare "Division N". Replaced each corp sync."""
+    __tablename__ = "esi_corp_divisions"
+    __table_args__ = (UniqueConstraint("corporation_id", "kind", "division", name="uq_corp_division"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corporation_id = Column(Integer, nullable=False, index=True)
+    kind = Column(String(10), nullable=False)        # 'hangar' | 'wallet'
+    division = Column(Integer, nullable=False)        # 1..7
+    name = Column(String(120), nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+
+
+class EsiCorpContract(Base):
+    """A corporation contract (Phase C) — issued by / to the corporation. Keyed by
+    (corporation_id, contract_id); upserted each corp sync (drops pruned). Its contents live in
+    EsiCorpContractItem."""
+    __tablename__ = "esi_corp_contracts"
+    __table_args__ = (UniqueConstraint("corporation_id", "contract_id", name="uq_corp_contract"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corporation_id = Column(Integer, nullable=False, index=True)
+    contract_id = Column(BigInteger, nullable=False)
+    type = Column(String(30), nullable=True)
+    status = Column(String(30), nullable=True)
+    for_corp = Column(Boolean, nullable=True)
+    issuer_id = Column(Integer, nullable=True)
+    issuer_corporation_id = Column(Integer, nullable=True)
+    assignee_id = Column(Integer, nullable=True)
+    acceptor_id = Column(Integer, nullable=True)
+    date_issued = Column(DateTime, nullable=True)
+    date_expired = Column(DateTime, nullable=True)
+    date_accepted = Column(DateTime, nullable=True)
+    date_completed = Column(DateTime, nullable=True)
+    price = Column(Float, nullable=True)
+    reward = Column(Float, nullable=True)
+    collateral = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    title = Column(String(255), nullable=True)
+    availability = Column(String(30), nullable=True)
+    start_location_id = Column(BigInteger, nullable=True)
+    end_location_id = Column(BigInteger, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+
+
+class EsiCorpContractItem(Base):
+    """Items inside a corporation contract (Phase C), keyed by (corporation_id, contract_id,
+    record_id). Fetched once per contract (contents are immutable) and pruned with their
+    contract. ``is_included`` True = offered by the issuer, False = requested."""
+    __tablename__ = "esi_corp_contract_items"
+    __table_args__ = (UniqueConstraint("corporation_id", "contract_id", "record_id",
+                                       name="uq_corp_contract_item"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    corporation_id = Column(Integer, nullable=False, index=True)
+    contract_id = Column(BigInteger, nullable=False, index=True)
+    record_id = Column(BigInteger, nullable=False)
+    type_id = Column(Integer, nullable=True)
+    quantity = Column(BigInteger, nullable=True)
+    is_included = Column(Boolean, nullable=True)
+    is_singleton = Column(Boolean, nullable=True)
+
+
 class BankLedgerEntry(Base):
     """A credit to a user's in-app balance from an in-game ISK donation to the bank
     corporation (wallet-journal ``player_donation``). Append-only and idempotent on

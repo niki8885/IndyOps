@@ -246,11 +246,16 @@ def test_best_corp_grantor_role_and_scope():
 
 
 def _corp_db():
-    from app.core.database import EsiCorpWallet, EsiCorpIndustryJob, EsiCorpMember
+    from app.core.database import (
+        EsiCorpWallet, EsiCorpIndustryJob, EsiCorpMember,
+        EsiCorpAsset, EsiCorpDivision, EsiCorpContract, EsiCorpContractItem,
+    )
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine, tables=[
         LinkedCharacter.__table__, EsiCorpWallet.__table__,
-        EsiCorpIndustryJob.__table__, EsiCorpMember.__table__])
+        EsiCorpIndustryJob.__table__, EsiCorpMember.__table__,
+        EsiCorpAsset.__table__, EsiCorpDivision.__table__,
+        EsiCorpContract.__table__, EsiCorpContractItem.__table__])
     return sessionmaker(bind=engine)(), engine
 
 
@@ -296,6 +301,64 @@ def test_sync_corporations_pulls_real_corp_data(monkeypatch):
         monkeypatch.setattr(ue.esi, "fetch_corp_industry_jobs", lambda corp, tok: [])
         ue.sync_corporations(db)
         assert db.query(EsiCorpIndustryJob).filter_by(corporation_id=2000).count() == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_sync_corporations_pulls_assets_contracts_divisions(monkeypatch):
+    from app.core.database import (
+        EsiCorpAsset, EsiCorpDivision, EsiCorpContract, EsiCorpContractItem,
+    )
+    db, engine = _corp_db()
+    try:
+        director = LinkedCharacter(
+            user_id=1, character_id=CID, character_name="Boss", corporation_id=2000,
+            is_active=True, status="active", corp_roles=["Director"],
+            scopes=" ".join([ue._CORP_ASSETS_SCOPE, ue._CORP_DIVISIONS_SCOPE, ue._CORP_CONTRACTS_SCOPE]))
+        db.add(director)
+        db.commit()
+
+        monkeypatch.setattr(ue.esi, "valid_access_token", lambda db, char: "tok")
+        monkeypatch.setattr(ue.esi, "fetch_corp_assets",
+                            lambda corp, tok: [{"item_id": 1, "type_id": 34, "quantity": 100,
+                                                "location_id": 60003760, "location_flag": "CorpSAG1",
+                                                "location_type": "station"}])
+        monkeypatch.setattr(ue.esi, "fetch_corp_divisions",
+                            lambda corp, tok: {"hangar": [{"division": 1, "name": "Minerals"}],
+                                               "wallet": [{"division": 1, "name": "Master"}]})
+        monkeypatch.setattr(ue.esi, "fetch_corp_contracts",
+                            lambda corp, tok: [{"contract_id": 7001, "type": "item_exchange",
+                                                "status": "outstanding", "issuer_id": CID,
+                                                "date_issued": "2026-06-01T00:00:00Z", "price": 1000.0}])
+        monkeypatch.setattr(ue.esi, "fetch_corp_contract_items",
+                            lambda corp, cid, tok: [{"record_id": 1, "type_id": 34, "quantity": 50,
+                                                     "is_included": True}])
+
+        out = ue.sync_corporations(db)
+        assert out["corporations"] == 1
+
+        assets = db.query(EsiCorpAsset).filter_by(corporation_id=2000).all()
+        assert len(assets) == 1 and assets[0].location_flag == "CorpSAG1"
+        divs = {(d.kind, d.division): d.name for d in
+                db.query(EsiCorpDivision).filter_by(corporation_id=2000).all()}
+        assert divs[("hangar", 1)] == "Minerals" and divs[("wallet", 1)] == "Master"
+        contracts = db.query(EsiCorpContract).filter_by(corporation_id=2000).all()
+        assert len(contracts) == 1 and contracts[0].contract_id == 7001
+        items = db.query(EsiCorpContractItem).filter_by(corporation_id=2000, contract_id=7001).all()
+        assert len(items) == 1 and items[0].quantity == 50
+
+        # a second sync must NOT re-fetch already-itemized contracts (immutable contents)
+        monkeypatch.setattr(ue.esi, "fetch_corp_contract_items",
+                            lambda corp, cid, tok: (_ for _ in ()).throw(AssertionError("re-fetched")))
+        ue.sync_corporations(db)
+        assert db.query(EsiCorpContractItem).filter_by(corporation_id=2000).count() == 1
+
+        # prune: a later sync with no contracts clears them + their items
+        monkeypatch.setattr(ue.esi, "fetch_corp_contracts", lambda corp, tok: [])
+        ue.sync_corporations(db)
+        assert db.query(EsiCorpContract).filter_by(corporation_id=2000).count() == 0
+        assert db.query(EsiCorpContractItem).filter_by(corporation_id=2000).count() == 0
     finally:
         db.close()
         engine.dispose()

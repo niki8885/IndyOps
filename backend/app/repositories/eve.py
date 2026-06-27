@@ -158,6 +158,14 @@ def type_names(eve_db, type_ids: list[int]) -> dict[int, str]:
     return {tid: name for tid, name in rows}
 
 
+def type_volumes(eve_db, type_ids: list[int]) -> dict[int, float]:
+    """{type_id: packaged volume (m³)} for the given ids (single query). Missing → 0.0.
+    Used to fold haul cost (ISK per m³) into the cheapest-source pricing."""
+    rows = eve_db.query(EveType.type_id, EveType.volume).filter(
+        EveType.type_id.in_(type_ids or [-1])).all()
+    return {tid: float(vol) if vol is not None else 0.0 for tid, vol in rows}
+
+
 def type_groups(eve_db, type_ids: list[int]) -> dict[int, dict]:
     """{type_id: {"category_id", "group_name", "meta_group_id"}} (single query).
 

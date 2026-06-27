@@ -66,14 +66,16 @@ describe('MarketSourcePanel', () => {
   it('adds, edits and removes a custom group rule', () => {
     const state = renderHost()
     fireEvent.click(screen.getByText('+ Add rule'))
-    expect(state().rules).toEqual([{ group: 'Mineral', side: 'buy' }])
+    // A new rule defaults to the side OPPOSITE the prevailing market side (Jita is on Buy),
+    // so it has an immediate effect instead of silently matching the default.
+    expect(state().rules).toEqual([{ group: 'Mineral', side: 'sell' }])
 
-    // change the rule's group to Component and its side to Sell
+    // change the rule's group to Component and its side back to Buy
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Component' } })
     expect(state().rules[0].group).toBe('Component')
     const ruleRow = screen.getByRole('combobox').closest('div')
-    fireEvent.click(within(ruleRow).getByRole('button', { name: 'sell' }))
-    expect(state().rules[0].side).toBe('sell')
+    fireEvent.click(within(ruleRow).getByRole('button', { name: 'buy' }))
+    expect(state().rules[0].side).toBe('buy')
 
     fireEvent.click(screen.getByTitle('Remove rule'))
     expect(state().rules).toEqual([])

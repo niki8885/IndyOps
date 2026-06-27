@@ -150,6 +150,17 @@ def test_resolve_acquire_scam_guard_falls_to_other_side():
     assert flags[34]["original"] == pytest.approx(0.1) and flags[34]["used"] == pytest.approx(8.0)
 
 
+def test_resolve_acquire_delivery_folds_into_candidates():
+    # Delivery (ISK/m³ × volume) is added per source before the cheapest wins: r1 buy 5.0
+    # + 1×2.0 haul = 7.0 vs r2 buy 6.0 + 0 = 6.0 → r2 now wins despite a higher list price.
+    prices, sources, _ = mr._resolve_acquire_prices(
+        [34], [1, 2], _two_region_data(), {}, {34: 10.0}, 0.0,
+        basis="buy", region_sides={1: "buy", 2: "buy"}, cj_side=None,
+        rules=[], group_of={34: "Mineral"}, overrides={},
+        volume_of={34: 1.0}, region_delivery={1: 2.0, 2: 0.0})
+    assert prices[34] == pytest.approx(6.0) and sources[34] == 2
+
+
 def test_resolve_acquire_override_wins():
     prices, sources, _ = mr._resolve_acquire_prices(
         [34], [1, 2], _two_region_data(), {}, {34: 10.0}, 0.0,
@@ -261,6 +272,41 @@ def test_reactions_off_force_buys_reaction_nodes():
     assert plan.decisions[3000].decision == "buy"           # reaction comp bought, not made
     shop_ids = {s.type_id for s in plan.shopping_list}
     assert 3000 in shop_ids and 4000 not in shop_ids        # buy the comp; moon goo not sourced
+
+
+def test_reactions_from_scratch_force_makes_reaction_nodes():
+    """The reactions-from-scratch path (router force-MAKES every reaction-activity node):
+    even though buying the reaction comp is cheaper, it is made in-house and its moon-goo
+    input is sourced — no reaction intermediate is bought."""
+    from dataclasses import replace
+    REACTION = 11
+    tree = {
+        2000: {"name": "Hull", "category_id": None, "group_name": None,
+               "recipes": [{"activity": 1, "blueprint_type_id": 100, "qty_per_run": 1,
+                            "base_time": 600, "max_runs": 10,
+                            "inputs": [{"type_id": 3000, "qty": 4}, {"type_id": 34, "qty": 100}]}]},
+        3000: {"name": "Comp", "category_id": None, "group_name": None,
+               "recipes": [{"activity": REACTION, "blueprint_type_id": 101, "qty_per_run": 1,
+                            "base_time": 3600, "max_runs": 100, "inputs": [{"type_id": 4000, "qty": 2}]}]},
+        34: {"name": "Trit", "category_id": None, "group_name": None, "recipes": []},
+        4000: {"name": "Moon", "category_id": None, "group_name": None, "recipes": []},
+    }
+    # Comp is cheap to buy (1.0) vs making it from moon goo — without from-scratch the
+    # solver would buy it; the force-make must override that.
+    buy = {2000: None, 3000: 1.0, 34: 5.0, 4000: 100.0}
+    req = from_bom(2000, 1, tree, buy, {}, LocationParams(1, "P"))
+
+    # Mirror calculate_chain's from-scratch predicate (target excluded), then force-make.
+    scratch_ids = {tid for tid, nd in tree.items()
+                   if tid != 2000 and nd["recipes"]
+                   and all(rc["activity"] == REACTION for rc in nd["recipes"])}
+    assert scratch_ids == {3000}
+    for tid in scratch_ids:
+        req.nodes[tid] = replace(req.nodes[tid], buy_price=None)
+
+    plan = solve_chain(req)
+    assert plan.decisions[3000].decision == "make"          # reaction comp made, not bought
+    assert 4000 in {s.type_id for s in plan.shopping_list}   # its moon goo is sourced
 
 
 def test_full_left_arm_pipeline(eve_session, monkeypatch):
