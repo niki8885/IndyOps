@@ -263,7 +263,6 @@ function CalculatorTab({ sharedJob }) {
     system_cost_index: 0,
     facility_tax_pct: 0,
     structure_bonus_pct: 0,
-    estimated_item_value: '',
   })
   const [matPrices, setMatPrices] = useState({})   // {type_id: price}
   const [result, setResult]       = useState(null)
@@ -292,6 +291,10 @@ function CalculatorTab({ sharedJob }) {
   const [matRegionSide, setMatRegionSide] = useState({ 10000002: 'sell' })
   const [matIncludeCJ, setMatIncludeCJ] = useState(false)
   const [matRules, setMatRules] = useState([])
+  // Per-market haul cost (ISK per m³) keyed by region id (and 'cj'). Folded into both the
+  // ⚡ fill and the Analyze comparison so the cheapest source accounts for delivery.
+  const [matDelivery, setMatDelivery] = useState({})
+  const setMatDeliveryCoef = (key, val) => setMatDelivery(m => ({ ...m, [key]: val }))
   const setMatSide = (key, side) => setMatRegionSide(m => ({ ...m, [key]: side }))
   const toggleMatRegion = (rid) => setMatRegions(prev => {
     const next = new Set(prev)
@@ -314,11 +317,9 @@ function CalculatorTab({ sharedJob }) {
   const [rigBonus, setRigBonus] = useState(null)   // { total_me_pct, total_te_pct, total_cost_pct, band, rigs }
   const [enabledRigs, setEnabledRigs] = useState({})  // { type_id: bool } — user override of applicability
 
-  // market analysis (4-source comparison)
-  const [market, setMarket]           = useState(null)   // { rows:[...], totals:{...} }
+  // market analysis — compares exactly the markets selected for the material fill
+  const [market, setMarket]           = useState(null)   // { rows:[...], sources:[...] }
   const [marketLoading, setMarketLoading] = useState(false)
-  const [deliveryOn, setDeliveryOn]   = useState(false)
-  const [deliveryCoef, setDeliveryCoef] = useState(1200)  // ISK per m³ (Jita → C-J haul)
 
   useEffect(() => {
     get('/facilities').then(setFacilities).catch(() => {})
@@ -436,7 +437,8 @@ function CalculatorTab({ sharedJob }) {
       time_bonus_pct: rigTotals().te,
       material_role_pct: rigBonus?.structure_role?.material_pct || 0,
       time_role_pct: rigBonus?.structure_role?.time_pct || 0,
-      estimated_item_value: params.estimated_item_value !== '' ? Number(params.estimated_item_value) : null,
+      // EIV is left to the backend (auto-derived from material adjusted prices, like the
+      // Chain tab) — no manual override field. The derived value is shown in the result.
       material_prices: Object.entries(matPrices)
         .filter(([, v]) => v !== '')
         .map(([type_id, unit_cost]) => ({ type_id: Number(type_id), unit_cost: Number(unit_cost) })),
@@ -507,6 +509,9 @@ function CalculatorTab({ sharedJob }) {
     try {
       const region_sides = {}
       for (const rid of matRegions) region_sides[rid] = matRegionSide[rid] || 'sell'
+      // Haul cost per market (ISK/m³), so the cheapest source folds in delivery.
+      const region_delivery = {}
+      for (const rid of matRegions) region_delivery[rid] = Number(matDelivery[rid]) || 0
       const res = await post('/manufacturing/resolve-prices', {
         type_ids: bpInfo.materials.map(m => m.type_id),
         region_ids: [...matRegions],
@@ -514,6 +519,8 @@ function CalculatorTab({ sharedJob }) {
         include_cj: matIncludeCJ,
         cj_side: matIncludeCJ ? (matRegionSide.cj || 'sell') : null,
         price_rules: matRules.filter(r => r.group),
+        region_delivery,
+        cj_delivery: matIncludeCJ ? (Number(matDelivery.cj) || 0) : 0,
         flag_unrealistic: true,
         unrealistic_ratio: 0.3,
       })
@@ -596,27 +603,35 @@ function CalculatorTab({ sharedJob }) {
     if (!bpInfo) return
     setMarketLoading(true); setError('')
     try {
-      const ids = bpInfo.materials.map(m => m.type_id)
-      const [jita, cj] = await Promise.all([
-        fetchMarketPrices(ids, 'Jita').catch(() => ({})),
-        fetchMarketPrices(ids, 'C-J').catch(() => ({})),
-      ])
-      const rows = bpInfo.materials.map(m => {
-        const qty = adjQtyOf(m)
-        const j = jita[m.type_id] || {}, c = cj[m.type_id] || {}
-        return {
-          type_id: m.type_id, name: m.name, qty, volume: m.volume || 0,
-          jita_buy: j.Buy ?? null, jita_sell: j.Sell ?? null,
-          cj_buy: c.Buy ?? null, cj_sell: c.Sell ?? null,
-        }
+      const regionIds = [...matRegions]
+      const res = await post('/manufacturing/market-compare', {
+        type_ids: bpInfo.materials.map(m => m.type_id),
+        region_ids: regionIds,
+        include_cj: matIncludeCJ,
       })
-      setMarket({ rows })
+      // Columns = exactly the markets selected for the fill (regions + optional C-J).
+      const sources = [
+        ...regionIds.map(rid => ({
+          key: String(rid), deliveryKey: rid,
+          label: (REGIONS.find(r => r.id === rid)?.name || String(rid)).replace(/\s*\(.*\)$/, ''),
+        })),
+        ...(matIncludeCJ ? [{ key: 'cj', deliveryKey: 'cj', label: 'C-J' }] : []),
+      ]
+      const rows = bpInfo.materials.map(m => {
+        const tid = m.type_id
+        const prices = {}
+        for (const rid of regionIds) prices[String(rid)] = res.regions?.[String(rid)]?.[String(tid)] || { buy: null, sell: null }
+        if (matIncludeCJ) prices.cj = res.cj?.[String(tid)] || { buy: null, sell: null }
+        return { type_id: tid, name: m.name, qty: adjQtyOf(m),
+                 volume: Number(res.volumes?.[String(tid)] ?? m.volume ?? 0), prices }
+      })
+      setMarket({ rows, sources })
     } catch (e) { setError('Market analysis failed: ' + e.message) }
     finally { setMarketLoading(false) }
   }
 
-  const marketView = buildMarketView(market?.rows, deliveryOn, deliveryCoef)
-  const bestBuyList = bestBuyListOf(marketView)
+  // Re-derive the comparison whenever the analysis data or per-market delivery changes.
+  const marketView = buildMarketViewMulti(market, matDelivery)
 
   // when the Save-as-PAK panel opens: auto Initial Contract + auto product prices
   useEffect(() => {
@@ -858,7 +873,6 @@ function CalculatorTab({ sharedJob }) {
             />
           </div>
           <NumField label="Broker Fee %" value={params.broker_fee_pct} onChange={setP('broker_fee_pct')} step={0.1} />
-          <NumField label="Est. Item Value (opt.)" value={params.estimated_item_value} onChange={setP('estimated_item_value')} step={1000000} placeholder="auto" money />
         </div>
       </div>
 
@@ -957,6 +971,7 @@ function CalculatorTab({ sharedJob }) {
                   includeCJ={matIncludeCJ} setIncludeCJ={setMatIncludeCJ}
                   rules={matRules} setRules={setMatRules}
                   groupOptions={[...new Set(bpInfo.materials.map(m => m.group_name).filter(Boolean))]}
+                  showDelivery delivery={matDelivery} setDelivery={setMatDeliveryCoef}
                 />
               </div>
             </details>
@@ -1096,14 +1111,8 @@ function CalculatorTab({ sharedJob }) {
         )}
       </div>
 
-      {/* ── Market analysis ── */}
-      {marketView && (
-        <MarketPanel
-          view={marketView} bestBuyList={bestBuyList}
-          deliveryOn={deliveryOn} setDeliveryOn={setDeliveryOn}
-          deliveryCoef={deliveryCoef} setDeliveryCoef={setDeliveryCoef}
-        />
-      )}
+      {/* ── Market analysis (across the selected fill markets, incl. per-market delivery) ── */}
+      {marketView && <MarketPanelMulti view={marketView} />}
 
       {/* ── Results ── */}
       {result && (
@@ -1297,6 +1306,19 @@ function CalculatorTab({ sharedJob }) {
               <textarea value={jobForm.note} onChange={setJ('note')} rows={2} />
             </div>
           </div>
+
+          {/* Preliminary per-unit pricing (same quick read-out the IndyJob panel shows) */}
+          <div style={{ display: 'flex', gap: 18, marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)',
+                        fontSize: 12, color: 'var(--text)', flexWrap: 'wrap' }}>
+            <span>Unit cost: <b style={{ color: 'var(--text-white)' }}>
+              {result.output?.quantity ? fmtIsk(result.results.total_costs / result.output.quantity) : '—'}</b></span>
+            <span>Sell / unit: <b style={{ color: 'var(--text-white)' }}>
+              {fmtIsk(Number(params.output_price) || result.output?.unit_price || 0)}</b></span>
+            <span>Profit / unit: <b style={{ color: profit >= 0 ? '#4caf7d' : '#e05252' }}>
+              {result.output?.quantity ? fmtIsk(profit / result.output.quantity) : '—'}</b></span>
+            <span>Margin: <b style={{ color: margin >= 0 ? '#4caf7d' : '#e05252' }}>{margin.toFixed(2)}%</b></span>
+          </div>
+
           <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
             <button className="btn btn-ghost" onClick={() => setSaveOpen(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveJob} disabled={saveLoading}>
@@ -1394,7 +1416,9 @@ function ChainTab({ sharedJob }) {
     broker_fee_pct: 3.6,   // sell-side broker fee
     sales_tax_pct: 2.0,    // sell-side sales tax
     bpc_cost: 0,           // manual blueprint cost for the target (total ISK; 0 = owned/free)
-    include_reactions: true, // false = buy reaction components instead of running reactions
+    // 'buy' = buy reaction components; 'inhouse' = run reactions when cheaper (may buy some
+    // intermediates); 'scratch' = run every reaction in-house from raw moon goo (buy none).
+    reactions_mode: 'inhouse',
   })
 
   // ── (1) Buy-price region multi-select ──
@@ -1597,7 +1621,8 @@ function ChainTab({ sharedJob }) {
       force_buy: [...fb],
       force_make: [...fm],
       bpc_cost: Number(params.bpc_cost) || 0,
-      include_reactions: params.include_reactions !== false,
+      include_reactions: params.reactions_mode !== 'buy',
+      reactions_from_scratch: params.reactions_mode === 'scratch',
       produce_character_id: produceCharId ? Number(produceCharId) : null,
       sell_character_id: sellCharId ? Number(sellCharId) : null,
       project_id: null,
@@ -1633,6 +1658,8 @@ function ChainTab({ sharedJob }) {
     }
     if (b.include_cj != null) setIncludeCJ(!!b.include_cj)
     if (Array.isArray(b.price_rules)) setPriceRules(b.price_rules)
+    if (b.include_reactions === false) setParams(p => ({ ...p, reactions_mode: 'buy' }))
+    else if (b.reactions_from_scratch) setParams(p => ({ ...p, reactions_mode: 'scratch' }))
     setLoading(true)
     // reuse_code keeps the SAME code on reopen instead of minting a new one
     post('/manufacturing/calculate-chain', { ...b, share_base: window.location.origin, reuse_code: decoded.code })
@@ -1884,13 +1911,21 @@ function ChainTab({ sharedJob }) {
           <NumField label="Blueprint cost (target)" value={params.bpc_cost} onChange={setP('bpc_cost')}
                     step={1000000} min={0} placeholder="0" />
           <div>
-            <CLabel>Reactions <Hint>make or buy</Hint></CLabel>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginTop: 5,
-              color: 'var(--text-white)' }}>
-              <input type="checkbox" checked={params.include_reactions !== false}
-                onChange={e => setParams(p => ({ ...p, include_reactions: e.target.checked }))} />
-              Run reactions in-house
-            </label>
+            <CLabel>Reactions <Hint>buy · in-house · from scratch</Hint></CLabel>
+            <div style={{ display: 'flex', gap: 4, marginTop: 5, flexWrap: 'wrap' }}>
+              {[
+                ['buy', 'Buy', 'Buy reaction components from the market (run no reactions)'],
+                ['inhouse', 'In-house', 'Run reactions in-house when cheaper — may still buy some intermediates'],
+                ['scratch', 'From scratch', 'Run every reaction in-house from raw moon materials — never buy a reaction intermediate'],
+              ].map(([val, label, tip]) => (
+                <button key={val} type="button" title={tip}
+                  onClick={() => setParams(p => ({ ...p, reactions_mode: val }))}
+                  className={`btn btn-sm ${params.reactions_mode === val ? 'btn-primary' : 'btn-ghost'}`}
+                  style={{ padding: '2px 8px', fontSize: 11 }}>
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <CLabel>Blueprints <Hint>use ME/TE you own</Hint></CLabel>
@@ -3471,6 +3506,115 @@ function MarketPanel({ view, bestBuyList, deliveryOn, setDeliveryOn, deliveryCoe
               <button className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard.writeText(items.map(i => `${i.name}\t${i.qty}`).join('\n'))}>Copy</button>
             </div>
             <textarea readOnly rows={Math.min(items.length, 8)} value={items.map(i => `${i.name}\t${i.qty}`).join('\n')} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* Dynamic N-market comparison (Calculator "Analyze market"). Unlike buildMarketView (the
+   fixed Jita/C-J view above, still used by the combined buy list), the columns here are
+   whatever markets the user selected for the fill, and delivery is per-market (ISK/m³).
+   market = { rows:[{type_id,name,qty,volume,prices:{srcKey:{buy,sell}}}], sources:[{key,label,deliveryKey}] } */
+function buildMarketViewMulti(market, delivery) {
+  if (!market?.rows?.length || !market.sources?.length) return null
+  const { rows, sources } = market
+  const dpu = (key, vol) => (vol || 0) * Number(delivery?.[key] || 0)
+  const colKeys = []
+  sources.forEach(s => { colKeys.push(`${s.key}_buy`, `${s.key}_sell`) })
+  const totals = Object.fromEntries(colKeys.map(k => [k, 0]))
+  let bestTotal = 0, deliveryTotal = 0
+  const out = rows.map(r => {
+    const eff = {}
+    sources.forEach(s => {
+      const p = r.prices?.[s.key] || {}
+      const d = dpu(s.deliveryKey, r.volume)
+      eff[`${s.key}_buy`]  = p.buy  != null ? p.buy  + d : null
+      eff[`${s.key}_sell`] = p.sell != null ? p.sell + d : null
+    })
+    let best = null, bestKey = null
+    for (const k of colKeys) if (eff[k] != null && (best == null || eff[k] < best)) { best = eff[k]; bestKey = k }
+    for (const k of colKeys) if (eff[k] != null) totals[k] += eff[k] * r.qty
+    if (best != null) {
+      bestTotal += best * r.qty
+      const src = sources.find(s => bestKey.startsWith(`${s.key}_`))
+      if (src) deliveryTotal += dpu(src.deliveryKey, r.volume) * r.qty
+    }
+    return { ...r, eff, bestKey, bestUnit: best }
+  })
+  return { rows: out, sources, totals, bestTotal, deliveryTotal }
+}
+
+function MarketPanelMulti({ view }) {
+  const { rows, sources, totals, bestTotal, deliveryTotal } = view
+  const cols = []
+  sources.forEach(s => {
+    cols.push({ key: `${s.key}_buy`, label: `${s.label} Buy`, srcKey: s.key })
+    cols.push({ key: `${s.key}_sell`, label: `${s.label} Sell`, srcKey: s.key })
+  })
+  const labelOf = key => {
+    const c = cols.find(c => c.key === key)
+    if (!c) return '—'
+    const s = sources.find(s => s.key === c.srcKey)
+    return `${s?.label || ''} ${key.endsWith('_buy') ? 'Buy' : 'Sell'}`.trim().toUpperCase()
+  }
+  const cell = (val, best) => (
+    <td style={{ whiteSpace: 'nowrap', color: best ? '#4caf7d' : 'var(--text-bright)', fontWeight: best ? 600 : 400, background: best ? 'rgba(76,175,125,0.08)' : undefined }}>
+      {val != null ? fmtIsk(val) : '—'}
+    </td>
+  )
+  const bySource = sources.map(s => ({ ...s, items: rows.filter(r => r.bestKey?.startsWith(`${s.key}_`)) }))
+  return (
+    <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--accent)' }}>MARKET ANALYSIS</span>
+        <span style={{ fontSize: 11, color: 'var(--text)' }}>
+          best across {sources.length} selected market{sources.length === 1 ? '' : 's'}
+          {deliveryTotal > 0 ? ' · incl. per-market delivery (set in Buy-price markets)' : ''}
+        </span>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th><th>Qty</th>
+              {cols.map(c => <th key={c.key} style={{ whiteSpace: 'nowrap' }}>{c.label}</th>)}
+              <th>Best</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.type_id}>
+                <td style={{ color: 'var(--text-white)', whiteSpace: 'nowrap' }}>{r.name}</td>
+                <td style={{ color: 'var(--text)' }}>{r.qty.toLocaleString()}</td>
+                {cols.map(c => cell(r.eff[c.key], r.bestKey === c.key))}
+                <td style={{ color: 'var(--accent)', fontSize: 11, whiteSpace: 'nowrap' }}>
+                  {r.bestKey ? labelOf(r.bestKey) : '—'}
+                </td>
+              </tr>
+            ))}
+            <tr style={{ background: 'var(--surface2)', fontWeight: 600 }}>
+              <td colSpan={2} style={{ textAlign: 'right', color: 'var(--text)' }}>Total (all from)</td>
+              {cols.map(c => <td key={c.key} style={{ whiteSpace: 'nowrap' }}>{fmtIsk(totals[c.key])}</td>)}
+              <td style={{ color: '#4caf7d', whiteSpace: 'nowrap' }}>{fmtIsk(bestTotal)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
+        <span style={{ color: 'var(--text)' }}>Best-mix total: <b style={{ color: '#4caf7d' }}>{fmtIsk(bestTotal)}</b></span>
+        {deliveryTotal > 0 && <span style={{ color: 'var(--text)' }}>incl. delivery <b style={{ color: 'var(--text-white)' }}>{fmtIsk(deliveryTotal)}</b></span>}
+      </div>
+      {/* best buy lists per market */}
+      <div style={{ padding: '0 16px 14px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+        {bySource.map(s => s.items.length > 0 && (
+          <div key={s.key}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>🛒 Buy at {s.label} ({s.items.length})</span>
+              <button className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard.writeText(s.items.map(i => `${i.name}\t${i.qty}`).join('\n'))}>Copy</button>
+            </div>
+            <textarea readOnly rows={Math.min(s.items.length, 8)} value={s.items.map(i => `${i.name}\t${i.qty}`).join('\n')} style={{ fontFamily: 'monospace', fontSize: 12 }} />
           </div>
         ))}
       </div>

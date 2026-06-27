@@ -4,15 +4,18 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.adapters import esi
+from app.adapters import esi, market
 from app.core.database import (
     get_db, Organisation, OrganisationFollow, OrganisationMember, Employee, UserDB,
     LinkedCharacter, CorpTrackingPref, EsiCorpWallet, EsiCorpIndustryJob, EsiCorpMember,
+    EsiCorpAsset, EsiCorpDivision, EsiCorpContract, EsiCorpContractItem,
 )
 from app.core.database_eve import EveSessionLocal, EveSolarSystem, EveStation, EveType
 from app.core.schemas import EmployeeType, OrganisationType, Visibility
 from app.core.security import get_current_user
 from app.api.responses import ERR_400, ERR_403, ERR_404
+from app.services import asset_location
+from app.api.characters_router import _type_names, _station_names, _structure_names, _system_names
 
 PUBLIC = Visibility.PUBLIC.value
 
@@ -133,15 +136,24 @@ def _require_owner(org: Organisation, user: UserDB):
 
 _CORP = OrganisationType.CORPORATION.value
 
-# Corp-ESI (Phase B) access gating — mirrors update_esi role/scope constants.
+# Corp-ESI (Phase B/C) access gating — mirrors update_esi role/scope constants.
 _SC_CORP_WALLET = "esi-wallet.read_corporation_wallets.v1"
 _SC_CORP_JOBS = "esi-industry.read_corporation_jobs.v1"
 _SC_CORP_MEMBERS = "esi-corporations.read_corporation_membership.v1"
+_SC_CORP_ASSETS = "esi-assets.read_corporation_assets.v1"
+_SC_CORP_CONTRACTS = "esi-contracts.read_corporation_contracts.v1"
 _R_ACCOUNTANT = {"Director", "Accountant", "Junior_Accountant"}
 _R_FACTORY = {"Director", "Factory_Manager"}
+_R_DIRECTOR = {"Director"}
+# every corp scope — drives the dashboard's "re-link to grant corp access" prompt
+_SC_CORP_ALL = (_SC_CORP_WALLET, _SC_CORP_JOBS, _SC_CORP_MEMBERS, _SC_CORP_ASSETS, _SC_CORP_CONTRACTS)
 _CORP_ACT = {1: "Manufacturing", 3: "TE Research", 4: "ME Research", 5: "Copying",
              7: "Reverse Engineering", 8: "Invention", 9: "Reactions", 11: "Reactions"}
 _CORP_JOB_ACTIVE = {"active", "ready", "paused"}
+# corp-hangar location flags → division number (the corp "warehouses")
+_CORP_HANGAR_FLAGS = {f"CorpSAG{i}": i for i in range(1, 8)}
+_CONTRACT_ITEM_CAP = 200       # items returned per contract
+_WAREHOUSE_ITEM_CAP = 400      # item lines returned per (location, division) group
 
 
 def _char_has_scope(ch, scope) -> bool:
@@ -789,8 +801,9 @@ async def corp_data(
     can_wallet = any(_char_has_scope(c, _SC_CORP_WALLET) and (set(c.corp_roles or []) & _R_ACCOUNTANT) for c in my_chars)
     can_jobs = any(_char_has_scope(c, _SC_CORP_JOBS) and (set(c.corp_roles or []) & _R_FACTORY) for c in my_chars)
     can_members = any(_char_has_scope(c, _SC_CORP_MEMBERS) for c in my_chars)
-    need_relink = not any(_char_has_scope(c, s) for c in my_chars
-                          for s in (_SC_CORP_WALLET, _SC_CORP_JOBS, _SC_CORP_MEMBERS))
+    can_assets = any(_char_has_scope(c, _SC_CORP_ASSETS) and (set(c.corp_roles or []) & _R_DIRECTOR) for c in my_chars)
+    can_contracts = any(_char_has_scope(c, _SC_CORP_CONTRACTS) for c in my_chars)
+    need_relink = not any(_char_has_scope(c, s) for c in my_chars for s in _SC_CORP_ALL)
 
     # wallet (corp-wide, real)
     wrows = db.query(EsiCorpWallet).filter(EsiCorpWallet.corporation_id == corporation_id).all()
@@ -861,9 +874,200 @@ async def corp_data(
     return {
         "corporation_id": corporation_id,
         "access": {"roles": roles, "can_wallet": can_wallet, "can_jobs": can_jobs,
-                   "can_members": can_members, "need_relink": need_relink},
+                   "can_members": can_members, "can_assets": can_assets,
+                   "can_contracts": can_contracts, "need_relink": need_relink},
         "wallet": wallet, "jobs": jobs, "members": members, "personal": personal,
     }
+
+
+def _my_corp_chars(db, user_id, corporation_id):
+    """The user's linked characters in this corporation (404 if none), plus the corp-wide
+    ``need_relink`` flag (no character holds any corp scope yet)."""
+    my_chars = (db.query(LinkedCharacter)
+                .filter(LinkedCharacter.user_id == user_id,
+                        LinkedCharacter.corporation_id == corporation_id).all())
+    if not my_chars:
+        raise HTTPException(status_code=404, detail="You have no linked character in that corporation")
+    need_relink = not any(_char_has_scope(c, s) for c in my_chars for s in _SC_CORP_ALL)
+    return my_chars, need_relink
+
+
+@router.get("/me/corporations/{corporation_id}/warehouses", tags=["corporations"], responses={**ERR_404})
+async def corp_warehouses(
+        corporation_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Corp warehouses (Phase C): the corporation's assets grouped by location → corp-hangar
+    division, valued at ESI average price. A Director-roled character with the corp-assets scope
+    populates it; otherwise ``access`` prompts a re-link. Items are aggregated by type per
+    division and capped for payload size."""
+    my_chars, need_relink = _my_corp_chars(db, current_user.id, corporation_id)
+    can_assets = any(_char_has_scope(c, _SC_CORP_ASSETS) and (set(c.corp_roles or []) & _R_DIRECTOR) for c in my_chars)
+    access = {"can_assets": can_assets, "need_relink": need_relink}
+
+    rows = db.query(EsiCorpAsset).filter(EsiCorpAsset.corporation_id == corporation_id).all()
+    if not rows:
+        return {"access": access, "synced_at": None, "total_value": 0.0, "warehouses": []}
+    synced = max((r.synced_at for r in rows if r.synced_at), default=None)
+
+    # resolve each item's real terminus (station / structure / system) + names
+    roots, by_kind = asset_location.terminus_ids(rows)
+    eve = EveSessionLocal()
+    try:
+        tnames = _type_names(eve, {r.type_id for r in rows if r.type_id})
+        station_names = _station_names(eve, by_kind["station"])
+        system_names = _system_names(eve, by_kind["system"])
+    finally:
+        eve.close()
+    structure_names = _structure_names(db, by_kind["structure"])
+    div_names = {d.division: d.name for d in db.query(EsiCorpDivision).filter(
+        EsiCorpDivision.corporation_id == corporation_id, EsiCorpDivision.kind == "hangar").all()}
+    try:
+        prices = market.esi_adjusted_prices()
+    except Exception:  # noqa: BLE001
+        prices = {}
+
+    def _loc_name(kind, rid):
+        return (station_names.get(rid) or structure_names.get(rid) or system_names.get(rid)
+                or (f"#{rid}" if rid else "Unknown location"))
+
+    # (location) -> (division_key) -> {meta, items{type_id: agg}}
+    groups: dict = {}
+    for r in rows:
+        kind, rid = roots.get(r.item_id, (None, None))
+        flag = r.location_flag or ""
+        div = _CORP_HANGAR_FLAGS.get(flag)
+        if div is not None:
+            dkey, dlabel = div, (div_names.get(div) or f"Corp Hangar {div}")
+        elif flag == "CorpDeliveries":
+            dkey, dlabel = "deliveries", "Deliveries"
+        else:
+            dkey, dlabel = "other", "Other / containers"
+        loc = groups.setdefault((kind, rid), {})
+        g = loc.setdefault(dkey, {"division": div if isinstance(div, int) else None,
+                                  "division_key": dkey, "name": dlabel, "items": {}})
+        val = (prices.get(r.type_id, 0.0) or 0.0) * (r.quantity or 0)
+        it = g["items"].setdefault(r.type_id, {
+            "type_id": r.type_id, "name": (tnames.get(r.type_id) or {}).get("name") or f"#{r.type_id}",
+            "quantity": 0, "value": 0.0})
+        it["quantity"] += (r.quantity or 0)
+        it["value"] += val
+
+    def _dsort(d):
+        if isinstance(d["division"], int):
+            return (0, d["division"])
+        return (1, 0) if d["division_key"] == "deliveries" else (2, 0)
+
+    warehouses = []
+    for (kind, rid), divs in groups.items():
+        out_divs = []
+        for g in divs.values():
+            items = sorted(g["items"].values(), key=lambda x: -x["value"])
+            out_divs.append({
+                "division": g["division"], "division_key": g["division_key"], "name": g["name"],
+                "item_count": len(items), "value": round(sum(i["value"] for i in items), 2),
+                "items": [{"type_id": i["type_id"], "name": i["name"], "quantity": i["quantity"],
+                           "value": round(i["value"], 2)} for i in items[:_WAREHOUSE_ITEM_CAP]],
+                "items_truncated": max(0, len(items) - _WAREHOUSE_ITEM_CAP),
+            })
+        out_divs.sort(key=_dsort)
+        warehouses.append({
+            "location_id": rid, "location_kind": kind, "location_name": _loc_name(kind, rid),
+            "value": round(sum(d["value"] for d in out_divs), 2), "divisions": out_divs,
+        })
+    warehouses.sort(key=lambda w: -w["value"])
+    return {
+        "access": access,
+        "synced_at": synced.isoformat() if synced else None,
+        "total_value": round(sum(w["value"] for w in warehouses), 2),
+        "warehouses": warehouses,
+    }
+
+
+@router.get("/me/corporations/{corporation_id}/corp-contracts", tags=["corporations"], responses={**ERR_404})
+async def corp_contracts(
+        corporation_id: int,
+        current_user: UserDB = Depends(get_current_user),
+        db: Session = Depends(get_db),
+):
+    """Corp contracts (Phase C) issued by / to the corporation, each with its item contents
+    (for item-exchange / auction contracts). Any member with the corp-contracts scope populates
+    it. Contents are valued at ESI average price."""
+    my_chars, need_relink = _my_corp_chars(db, current_user.id, corporation_id)
+    can_contracts = any(_char_has_scope(c, _SC_CORP_CONTRACTS) for c in my_chars)
+    access = {"can_contracts": can_contracts, "need_relink": need_relink}
+
+    crows = (db.query(EsiCorpContract)
+             .filter(EsiCorpContract.corporation_id == corporation_id)
+             .order_by(EsiCorpContract.date_issued.desc()).limit(500).all())
+    if not crows:
+        return {"access": access, "count": 0, "synced_at": None, "contracts": []}
+    synced = max((c.synced_at for c in crows if c.synced_at), default=None)
+
+    cids = [c.contract_id for c in crows]
+    irows = (db.query(EsiCorpContractItem)
+             .filter(EsiCorpContractItem.corporation_id == corporation_id,
+                     EsiCorpContractItem.contract_id.in_(cids)).all())
+    items_by_contract: dict = {}
+    for it in irows:
+        items_by_contract.setdefault(it.contract_id, []).append(it)
+
+    # names: item types, locations, and the issuer/acceptor characters (best-effort)
+    eve = EveSessionLocal()
+    try:
+        tnames = _type_names(eve, {it.type_id for it in irows if it.type_id})
+        station_names = _station_names(eve, {c.start_location_id for c in crows} | {c.end_location_id for c in crows})
+    finally:
+        eve.close()
+    structure_names = _structure_names(db, {c.start_location_id for c in crows} | {c.end_location_id for c in crows})
+    char_ids = {c.issuer_id for c in crows} | {c.acceptor_id for c in crows}
+    char_ids.discard(None)
+    pnames = {cid: nm for cid, nm in db.query(EsiCorpMember.character_id, EsiCorpMember.character_name)
+              .filter(EsiCorpMember.corporation_id == corporation_id,
+                      EsiCorpMember.character_id.in_(char_ids or [-1])).all()}
+    pnames.update({c.character_id: c.character_name for c in
+                   db.query(LinkedCharacter.character_id, LinkedCharacter.character_name)
+                   .filter(LinkedCharacter.character_id.in_(char_ids or [-1])).all()})
+    try:
+        prices = market.esi_adjusted_prices()
+    except Exception:  # noqa: BLE001
+        prices = {}
+
+    def _loc(loc_id):
+        if not loc_id:
+            return None
+        return station_names.get(loc_id) or structure_names.get(loc_id) or f"#{loc_id}"
+
+    def _who(char_id):
+        if not char_id:
+            return None
+        return pnames.get(char_id) or f"#{char_id}"
+
+    out = []
+    for c in crows:
+        its = items_by_contract.get(c.contract_id, [])
+        included = [it for it in its if it.is_included]
+        requested = [it for it in its if it.is_included is False]
+        def _fmt(it):
+            return {"type_id": it.type_id, "name": (tnames.get(it.type_id) or {}).get("name") or f"#{it.type_id}",
+                    "quantity": it.quantity, "is_included": it.is_included,
+                    "value": round((prices.get(it.type_id, 0.0) or 0.0) * (it.quantity or 0), 2)}
+        out.append({
+            "contract_id": c.contract_id, "type": c.type, "status": c.status,
+            "title": c.title or "", "for_corp": c.for_corp,
+            "issuer": _who(c.issuer_id), "acceptor": _who(c.acceptor_id),
+            "price": c.price, "reward": c.reward, "collateral": c.collateral, "volume": c.volume,
+            "date_issued": c.date_issued.isoformat() if c.date_issued else None,
+            "date_expired": c.date_expired.isoformat() if c.date_expired else None,
+            "start_location": _loc(c.start_location_id), "end_location": _loc(c.end_location_id),
+            "item_count": len(its),
+            "items_value": round(sum((prices.get(it.type_id, 0.0) or 0.0) * (it.quantity or 0)
+                                     for it in included), 2),
+            "items": [_fmt(it) for it in (included + requested)[:_CONTRACT_ITEM_CAP]],
+        })
+    return {"access": access, "count": len(out),
+            "synced_at": synced.isoformat() if synced else None, "contracts": out}
 
 
 @router.put("/me/corp-roster-visibility", tags=["corporations"], responses={**ERR_404})

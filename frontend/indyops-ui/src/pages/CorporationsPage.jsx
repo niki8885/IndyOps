@@ -144,8 +144,138 @@ function Members({ cd }) {
   )
 }
 
+// Warehouses (corp assets, Phase C) — self-fetches; grouped location → corp-hangar division.
+function Warehouses({ corpId }) {
+  const [d, setD] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let on = true
+    get(`/organisations/me/corporations/${corpId}/warehouses`)
+      .then(r => { if (on) setD(r) }).catch(e => { if (on) setErr(e.message) })
+    return () => { on = false }
+  }, [corpId])
+  if (err) return <div style={{ color: RED, fontSize: 13 }}>{err}</div>
+  if (!d) return <div style={{ fontSize: 12, color: 'var(--text)' }}>Loading…</div>
+  if (!d.warehouses.length) {
+    return d.access.can_assets
+      ? <div style={{ fontSize: 12, color: 'var(--text)' }}>No corp assets synced yet — they appear after the next sync (needs a Director-roled character).</div>
+      : <AccessPrompt what="corp warehouses (assets)" needRelink={d.access.need_relink} />
+  }
+  const itemCols = [
+    { key: 'name', label: 'Item', sortVal: r => r.name, render: r => r.name },
+    { key: 'quantity', label: 'Qty', num: true, sortVal: r => r.quantity, render: r => fmtInt(r.quantity) },
+    { key: 'value', label: 'Value (ESI avg)', num: true, sortVal: r => r.value, render: r => fmtIsk(r.value) },
+  ]
+  return (
+    <div>
+      <StatRow>
+        <Stat label="Total assets value" value={fmtIsk(d.total_value)} accent />
+        <Stat label="Locations" value={fmtInt(d.warehouses.length)} />
+      </StatRow>
+      <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 12 }}>
+        Corp assets grouped by location → corp-hangar division, valued at ESI average price.
+        {d.synced_at ? ` Synced ${fmtDate(d.synced_at)}.` : ''}
+      </div>
+      {d.warehouses.map(w => (
+        <div key={w.location_id || 'unknown'} className="card" style={{ padding: 12, marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <div style={{ fontWeight: 600, color: 'var(--text-white)' }}>{w.location_name}</div>
+            <div style={{ color: GREEN, fontWeight: 600 }}>{fmtIsk(w.value)}</div>
+          </div>
+          {w.divisions.map(div => (
+            <details key={div.division_key} style={{ marginBottom: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text)' }}>
+                {div.name} · {fmtInt(div.item_count)} item{div.item_count === 1 ? '' : 's'} · <b style={{ color: 'var(--text-white)' }}>{fmtIsk(div.value)}</b>
+              </summary>
+              <div style={{ marginTop: 6 }}>
+                <SortableTable columns={itemCols} rows={div.items} rowKey={r => r.type_id} empty="Empty." />
+                {div.items_truncated > 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--text)', marginTop: 4 }}>+{fmtInt(div.items_truncated)} more item types not shown.</div>
+                )}
+              </div>
+            </details>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Corp contracts (Phase C) with their contents — self-fetches; click a row to expand items.
+function Contracts({ corpId }) {
+  const [d, setD] = useState(null)
+  const [err, setErr] = useState('')
+  const [open, setOpen] = useState(null)
+  useEffect(() => {
+    let on = true
+    get(`/organisations/me/corporations/${corpId}/corp-contracts`)
+      .then(r => { if (on) setD(r) }).catch(e => { if (on) setErr(e.message) })
+    return () => { on = false }
+  }, [corpId])
+  if (err) return <div style={{ color: RED, fontSize: 13 }}>{err}</div>
+  if (!d) return <div style={{ fontSize: 12, color: 'var(--text)' }}>Loading…</div>
+  if (!d.contracts.length) {
+    return d.access.can_contracts
+      ? <div style={{ fontSize: 12, color: 'var(--text)' }}>No corp contracts synced yet — they appear after the next sync.</div>
+      : <AccessPrompt what="corp contracts" needRelink={d.access.need_relink} />
+  }
+  return (
+    <div>
+      <StatRow><Stat label="Corp contracts" value={fmtInt(d.count)} accent /></StatRow>
+      <div style={{ fontSize: 11, color: 'var(--text)', margin: '6px 0 10px' }}>
+        Corp contracts with their contents (item-exchange / auction items valued at ESI average).
+        {d.synced_at ? ` Synced ${fmtDate(d.synced_at)}.` : ''} Click a contract to see its items.
+      </div>
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table>
+          <thead>
+            <tr><th>Issued</th><th>Type</th><th>Status</th><th>Title</th><th>Issuer</th><th>Price</th><th>Reward</th><th>Items</th></tr>
+          </thead>
+          <tbody>
+            {d.contracts.map(c => [
+              <tr key={c.contract_id} style={{ cursor: c.item_count ? 'pointer' : 'default' }}
+                onClick={() => c.item_count && setOpen(open === c.contract_id ? null : c.contract_id)}>
+                <td style={{ fontSize: 12, color: 'var(--text)' }}>{fmtDate(c.date_issued)}</td>
+                <td style={{ fontSize: 12 }}>{c.type || '—'}</td>
+                <td style={{ fontSize: 12 }}>{c.status || '—'}</td>
+                <td style={{ color: 'var(--text-white)' }}>{c.title || '—'}</td>
+                <td style={{ fontSize: 12 }}>{c.issuer || '—'}</td>
+                <td>{c.price ? fmtIsk(c.price) : '—'}</td>
+                <td>{c.reward ? fmtIsk(c.reward) : '—'}</td>
+                <td>{c.item_count ? `${fmtInt(c.item_count)} ${open === c.contract_id ? '▴' : '▾'}` : '—'}</td>
+              </tr>,
+              open === c.contract_id && c.items.length > 0 && (
+                <tr key={`it-${c.contract_id}`}>
+                  <td colSpan={8} style={{ background: 'var(--surface2)', padding: 10 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 6 }}>
+                      Contents{c.start_location ? ` · at ${c.start_location}` : ''} · offered value {fmtIsk(c.items_value)}
+                    </div>
+                    <table>
+                      <thead><tr><th>Item</th><th>Qty</th><th>Side</th><th>Value</th></tr></thead>
+                      <tbody>
+                        {c.items.map((it, i) => (
+                          <tr key={i}>
+                            <td style={{ color: 'var(--text-white)' }}>{it.name}</td>
+                            <td>{fmtInt(it.quantity)}</td>
+                            <td style={{ fontSize: 12, color: it.is_included ? GREEN : RED }}>{it.is_included ? 'offered' : 'requested'}</td>
+                            <td>{fmtIsk(it.value)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              ),
+            ])}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function CorpDashboard({ corp, onBack, onCreateOrg }) {
-  const TABS = ['Summary', 'Production', 'Capital', 'Members']
+  const TABS = ['Summary', 'Production', 'Capital', 'Members', 'Warehouses', 'Contracts']
   const [tab, setTab] = useState(0)
   const [cd, setCd] = useState(null)
   const [err, setErr] = useState('')
@@ -185,7 +315,10 @@ function CorpDashboard({ corp, onBack, onCreateOrg }) {
         ))}
       </div>
       {tab === 0 && <Summary corpId={corp.corporation_id} />}
-      {tab !== 0 && (
+      {/* Warehouses + Contracts self-fetch their own endpoints (don't gate on corp-data) */}
+      {tab === 4 && <Warehouses corpId={corp.corporation_id} />}
+      {tab === 5 && <Contracts corpId={corp.corporation_id} />}
+      {(tab === 1 || tab === 2 || tab === 3) && (
         err ? <div style={{ color: RED, fontSize: 13 }}>{err}</div>
         : !ready ? <div style={{ fontSize: 12, color: 'var(--text)' }}>Loading…</div>
         : tab === 1 ? <Production cd={cd} />

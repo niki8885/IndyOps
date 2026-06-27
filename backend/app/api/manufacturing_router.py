@@ -530,6 +530,10 @@ class ResolvePricesRequest(BaseModel):
     price_rules: List[PriceRule] = []
     flag_unrealistic: bool = True
     unrealistic_ratio: float = 0.3
+    # Optional haul cost per source (ISK per m³). Folded into each candidate as
+    # ``volume × coef`` so the cheapest-source pick accounts for delivery to the home hub.
+    region_delivery: dict[int, float] = {}
+    cj_delivery: float = 0.0
 
 
 class ChainStructure(BaseModel):
@@ -593,6 +597,12 @@ class ChainCalcRequest(BaseModel):
     # False = buy reaction components from market instead of running reactions (every
     # reaction-activity node is force-bought; a reaction with no buy price stays makeable).
     include_reactions: bool = True
+    # Run reactions "from scratch": force-MAKE every reaction-activity node so no
+    # intermediate reaction product is ever bought — the whole reaction sub-tree runs
+    # in-house down to raw moon materials. Only meaningful with include_reactions=True
+    # (ignored when reactions are bought). Lets the user choose "buy the final product or
+    # produce reactions from zero", with no buying of reaction intermediates in between.
+    reactions_from_scratch: bool = False
     # Owned blueprints: apply their ME/TE (and a BPC's cost) per node. With
     # use_owned_blueprints the backend auto-picks (BPO else best BPC); blueprint_selection
     # (product_type_id -> OwnedBP key "esi:<id>"/"man:<id>", or a legacy bare manual id)
@@ -693,16 +703,27 @@ def _resolve_acquire_prices(
         rules: list,
         group_of: dict[int, Optional[str]],
         overrides: dict[int, float],
+        volume_of: Optional[dict[int, float]] = None,
+        region_delivery: Optional[dict[int, float]] = None,
+        cj_delivery: float = 0.0,
 ) -> tuple[dict[int, Optional[float]], dict[int, object], dict[int, dict]]:
     """Per-type cheapest *realistic* acquire price across the selected markets, each
     market contributing the Buy/Sell side the user chose (a matching group rule wins
     over the region's side). The opposite side / other regions / ESI adjusted price
     are the scam-price fallback. Shared by the chain calc and the Calculator fill.
 
+    ``region_delivery``/``cj_delivery`` are optional haul costs (ISK per m³) added per
+    source: each candidate price gets ``+ volume × coef`` for that market, so the
+    cheapest-source choice accounts for delivery (e.g. Jita is only cheaper than the home
+    hub once its haul cost is folded in). Default 0 → no delivery (prior behaviour).
+
     Returns ``(prices, sources, flags)`` keyed by type_id.
     """
     def _opp(side: str) -> str:
         return "sell" if side == "buy" else "buy"
+
+    region_delivery = region_delivery or {}
+    volume_of = volume_of or {}
 
     prices: dict[int, Optional[float]] = {}
     sources: dict[int, object] = {}
@@ -712,19 +733,25 @@ def _resolve_acquire_prices(
             prices[tid] = overrides[tid]
             sources[tid] = "override"
             continue
+        vol = volume_of.get(tid, 0.0)
+
+        def _add(p: Optional[float], coef: float) -> Optional[float]:
+            return None if p is None else p + vol * coef
+
         forced = rule_side(group_of.get(tid), rules)
         primary: list[tuple[Optional[float], object]] = []
         other: list[tuple[Optional[float], object]] = []
         for rid in eff_region_ids:
             side = forced or region_sides.get(rid) or basis
             two = region_data[rid].get(tid, {})
-            primary.append((two.get(side), rid))
-            other.append((two.get(_opp(side)), rid))
+            d = region_delivery.get(rid, 0.0)
+            primary.append((_add(two.get(side), d), rid))
+            other.append((_add(two.get(_opp(side)), d), rid))
         if tid in cj_data:
             side = forced or cj_side or basis
             two = cj_data[tid]
-            primary.append((two.get(side), "C-J6MT"))
-            other.append((two.get(_opp(side)), "C-J6MT"))
+            primary.append((_add(two.get(side), cj_delivery), "C-J6MT"))
+            other.append((_add(two.get(_opp(side)), cj_delivery), "C-J6MT"))
         price, src, flag = resolve_sided(primary, other, adj.get(tid), ratio)
         prices[tid] = price
         if src is not None:
@@ -1166,6 +1193,8 @@ async def resolve_prices(
     eve_db = EveSessionLocal()
     try:
         groups = eve_repo.type_groups(eve_db, type_ids)
+        _has_delivery = any(body.region_delivery.values()) or body.cj_delivery
+        volumes = eve_repo.type_volumes(eve_db, type_ids) if _has_delivery else {}
     finally:
         eve_db.close()
     group_of = {tid: (groups.get(tid) or {}).get("group_name") for tid in type_ids}
@@ -1175,13 +1204,54 @@ async def resolve_prices(
     prices, sources, flags = _resolve_acquire_prices(
         type_ids, eff_region_ids, region_data, cj_data, adj, ratio,
         basis=body.price_basis, region_sides=body.region_sides, cj_side=body.cj_side,
-        rules=rules, group_of=group_of, overrides={})
+        rules=rules, group_of=group_of, overrides={},
+        volume_of=volumes, region_delivery=body.region_delivery, cj_delivery=body.cj_delivery)
 
     return {
         "prices": {str(t): prices.get(t) for t in type_ids},
         "sources": {str(t): sources.get(t) for t in type_ids},
         "flags": {str(t): flags[t] for t in flags},
         "groups": {str(t): group_of.get(t) for t in type_ids},
+    }
+
+
+class MarketCompareRequest(BaseModel):
+    """Per-region two-sided prices for a set of types — powers the Calculator's
+    "Analyze market" comparison across exactly the markets the user selected for the
+    material fill (instead of a hardcoded Jita-vs-C-J view)."""
+    type_ids: List[int]
+    region_ids: List[int] = []
+    include_cj: bool = False
+
+
+@router.post("/market-compare")
+async def market_compare(
+        body: MarketCompareRequest,
+        current_user: UserDB = Depends(get_current_user),
+):
+    """Both Buy/Sell sides for each selected region (and optionally C-J6MT) plus each
+    type's packaged volume — the frontend builds the side-by-side comparison and folds in
+    per-market delivery (ISK/m³) itself, so Analyze and the ⚡ fill use the same markets."""
+    type_ids = list(dict.fromkeys(int(t) for t in body.type_ids))[:MAX_RESOLVE_TYPES]
+    if not type_ids:
+        return {"regions": {}, "cj": {}, "volumes": {}}
+    region_ids = body.region_ids or [10000002]
+
+    region_data = {rid: _region_two_sided(rid, type_ids) for rid in region_ids}
+    cj_data = await _cj_two_sided(type_ids) if body.include_cj else {}
+
+    eve_db = EveSessionLocal()
+    try:
+        volumes = eve_repo.type_volumes(eve_db, type_ids)
+    finally:
+        eve_db.close()
+
+    return {
+        "regions": {str(rid): {str(t): region_data[rid].get(t, {"buy": None, "sell": None})
+                               for t in type_ids}
+                    for rid in region_ids},
+        "cj": {str(t): cj_data[t] for t in cj_data},
+        "volumes": {str(t): volumes.get(t, 0.0) for t in type_ids},
     }
 
 
@@ -1285,9 +1355,20 @@ async def calculate_chain(
             continue
         req.nodes[tid] = replace(n, recipes=())
 
+    # Reactions from scratch: force-MAKE every reaction-activity node so no intermediate
+    # reaction product is bought — the whole reaction sub-tree runs in-house. Only when
+    # reactions are in-house (include_reactions); otherwise they're bought above.
+    scratch_make_ids: set[int] = set()
+    if body.include_reactions and body.reactions_from_scratch:
+        scratch_make_ids = {
+            tid for tid, nd in tree.items()
+            if tid != body.product_type_id and nd.get("recipes")
+            and all(rc["activity"] == REACTION for rc in nd["recipes"])
+        }
+
     # Force-make: drop the buy option so the core must build it. force_buy wins on conflict.
     forced_make_skipped: list[int] = []
-    for tid in set(body.force_make) - force_buy_ids:
+    for tid in (set(body.force_make) | scratch_make_ids) - force_buy_ids:
         n = req.nodes.get(tid)
         if not n:
             continue
@@ -1338,8 +1419,11 @@ async def calculate_chain(
         "force_buy_skipped": forced_skipped,
         "force_make_skipped": forced_make_skipped,
         "include_reactions": body.include_reactions,
+        "reactions_from_scratch": body.reactions_from_scratch,
         # reaction nodes actually bought (force-buy succeeded), vs. left makeable (no buy price)
         "reactions_bought": sorted(reaction_node_ids - set(forced_skipped)),
+        # reaction nodes forced to be made in-house by the from-scratch mode
+        "reactions_made_from_scratch": sorted(scratch_make_ids - force_buy_ids),
         "bpc_cost_applied": {str(t): float(c) for t, c in bpc_unit.items() if c},
         "bp_report": bp_report,
         "bp_summary": bp_svc.summarize(bp_report),

@@ -25,6 +25,17 @@ function SideToggle({ value, onChange, disabled, size = 'sm' }) {
   )
 }
 
+// Per-market haul cost (ISK per m³) from that market to the home hub. Folded into the
+// fill / analyze price as volume × coef so the cheapest source accounts for delivery.
+function DeliveryInput({ value, onChange, disabled }) {
+  return (
+    <input type="number" min={0} step={100} value={value ?? ''} disabled={disabled}
+      onChange={e => onChange(e.target.value)} placeholder="ISK/m³"
+      title="Haul cost ISK per m³ from this market to your home hub (0 = local / no haul)"
+      style={{ width: 64, padding: '1px 4px', fontSize: 10, opacity: disabled ? 0.4 : 1 }} />
+  )
+}
+
 export default function MarketSourcePanel({
   regions,
   selectedRegions, toggleRegion,
@@ -33,10 +44,22 @@ export default function MarketSourcePanel({
   rules, setRules,
   groupOptions = [],
   showCJ = true,
+  showDelivery = false,
+  delivery = {}, setDelivery,
 }) {
   const sideOf = key => regionSide[key] || 'buy'
 
-  const addRule = () => setRules([...rules, { group: groupOptions[0] || '', side: 'buy' }])
+  // Default a new rule to the side OPPOSITE the markets' prevailing side, so adding it has
+  // an immediate, visible effect. Previously a new rule defaulted to 'buy', which equals the
+  // Chain tab's default basis — so the rule silently matched the existing side and looked
+  // broken ("custom rules don't work in chain").
+  const prevailingSide = () => {
+    const sides = [...selectedRegions].map(sideOf)
+    if (includeCJ) sides.push(sideOf('cj'))
+    const buys = sides.filter(s => s === 'buy').length
+    return buys >= sides.length - buys ? 'buy' : 'sell'
+  }
+  const addRule = () => setRules([...rules, { group: groupOptions[0] || '', side: prevailingSide() === 'buy' ? 'sell' : 'buy' }])
   const setRule = (i, patch) => setRules(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const delRule = i => setRules(rules.filter((_, j) => j !== i))
 
@@ -47,8 +70,13 @@ export default function MarketSourcePanel({
 
   return (
     <div>
-      {/* per-market checkbox + side */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 5 }}>
+      {showDelivery && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 5, fontSize: 10, color: 'var(--border2)' }}>
+          <span>delivery ISK/m³</span><span style={{ width: 64, textAlign: 'center' }}>side</span>
+        </div>
+      )}
+      {/* per-market checkbox + (optional delivery) + side */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: showDelivery ? 0 : 5 }}>
         {regions.map(r => {
           const on = selectedRegions.has(r.id)
           return (
@@ -58,7 +86,12 @@ export default function MarketSourcePanel({
                 <input type="checkbox" checked={on} onChange={() => toggleRegion(r.id)} />
                 {r.name}
               </label>
-              <SideToggle value={sideOf(r.id)} onChange={s => setSide(r.id, s)} disabled={!on} />
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {showDelivery && (
+                  <DeliveryInput value={delivery[r.id]} onChange={v => setDelivery?.(r.id, v)} disabled={!on} />
+                )}
+                <SideToggle value={sideOf(r.id)} onChange={s => setSide(r.id, s)} disabled={!on} />
+              </span>
             </div>
           )
         })}
@@ -69,7 +102,12 @@ export default function MarketSourcePanel({
               <input type="checkbox" checked={includeCJ} onChange={e => setIncludeCJ(e.target.checked)} />
               C-J6MT <span style={{ fontSize: 10, color: 'var(--border2)' }}>(slow)</span>
             </label>
-            <SideToggle value={sideOf('cj')} onChange={s => setSide('cj', s)} disabled={!includeCJ} />
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              {showDelivery && (
+                <DeliveryInput value={delivery.cj} onChange={v => setDelivery?.('cj', v)} disabled={!includeCJ} />
+              )}
+              <SideToggle value={sideOf('cj')} onChange={s => setSide('cj', s)} disabled={!includeCJ} />
+            </span>
           </div>
         )}
       </div>

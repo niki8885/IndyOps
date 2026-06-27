@@ -64,6 +64,13 @@ ESI_SCOPES = [
     "esi-wallet.read_corporation_wallets.v1",          # corp wallet division balances (Accountant)
     "esi-corporations.read_corporation_membership.v1", # corp member list (any member; Director-safe)
     "esi-industry.read_corporation_jobs.v1",           # corp-owned industry jobs (Factory Manager)
+    # CORPORATION (Phase C): corp warehouses (assets) + contracts with their contents.
+    # Assets + division names need the Director role; contracts need only the scope (any
+    # member). Re-link once to grant; corp data only appears for corps where the user holds a
+    # sufficiently-roled character.
+    "esi-assets.read_corporation_assets.v1",           # corp assets — the corp warehouses (Director)
+    "esi-corporations.read_divisions.v1",              # hangar / wallet division names (Director)
+    "esi-contracts.read_corporation_contracts.v1",     # corp contracts + their items (any member)
 ]
 
 ESI_USER_AGENT = os.getenv(

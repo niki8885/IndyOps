@@ -31,6 +31,10 @@ from app.core.database import (
     EsiCorpWallet,
     EsiCorpIndustryJob,
     EsiCorpMember,
+    EsiCorpAsset,
+    EsiCorpDivision,
+    EsiCorpContract,
+    EsiCorpContractItem,
 )
 from app.core.database_eve import EveSessionLocal, EveType, EvePlanet
 from app.core.timeutil import utcnow
@@ -54,9 +58,14 @@ _CORP_ROLES_SCOPE = "esi-characters.read_corporation_roles.v1"
 _CORP_WALLET_SCOPE = "esi-wallet.read_corporation_wallets.v1"
 _CORP_JOBS_SCOPE = "esi-industry.read_corporation_jobs.v1"
 _CORP_MEMBERS_SCOPE = "esi-corporations.read_corporation_membership.v1"
+# Phase C: corp warehouses (assets) + division names (both Director) + corp contracts (any member).
+_CORP_ASSETS_SCOPE = "esi-assets.read_corporation_assets.v1"
+_CORP_DIVISIONS_SCOPE = "esi-corporations.read_divisions.v1"
+_CORP_CONTRACTS_SCOPE = "esi-contracts.read_corporation_contracts.v1"
 # in-game roles that grant the corp endpoints (Director implies all)
 _ROLE_ACCOUNTANT = {"Director", "Accountant", "Junior_Accountant"}
 _ROLE_FACTORY = {"Director", "Factory_Manager"}
+_ROLE_DIRECTOR = {"Director"}
 _PI_FULL_PCT = 90.0                               # storage-full notification threshold
 _PI_EXPIRY_WARN = datetime.timedelta(hours=24)    # "extractor stops soon" lead time
 
@@ -929,6 +938,119 @@ def _sync_corp_members(db, corp_id, char, token, now) -> int:
     return len(ids)
 
 
+def _sync_corp_assets(db, corp_id, char, token, now) -> int:
+    """Replace the corporation's whole asset set (state-like, like a character's assets) — the
+    corp warehouses. Needs the Director role + corp-assets scope on ``char``."""
+    rows = [{
+        "corporation_id": corp_id,
+        "item_id": a.get("item_id"),
+        "type_id": a.get("type_id"),
+        "quantity": a.get("quantity"),
+        "location_id": a.get("location_id"),
+        "location_flag": a.get("location_flag"),
+        "location_type": a.get("location_type"),
+        "is_singleton": a.get("is_singleton"),
+        "is_blueprint_copy": a.get("is_blueprint_copy"),
+        "synced_at": now,
+    } for a in (esi.fetch_corp_assets(corp_id, token) or []) if a.get("item_id")]
+    db.query(EsiCorpAsset).filter(EsiCorpAsset.corporation_id == corp_id).delete(synchronize_session=False)
+    if rows:
+        db.bulk_insert_mappings(EsiCorpAsset, rows)   # plain bulk INSERT (no conflicts after the delete)
+    db.commit()
+    return len(rows)
+
+
+def _sync_corp_divisions(db, corp_id, char, token, now) -> int:
+    """Upsert the corp's hangar + wallet division names (so a warehouse shows "Minerals"
+    instead of "Division 3"). Needs the Director role + read_divisions scope."""
+    data = esi.fetch_corp_divisions(corp_id, token) or {}
+    n = 0
+    for kind in ("hangar", "wallet"):
+        for d in (data.get(kind) or []):
+            div = d.get("division")
+            if div is None:
+                continue
+            row = db.query(EsiCorpDivision).filter_by(
+                corporation_id=corp_id, kind=kind, division=div).first()
+            if row is None:
+                row = EsiCorpDivision(corporation_id=corp_id, kind=kind, division=div)
+                db.add(row)
+            row.name = d.get("name")
+            row.synced_at = now
+            n += 1
+    db.commit()
+    return n
+
+
+def _sync_corp_contracts(db, corp_id, char, token, now) -> int:
+    """Upsert the corp's contracts (prune dropped) + fetch the contents of item-exchange /
+    auction contracts once (immutable). Needs only the corp-contracts scope (any member)."""
+    contracts = esi.fetch_corp_contracts(corp_id, token) or []
+    seen: list = []
+    for c in contracts:
+        cid = c.get("contract_id")
+        if not cid:
+            continue
+        row = db.query(EsiCorpContract).filter_by(corporation_id=corp_id, contract_id=cid).first()
+        if row is None:
+            row = EsiCorpContract(corporation_id=corp_id, contract_id=cid)
+            db.add(row)
+        row.type = c.get("type")
+        row.status = c.get("status")
+        row.for_corp = c.get("for_corp")
+        row.issuer_id = c.get("issuer_id")
+        row.issuer_corporation_id = c.get("issuer_corporation_id")
+        row.assignee_id = c.get("assignee_id")
+        row.acceptor_id = c.get("acceptor_id")
+        row.date_issued = esi.parse_dt(c.get("date_issued"))
+        row.date_expired = esi.parse_dt(c.get("date_expired"))
+        row.date_accepted = esi.parse_dt(c.get("date_accepted"))
+        row.date_completed = esi.parse_dt(c.get("date_completed"))
+        row.price = c.get("price")
+        row.reward = c.get("reward")
+        row.collateral = c.get("collateral")
+        row.volume = c.get("volume")
+        row.title = c.get("title")
+        row.availability = c.get("availability")
+        row.start_location_id = c.get("start_location_id")
+        row.end_location_id = c.get("end_location_id")
+        row.synced_at = now
+        seen.append(cid)
+    # prune contracts ESI no longer returns (+ their items)
+    gone = [c for (c,) in db.query(EsiCorpContract.contract_id).filter(
+        EsiCorpContract.corporation_id == corp_id,
+        ~EsiCorpContract.contract_id.in_(seen or [-1])).all()]
+    if gone:
+        db.query(EsiCorpContractItem).filter(
+            EsiCorpContractItem.corporation_id == corp_id,
+            EsiCorpContractItem.contract_id.in_(gone)).delete(synchronize_session=False)
+        db.query(EsiCorpContract).filter(
+            EsiCorpContract.corporation_id == corp_id,
+            EsiCorpContract.contract_id.in_(gone)).delete(synchronize_session=False)
+    db.commit()
+
+    # contents of item-exchange / auction contracts (immutable) — fetch once, cap per sync
+    itemized = {c for (c,) in db.query(EsiCorpContractItem.contract_id).filter(
+        EsiCorpContractItem.corporation_id == corp_id).distinct()}
+    todo = [c.get("contract_id") for c in contracts
+            if c.get("contract_id") and c.get("type") in ("item_exchange", "auction")
+            and c.get("contract_id") not in itemized][:50]
+    for cid in todo:
+        try:
+            rows = [{"corporation_id": corp_id, "contract_id": cid, "record_id": it.get("record_id"),
+                     "type_id": it.get("type_id"), "quantity": it.get("quantity"),
+                     "is_included": it.get("is_included"), "is_singleton": it.get("is_singleton")}
+                    for it in (esi.fetch_corp_contract_items(corp_id, cid, token) or [])
+                    if it.get("record_id")]
+            if rows:                                  # new contract (guarded by `itemized`) → plain insert
+                db.bulk_insert_mappings(EsiCorpContractItem, rows)
+                db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning("corp %s contract %s items failed: %s", corp_id, cid, exc)
+    return len(contracts)
+
+
 def sync_corporations(db) -> dict:
     """Corp-level (Phase B) sync. For each corporation that has an active linked character with
     the right role + scope, pull the REAL corp wallet / industry jobs / member roster once (via
@@ -961,6 +1083,9 @@ def sync_corporations(db) -> dict:
         _try("wallet", _ROLE_ACCOUNTANT, _CORP_WALLET_SCOPE, _sync_corp_wallet)
         _try("industry_jobs", _ROLE_FACTORY, _CORP_JOBS_SCOPE, _sync_corp_jobs)
         _try("members", None, _CORP_MEMBERS_SCOPE, _sync_corp_members)
+        _try("divisions", _ROLE_DIRECTOR, _CORP_DIVISIONS_SCOPE, _sync_corp_divisions)
+        _try("assets", _ROLE_DIRECTOR, _CORP_ASSETS_SCOPE, _sync_corp_assets)
+        _try("contracts", None, _CORP_CONTRACTS_SCOPE, _sync_corp_contracts)
         summary["results"].append(res)
     return summary
 

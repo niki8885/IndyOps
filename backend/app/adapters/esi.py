@@ -374,6 +374,30 @@ def fetch_corp_members(corporation_id: int, token: str) -> list:
     return _esi_get(f"/corporations/{corporation_id}/members/", token, paginate=True)
 
 
+def fetch_corp_assets(corporation_id: int, token: str) -> list:
+    """Corp-owned assets (the corp warehouses): ``[{item_id, type_id, quantity, location_id,
+    location_flag, location_type, is_singleton, ...}]``. ``location_flag`` ``CorpSAG1..7`` =
+    the corp-hangar division. Needs the Director role + read_corporation_assets. Paginated."""
+    return _esi_get(f"/corporations/{corporation_id}/assets/", token, paginate=True)
+
+
+def fetch_corp_divisions(corporation_id: int, token: str) -> dict:
+    """Corp hangar + wallet division names: ``{hangar: [{division, name}], wallet: [...]}``.
+    Names are optional (unset divisions return null). Needs the Director role + read_divisions."""
+    return _esi_get(f"/corporations/{corporation_id}/divisions/", token)
+
+
+def fetch_corp_contracts(corporation_id: int, token: str) -> list:
+    """Corp contracts (issued by / to the corporation): same shape as character contracts plus
+    ``issuer_corporation_id``. Readable by any member with read_corporation_contracts. Paginated."""
+    return _esi_get(f"/corporations/{corporation_id}/contracts/", token, paginate=True)
+
+
+def fetch_corp_contract_items(corporation_id: int, contract_id: int, token: str) -> list:
+    """Items inside one corp contract (immutable once the contract exists — fetched once)."""
+    return _esi_get(f"/corporations/{corporation_id}/contracts/{contract_id}/items/", token)
+
+
 def fetch_blueprints(character_id: int, token: str) -> list:
     """Owned blueprints (BPOs and BPCs): ``[{item_id, type_id, location_id, location_flag,
     quantity, runs, material_efficiency, time_efficiency}]``. ``runs == -1`` and
