@@ -159,6 +159,7 @@ jobs:
         run: |
           mkdir -p bin build
           ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/chain-engine
+          ghc -O2 -isrc -iapp-planner -outputdir build-planner app-planner/Main.hs -o bin/reaction-planner
           ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
           ./build/spec
 
@@ -171,9 +172,10 @@ jobs:
         working-directory: backend
         env:
           CHAIN_ENGINE_BIN: ${{ github.workspace }}/haskell/chain-engine/bin/chain-engine
+          REACTION_PLANNER_BIN: ${{ github.workspace }}/haskell/chain-engine/bin/reaction-planner
         run: |
           pip install pytest
-          pytest tests/test_chain_haskell_parity.py --noconftest -q
+          pytest tests/test_chain_haskell_parity.py tests/test_reaction_planner_haskell_parity.py --noconftest -q
 
   # -------------------------------------------------------------------------
   # Haskell risk-engine — build, unit tests, and cross-language parity against

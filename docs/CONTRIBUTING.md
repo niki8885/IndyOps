@@ -88,6 +88,8 @@ npm run dev
 ```sh
 cd haskell/chain-engine
 ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/chain-engine
+# Reaction Planner batch engine (second executable over the same library):
+ghc -O2 -isrc -iapp-planner -outputdir build-planner app-planner/Main.hs -o bin/reaction-planner
 ```
 
 ---

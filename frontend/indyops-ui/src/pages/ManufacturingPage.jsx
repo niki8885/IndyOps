@@ -12,8 +12,10 @@ import { codeFromInput } from '../utils/shareCode'
 // of the eagerly-imported Manufacturing bundle.
 const ChainGraph = lazy(() => import('../components/ChainGraph'))
 const ResearchModule = lazy(() => import('./manufacturing/ResearchModule'))
+const ReactionPlannerTab = lazy(() => import('./manufacturing/ReactionPlannerTab'))
+const BlueprintAnalyzerTab = lazy(() => import('./manufacturing/BlueprintAnalyzerTab'))
 
-const TABS = ['Calculator', 'Chain', 'Research', 'PAK Jobs', 'IndyJob', 'Inventory Analysis']
+const TABS = ['Calculator', 'Chain', 'Reaction Planner', 'Blueprint Analyzer', 'Research', 'PAK Jobs', 'IndyJob', 'Inventory Analysis']
 
 // A styled on/off swapper for the simulation suite — replaces the old plain checkbox
 // and makes clear it covers both Monte-Carlo risk *and* scenario stress tests.
@@ -234,10 +236,12 @@ export default function ManufacturingPage() {
       </div>
       {tab === 0 && <CalculatorTab sharedJob={sharedJob?.source === 'production' ? sharedJob : null} />}
       {tab === 1 && <ChainTab sharedJob={sharedJob?.source === 'chain' ? sharedJob : null} />}
-      {tab === 2 && <Suspense fallback={<div className="empty-state">Loading…</div>}><ResearchModule /></Suspense>}
-      {tab === 3 && <PakJobsTab />}
-      {tab === 4 && <IndyJobsTab />}
-      {tab === 5 && <InventoryAnalysisTab />}
+      {tab === 2 && <Suspense fallback={<div className="empty-state">Loading…</div>}><ReactionPlannerTab /></Suspense>}
+      {tab === 3 && <Suspense fallback={<div className="empty-state">Loading…</div>}><BlueprintAnalyzerTab /></Suspense>}
+      {tab === 4 && <Suspense fallback={<div className="empty-state">Loading…</div>}><ResearchModule /></Suspense>}
+      {tab === 5 && <PakJobsTab />}
+      {tab === 6 && <IndyJobsTab />}
+      {tab === 7 && <InventoryAnalysisTab />}
     </div>
   )
 }

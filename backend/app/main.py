@@ -12,6 +12,8 @@ from app.api.deliveries_router import router as deliveries_router
 from app.api.facilities_router import router as facilities_router
 from app.api.blueprints_router import router as blueprints_router
 from app.api.manufacturing_router import router as manufacturing_router
+from app.api.reaction_planner_router import router as reaction_planner_router
+from app.api.blueprint_analyzer_router import router as blueprint_analyzer_router
 from app.api.research_router import router as research_router
 from app.api.eve_router import router as eve_router
 from app.api.analysis_router import router as analysis_router
@@ -53,6 +55,10 @@ app.include_router(deliveries_router, prefix="/api/v1/deliveries", tags=["Delive
 app.include_router(facilities_router, prefix="/api/v1/facilities", tags=["Facilities"])
 app.include_router(blueprints_router, prefix="/api/v1/blueprints", tags=["Blueprints"])
 app.include_router(manufacturing_router, prefix="/api/v1/manufacturing", tags=["Manufacturing"])
+app.include_router(reaction_planner_router, prefix="/api/v1/manufacturing/reaction-planner",
+                   tags=["Reaction Planner"])
+app.include_router(blueprint_analyzer_router, prefix="/api/v1/manufacturing/blueprint-analyzer",
+                   tags=["Blueprint Analyzer"])
 app.include_router(research_router, prefix="/api/v1/manufacturing/research", tags=["Blueprint Research"])
 app.include_router(eve_router, prefix="/api/v1/eve", tags=["EVE SDE"])
 app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["Analysis"])

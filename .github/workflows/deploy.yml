@@ -49,6 +49,7 @@ jobs:
         run: |
           mkdir -p bin build
           ghc -O2 -isrc -iapp -outputdir build app/Main.hs -o bin/chain-engine
+          ghc -O2 -isrc -iapp-planner -outputdir build-planner app-planner/Main.hs -o bin/reaction-planner
           ghc -isrc -itests -outputdir build/test tests/Spec.hs -o build/spec
           ./build/spec
 
@@ -101,6 +102,12 @@ jobs:
         run: pytest tests/test_invention_optimizer_parity.py
         env:
           INVENTION_OPTIMIZER_BIN: ${{ github.workspace }}/haskell/invention-optimizer/bin/invention-optimizer
+
+      - name: Run reaction-planner parity test
+        working-directory: backend
+        run: pytest tests/test_reaction_planner_haskell_parity.py
+        env:
+          REACTION_PLANNER_BIN: ${{ github.workspace }}/haskell/chain-engine/bin/reaction-planner
 
   # -------------------------------------------------------------------------
   # 1. Build Docker images and push to GHCR

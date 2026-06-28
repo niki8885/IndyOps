@@ -270,6 +270,107 @@ def products_for_blueprints(eve_db, blueprint_type_ids: list[int]) -> dict[int, 
     return out
 
 
+# ── Reaction Planner: candidate enumeration ─────────────────────────────────
+# The chain core costs one target at a time. The Reaction Planner sweeps a *set* of
+# final products, so it needs the universe of candidates up front. These reverse
+# lookups (product → blueprint, by activity / tech level) feed that sweep; the cost
+# of each candidate is still computed by ``bom_tree`` + the chain core per type.
+
+# Tech II is meta group 2 (see EveMetaType). Reaction products carry no meta row
+# (treated as Tech I), so the reaction sweep is gated by *group*, the T2 sweep by meta.
+META_TECH2 = 2
+
+
+def _industry_products(eve_db, activity_id: int, *, meta_group_id: Optional[int] = None,
+                       group_ids: Optional[list[int]] = None,
+                       category_ids: Optional[list[int]] = None) -> list[dict]:
+    """Published products of one industry activity (1 manufacturing / 11 reaction),
+    optionally narrowed by tech level (``meta_group_id``) and group/category.
+
+    Returns one dict per distinct product::
+
+        {type_id, name, group_id, group_name, category_id, meta_group_id,
+         qty_per_run, blueprint_type_id}
+
+    One query, no N+1. A product with several blueprints keeps the first
+    (lowest blueprint type_id) — alternative paths are re-derived per-candidate by
+    ``bom_tree`` later, this is only the candidate list.
+    """
+    meta_join = EveMetaType.type_id == EveActivityProduct.product_type_id
+    q = (
+        eve_db.query(
+            EveActivityProduct.product_type_id, EveActivityProduct.type_id,
+            EveActivityProduct.quantity, EveType.type_name, EveType.group_id,
+            EveGroup.group_name, EveGroup.category_id, EveMetaType.meta_group_id,
+        )
+        .join(EveType, EveType.type_id == EveActivityProduct.product_type_id)
+        .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
+        .outerjoin(EveMetaType, meta_join)
+        .filter(EveActivityProduct.activity_id == activity_id, EveType.published.is_(True))
+        .order_by(EveActivityProduct.product_type_id, EveActivityProduct.type_id)
+    )
+    if meta_group_id is not None:
+        q = q.filter(EveMetaType.meta_group_id == meta_group_id)
+    if group_ids:
+        q = q.filter(EveType.group_id.in_(group_ids))
+    if category_ids:
+        q = q.filter(EveGroup.category_id.in_(category_ids))
+
+    out: list[dict] = []
+    seen: set[int] = set()
+    for prod, bp, qty, name, gid, gname, cat, meta in q.all():
+        if prod in seen:
+            continue
+        seen.add(prod)
+        out.append({
+            "type_id": prod, "name": name or str(prod),
+            "group_id": gid, "group_name": gname, "category_id": cat,
+            "meta_group_id": meta, "qty_per_run": int(qty or 1), "blueprint_type_id": bp,
+        })
+    return out
+
+
+def reaction_products(eve_db, group_ids: Optional[list[int]] = None,
+                      category_ids: Optional[list[int]] = None) -> list[dict]:
+    """Every product of a reaction formula (activity 11): the advanced/composite moon
+    materials, fuel blocks and the intermediate reaction goo. Optionally narrowed to
+    ``group_ids``/``category_ids`` (the planner's "final reaction products" filter)."""
+    return _industry_products(eve_db, REACTION, group_ids=group_ids, category_ids=category_ids)
+
+
+def manufactured_products_by_meta(eve_db, meta_group_id: int = META_TECH2,
+                                  group_ids: Optional[list[int]] = None,
+                                  category_ids: Optional[list[int]] = None) -> list[dict]:
+    """Manufactured products (activity 1) at a tech level (``meta_group_id``; 2 = Tech II).
+    "T2 components" are meta-2 items, optionally narrowed to the component groups via
+    ``group_ids``/``category_ids``. Same dict shape as :func:`reaction_products`."""
+    return _industry_products(eve_db, MANUFACTURING, meta_group_id=meta_group_id,
+                              group_ids=group_ids, category_ids=category_ids)
+
+
+def industry_product_groups(eve_db, activity_id: int,
+                            meta_group_id: Optional[int] = None) -> list[dict]:
+    """Distinct ``{group_id, group_name, category_id, count}`` of an activity's published
+    products (optionally tech-gated) — feeds the candidate-universe filter checkboxes so
+    the user can target e.g. "Composite" / "Fuel Block" / "Construction Components"."""
+    meta_join = EveMetaType.type_id == EveActivityProduct.product_type_id
+    q = (
+        eve_db.query(
+            EveType.group_id, EveGroup.group_name, EveGroup.category_id,
+            func.count(func.distinct(EveActivityProduct.product_type_id)),
+        )
+        .join(EveType, EveType.type_id == EveActivityProduct.product_type_id)
+        .outerjoin(EveGroup, EveType.group_id == EveGroup.group_id)
+        .filter(EveActivityProduct.activity_id == activity_id, EveType.published.is_(True))
+        .group_by(EveType.group_id, EveGroup.group_name, EveGroup.category_id)
+        .order_by(EveGroup.group_name)
+    )
+    if meta_group_id is not None:
+        q = q.outerjoin(EveMetaType, meta_join).filter(EveMetaType.meta_group_id == meta_group_id)
+    return [{"group_id": gid, "group_name": gname, "category_id": cat, "count": int(cnt)}
+            for gid, gname, cat, cnt in q.all()]
+
+
 def types_by_name(eve_db, names: list[str]) -> dict[str, dict]:
     """{lower(name): {"type_id","name"}} for exact case-insensitive resolution
     (paste import). Skips blanks; one query."""
