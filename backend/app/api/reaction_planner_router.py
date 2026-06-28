@@ -26,14 +26,13 @@ from app.adapters import market, sim_data
 from app.adapters import profit_sim as profit_sim_engine
 from app.adapters import reaction_planner_engine as rpe
 from app.services import profit_sim as profit_sim_svc
-from app.api import simulation_router as sim_router
 from app.api.manufacturing_router import (
     ChainCalcRequest, ChainStructure, PriceRule,
     _build_facilities, _cj_two_sided, _industry_profile, _profile_out,
     _region_two_sided, _resolve_acquire_prices, _to_jsonable,
 )
 from app.api.simulation_router import SimParamsIn
-from app.core.database import LinkedCharacter, UserDB, get_db
+from app.core.database import UserDB, get_db
 from app.core.database_eve import EveSessionLocal
 from app.core.security import get_current_user
 from app.repositories import eve as eve_repo

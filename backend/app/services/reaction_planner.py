@@ -17,7 +17,7 @@ match on strict equality, not a float epsilon. See [[indyops-chain-calculator]] 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import Optional
 
