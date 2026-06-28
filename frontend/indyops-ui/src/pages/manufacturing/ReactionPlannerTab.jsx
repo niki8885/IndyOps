@@ -52,11 +52,12 @@ export default function ReactionPlannerTab() {
   const [componentFacId, setComponentFacId] = useState('')
   const [manSlots, setManSlots] = useState(10)
   const [reactSlots, setReactSlots] = useState(10)
-  const [horizon, setHorizon] = useState(24)
+  const [horizonDays, setHorizonDays] = useState(1)
 
   const [selectedRegions, setSelectedRegions] = useState(new Set([10000002]))
   const [basis, setBasis] = useState('buy')
   const [includeCJ, setIncludeCJ] = useState(false)
+  const [delivery, setDelivery] = useState({})    // {regionId|'cj': ISK per unit}
   const [sellVenue, setSellVenue] = useState('jita_sell')
   const [freight, setFreight] = useState(0)
 
@@ -99,6 +100,7 @@ export default function ReactionPlannerTab() {
       return next
     })
   }
+  const setDeliv = (key, v) => setDelivery(d => ({ ...d, [key]: v }))
   const toggleIn = (set, setter) => id =>
     setter(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
 
@@ -117,11 +119,14 @@ export default function ReactionPlannerTab() {
       structures,
       man_slots: Number(manSlots) || 0,
       react_slots: Number(reactSlots) || 0,
-      horizon_hours: Number(horizon) || 24,
+      horizon_hours: (Number(horizonDays) || 1) * 24,
       region_ids: [...selectedRegions],
       region_id: [...selectedRegions][0] || 10000002,
       price_basis: basis,
       include_cj: includeCJ,
+      region_delivery: Object.fromEntries(
+        [...selectedRegions].map(rid => [rid, Number(delivery[rid]) || 0]).filter(([, v]) => v > 0)),
+      cj_delivery: Number(delivery.cj) || 0,
       sell_venue: sellVenue,
       freight_per_unit: Number(freight) || 0,
       include_reaction_products: includeReactions,
@@ -187,22 +192,38 @@ export default function ReactionPlannerTab() {
           <Row>
             <Field label="Mfg slots"><input type="number" min={0} value={manSlots} onChange={e => setManSlots(e.target.value)} style={inp} /></Field>
             <Field label="Reaction slots"><input type="number" min={0} value={reactSlots} onChange={e => setReactSlots(e.target.value)} style={inp} /></Field>
-            <Field label="Horizon h"><input type="number" min={1} value={horizon} onChange={e => setHorizon(e.target.value)} style={inp} /></Field>
+            <Field label="Horizon (days)"><input type="number" min={1} value={horizonDays} onChange={e => setHorizonDays(e.target.value)} style={inp} /></Field>
           </Row>
         </Panel>
 
         <Panel title="Buy materials">
+          <div style={{ display: 'flex', justifyContent: 'flex-end', fontSize: 9.5, color: 'var(--border2)', marginBottom: 2 }}>
+            delivery ISK/unit
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {REGIONS.map(r => (
-              <label key={r.id} style={chk}>
-                <input type="checkbox" checked={selectedRegions.has(r.id)} onChange={() => toggleRegion(r.id)} />
-                {r.name}
+            {REGIONS.map(r => {
+              const on = selectedRegions.has(r.id)
+              return (
+                <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                  <label style={{ ...chk, marginTop: 0 }}>
+                    <input type="checkbox" checked={on} onChange={() => toggleRegion(r.id)} />
+                    {r.name}
+                  </label>
+                  <input type="number" min={0} step={1} placeholder="—" value={delivery[r.id] ?? ''} disabled={!on}
+                    onChange={e => setDeliv(r.id, e.target.value)} title="Optional delivery cost, ISK per unit"
+                    style={{ width: 60, padding: '1px 4px', fontSize: 10, opacity: on ? 1 : 0.4 }} />
+                </div>
+              )
+            })}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+              <label style={{ ...chk, marginTop: 0, color: includeCJ ? '#c8a951' : 'var(--text)' }}>
+                <input type="checkbox" checked={includeCJ} onChange={e => setIncludeCJ(e.target.checked)} />
+                C-J6MT <span style={{ fontSize: 10, color: 'var(--border2)' }}>(slow)</span>
               </label>
-            ))}
-            <label style={{ ...chk, color: includeCJ ? '#c8a951' : 'var(--text)' }}>
-              <input type="checkbox" checked={includeCJ} onChange={e => setIncludeCJ(e.target.checked)} />
-              C-J6MT <span style={{ fontSize: 10, color: 'var(--border2)' }}>(slow)</span>
-            </label>
+              <input type="number" min={0} step={1} placeholder="—" value={delivery.cj ?? ''} disabled={!includeCJ}
+                onChange={e => setDeliv('cj', e.target.value)} title="Optional delivery cost, ISK per unit"
+                style={{ width: 60, padding: '1px 4px', fontSize: 10, opacity: includeCJ ? 1 : 0.4 }} />
+            </div>
           </div>
           <Field label="Price side">
             <select value={basis} onChange={e => setBasis(e.target.value)} style={sel}>

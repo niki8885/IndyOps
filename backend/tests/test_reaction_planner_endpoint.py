@@ -11,7 +11,7 @@ from app.core.database_eve import (
 )
 from app.repositories import eve as eve_repo
 from app.services import slot_fill
-from app.services.chain import LocationParams
+from app.services.chain import LocationParams, solve_chain
 from app.services.reaction_planner import Candidate, SellConfig
 
 
@@ -46,6 +46,42 @@ def test_reaction_subnode_detection():
         34: {"recipes": []},
     }
     assert rpr._reaction_subnode_ids(2000, tree) == {3000}
+
+
+def _react_tree_with_fuel_block():
+    # Final reaction (1) ← composite reaction (2) + a Fuel Block (3, which itself has a
+    # manufacturing recipe). Moon goo (4) / ice (5) are bought leaves.
+    return {
+        1: {"name": "Final React", "group_name": "Composite", "category_id": 4,
+            "recipes": [{"activity": 11, "blueprint_type_id": 90, "qty_per_run": 10, "base_time": 3600,
+                         "max_runs": 100, "inputs": [{"type_id": 2, "qty": 4}, {"type_id": 3, "qty": 2}]}]},
+        2: {"name": "Composite", "group_name": "Composite", "category_id": 4,
+            "recipes": [{"activity": 11, "blueprint_type_id": 91, "qty_per_run": 10, "base_time": 3600,
+                         "max_runs": 100, "inputs": [{"type_id": 4, "qty": 2}]}]},
+        3: {"name": "Helium Fuel Block", "group_name": "Fuel Block", "category_id": 4,
+            "recipes": [{"activity": 1, "blueprint_type_id": 92, "qty_per_run": 40, "base_time": 600,
+                         "max_runs": 100, "inputs": [{"type_id": 5, "qty": 1}]}]},
+        4: {"name": "Moon Goo", "recipes": []},
+        5: {"name": "Ice Product", "recipes": []},
+    }
+
+
+def test_fuel_block_ids_detected_by_group():
+    assert rpr._fuel_block_ids(1, _react_tree_with_fuel_block()) == {3}
+
+
+def test_fuel_blocks_bought_not_built_in_scratch():
+    tree = _react_tree_with_fuel_block()
+    buy = {1: None, 2: 100.0, 3: 1000.0, 4: 10.0, 5: 50.0}
+    fac = [LocationParams(20, "Athanor", can_man=True, can_react=True)]
+    req = rpr._scratch_request(1, 10, tree, buy, {}, fac, 1.0, 1.0)
+    assert req.nodes[3].recipes == ()          # fuel block recipe dropped → bought
+    assert req.nodes[2].buy_price is None       # composite reaction force-made from scratch
+    plan = solve_chain(req)
+    assert plan.decisions[3].decision == "buy"               # fuel block bought, not produced
+    assert 3 in {s.type_id for s in plan.shopping_list}
+    assert plan.decisions[2].decision == "make"              # composite produced from moon goo
+    assert 5 not in {s.type_id for s in plan.shopping_list}  # ice not sourced (fuel block bought)
 
 
 def test_full_sweep_pipeline(eve_session):
