@@ -1,12 +1,14 @@
 # Build context is the repo root
 
-# stage 1: compile the Haskell chain-engine (offline, boot libs only)
+# stage 1: compile the Haskell chain-engine + reaction-planner (offline, boot libs only)
 FROM haskell:9.6.6 AS chain-builder
 WORKDIR /build
 COPY haskell/chain-engine/src/ ./src/
 COPY haskell/chain-engine/app/ ./app/
+COPY haskell/chain-engine/app-planner/ ./app-planner/
 RUN mkdir -p /out \
- && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/chain-engine
+ && ghc -O2 -isrc -iapp -outputdir /tmp/obj app/Main.hs -o /out/chain-engine \
+ && ghc -O2 -isrc -iapp-planner -outputdir /tmp/obj-planner app-planner/Main.hs -o /out/reaction-planner
 
 # stage 1b: compile the Haskell risk-engine (offline, boot libs only) ──────
 FROM haskell:9.6.6 AS risk-builder
@@ -54,6 +56,10 @@ COPY backend/migrations/ migrations/
 # falls back to the pure-Python core if it is ever missing.
 COPY --from=chain-builder /out/chain-engine /usr/local/bin/chain-engine
 ENV CHAIN_ENGINE_BIN=/usr/local/bin/chain-engine
+
+# Native Reaction Planner batch engine (reuses the chain solver). Falls back to Python.
+COPY --from=chain-builder /out/reaction-planner /usr/local/bin/reaction-planner
+ENV REACTION_PLANNER_BIN=/usr/local/bin/reaction-planner
 
 # Native analytics engine (indicators / risk / Monte-Carlo).
 # contract: the adapter prefers it via ANALYTICS_ENGINE_BIN, else pure Python.
