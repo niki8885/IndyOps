@@ -68,6 +68,10 @@ class ReactionSweepRequest(BaseModel):
     region_sides: dict[int, str] = {}
     cj_side: Optional[str] = None
     price_rules: List[PriceRule] = []
+    # Optional per-source delivery cost (ISK per unit) folded into the buy price so the
+    # cheapest-source choice accounts for hauling. Empty/0 = local / no haul.
+    region_delivery: dict[int, float] = {}
+    cj_delivery: float = 0.0
     # Sell side — where the finished product sells, for ROI / income-per-hour.
     sell_venue: str = "jita_sell"     # "jita_sell" | "cj_sell"
     freight_per_unit: float = 0.0
@@ -93,6 +97,12 @@ def _facilities(body: ReactionSweepRequest, db: Session, user_id: int):
     return _build_facilities(fac_body, db, user_id)
 
 
+# Fuel blocks are a *bought* base input alongside raw moon goo — never produced here
+# ("buy moon materials + Fuel Block and make from the first stage"). Matched by group so it
+# survives SDE id shifts. See [[indyops-io59-reaction-planner]].
+FUEL_BLOCK_GROUP = "Fuel Block"
+
+
 def _reaction_subnode_ids(target_id: int, tree: dict) -> set[int]:
     """Nodes below the target that are produced ONLY by a reaction — the intermediates a
     component can either build from scratch or buy."""
@@ -101,37 +111,51 @@ def _reaction_subnode_ids(target_id: int, tree: dict) -> set[int]:
             and all(rc["activity"] == REACTION for rc in nd["recipes"])}
 
 
+def _fuel_block_ids(target_id: int, tree: dict) -> set[int]:
+    """Fuel-block nodes in the tree (bought, not built) — excluding the target itself."""
+    return {tid for tid, nd in tree.items()
+            if tid != target_id and (nd.get("group_name") or "") == FUEL_BLOCK_GROUP}
+
+
 def _build_chain(target_id: int, qty: int, tree: dict, buy_prices, adj, facilities,
                  tm_man: float, tm_react: float):
     return from_bom(target_id, qty, tree, buy_prices, adj, facilities,
                     time_mult_man=tm_man, time_mult_react=tm_react)
 
 
+def _force_buy(req, ids: set[int]):
+    """Drop the recipes of every buyable node in ``ids`` so the core can only buy it."""
+    for tid in ids:
+        n = req.nodes.get(tid)
+        if n and n.recipes and n.buy_price is not None:
+            req.nodes[tid] = replace(n, recipes=())
+
+
 def _scratch_request(target_id, qty, tree, buy_prices, adj, facilities, tm_man, tm_react):
-    """From-scratch build: force-make the target AND every reaction node (down to raw goo)."""
+    """From-scratch build: force-make the target AND every reaction node (down to raw goo),
+    but always BUY fuel blocks (a base input, not produced)."""
     req = _build_chain(target_id, qty, tree, buy_prices, adj, facilities, tm_man, tm_react)
-    make_ids = {target_id} | _reaction_subnode_ids(target_id, tree)
-    for tid in make_ids:
+    for tid in {target_id} | _reaction_subnode_ids(target_id, tree):
         n = req.nodes.get(tid)
         if n and n.recipes:
             req.nodes[tid] = replace(n, buy_price=None)
+    _force_buy(req, _fuel_block_ids(target_id, tree))
     return req
 
 
 def _bought_request(target_id, qty, tree, buy_prices, adj, facilities, tm_man, tm_react):
-    """Bought-reactions variant: force-make the target, force-BUY every (buyable) reaction
-    intermediate. Returns None when no reaction intermediate can be bought."""
+    """Bought-reactions variant (T2 components): force-make the target, force-BUY every
+    buyable reaction intermediate AND fuel blocks. None when nothing reaction-y can be bought."""
     req = _build_chain(target_id, qty, tree, buy_prices, adj, facilities, tm_man, tm_react)
     n = req.nodes.get(target_id)
     if n and n.recipes:
         req.nodes[target_id] = replace(n, buy_price=None)
-    any_bought = False
-    for tid in _reaction_subnode_ids(target_id, tree):
-        m = req.nodes.get(tid)
-        if m and m.recipes and m.buy_price is not None:
-            req.nodes[tid] = replace(m, recipes=())
-            any_bought = True
-    return req if any_bought else None
+    reaction_ids = _reaction_subnode_ids(target_id, tree)
+    buyable = {tid for tid in reaction_ids
+               if (m := req.nodes.get(tid)) and m.recipes and m.buy_price is not None}
+    _force_buy(req, buyable)
+    _force_buy(req, _fuel_block_ids(target_id, tree))
+    return req if buyable else None
 
 
 def _candidate_out(r: planner.CandidateResult) -> dict:
@@ -186,10 +210,13 @@ async def sweep(body: ReactionSweepRequest,
     try:
         candidates_meta: list[dict] = []
         if body.include_reaction_products:
-            candidates_meta += eve_repo.reaction_products(eve_db, group_ids=body.reaction_group_ids or None)
+            for m in eve_repo.reaction_products(eve_db, group_ids=body.reaction_group_ids or None):
+                m["kind"] = "reaction"     # final reaction product → produce-or-don't, no buy-reactions split
+                candidates_meta.append(m)
         if body.include_t2_components:
-            candidates_meta += eve_repo.manufactured_products_by_meta(
-                eve_db, group_ids=body.t2_group_ids or None)
+            for m in eve_repo.manufactured_products_by_meta(eve_db, group_ids=body.t2_group_ids or None):
+                m["kind"] = "t2"           # T2 component → buy finished reactions vs produce from scratch
+                candidates_meta.append(m)
         # de-dup (a product could be enumerated twice) and cap.
         seen: set[int] = set()
         metas = []
@@ -227,10 +254,12 @@ async def sweep(body: ReactionSweepRequest,
     group_name_of = {tid: trees[m["type_id"]].get(tid, {}).get("group_name")
                      for m in metas for tid in trees[m["type_id"]]}
     rules = [{"group": r.group, "side": r.side} for r in body.price_rules]
+    volume_of = {tid: 1.0 for tid in union_ids}     # delivery is ISK *per unit* → coef × 1
     buy_prices, _src, _flags = _resolve_acquire_prices(
         union_ids, eff_region_ids, region_data, cj_data, adj, SCAM_RATIO,
         basis=body.price_basis, region_sides=body.region_sides, cj_side=body.cj_side,
-        rules=rules, group_of=group_name_of, overrides={})
+        rules=rules, group_of=group_name_of, overrides={},
+        volume_of=volume_of, region_delivery=body.region_delivery, cj_delivery=body.cj_delivery)
 
     # Sell side: per-target sell quote at the chosen venue.
     if body.sell_venue == "cj_sell":
@@ -255,7 +284,10 @@ async def sweep(body: ReactionSweepRequest,
         tree = trees[tid]
         qty = max(1, (m.get("qty_per_run") or 1) * max(1, body.batch_runs))
         scratch = _scratch_request(tid, qty, tree, buy_prices, adj, facilities, tm_man, tm_react)
-        bought = _bought_request(tid, qty, tree, buy_prices, adj, facilities, tm_man, tm_react)
+        # Buy-finished-reactions vs from-scratch is a T2-component choice only; a final
+        # reaction product is simply produced (buy moon goo + fuel blocks) or not.
+        bought = (_bought_request(tid, qty, tree, buy_prices, adj, facilities, tm_man, tm_react)
+                  if m.get("kind") == "t2" else None)
         sell = SellConfig(unit_price=float(sell_price.get(tid) or 0.0),
                           sales_tax_pct=sales_tax, broker_fee_pct=broker,
                           freight_per_unit=body.freight_per_unit)
@@ -318,7 +350,9 @@ async def simulate_candidate(type_id: int, body: ReactionSweepRequest,
     buy_prices, _src, _flags = _resolve_acquire_prices(
         type_ids, eff_region_ids, region_data, cj_data, adj, SCAM_RATIO,
         basis=body.price_basis, region_sides=body.region_sides, cj_side=body.cj_side,
-        rules=rules, group_of=group_name_of, overrides={})
+        rules=rules, group_of=group_name_of, overrides={},
+        volume_of={tid: 1.0 for tid in type_ids},
+        region_delivery=body.region_delivery, cj_delivery=body.cj_delivery)
 
     if body.sell_venue == "cj_sell":
         cj_sell = cj_data if cj_data else await _cj_two_sided([type_id])
